@@ -154,14 +154,14 @@ gp lorem
 If the repository contains changes, GitPush asks for a commit message:
 
 ```text
-Commit message: Fix ethernet receiver
+Commit message: Fixed ethernet receiver
 ```
 
 It then performs:
 
 ```text
 git add .
-git commit -m "Fix ethernet receiver"
+git commit -m "Fixed ethernet receiver"
 git push
 ```
 
@@ -184,7 +184,7 @@ gp "Test" Fix communication issue
 You may also quote the commit message:
 
 ```powershell
-gp "TestProject" "Fix communication issue"
+gp "TestProject" "Fixed communication issue"
 ```
 
 ---
