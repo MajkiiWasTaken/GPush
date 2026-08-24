@@ -7,11 +7,13 @@ param(
 )
 
 # ============================================================
-# CONFIG
+# CONFIGURATION
+# Add directories where your Git repositories are located.
 # ============================================================
 
 $SearchRoots = @(
-    "C:\Users\SvrcekM\Documents\Project"
+    "$HOME\Documents\Projects"
+    # "$HOME\source\repos"
     # "D:\Projects"
     # "C:\Git"
 )
@@ -32,7 +34,7 @@ $IgnoredDirectories = @(
 )
 
 # ============================================================
-# HELPERS
+# OUTPUT HELPERS
 # ============================================================
 
 function Write-Info {
@@ -55,6 +57,21 @@ function Write-Err {
     Write-Host $Text -ForegroundColor Red
 }
 
+# ============================================================
+# CHECK DEPENDENCIES
+# ============================================================
+
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    Write-Err "Git was not found."
+    Write-Host ""
+    Write-Host "Install Git and make sure it is available in PATH."
+    exit 1
+}
+
+# ============================================================
+# REPOSITORY SCANNER
+# ============================================================
+
 function Find-GitRepositories {
     param(
         [string[]]$Roots
@@ -64,21 +81,26 @@ function Find-GitRepositories {
 
     foreach ($root in $Roots) {
 
-        if (-not (Test-Path $root)) {
-            Write-Warn "Search root does not exist: $root"
+        $expandedRoot = [Environment]::ExpandEnvironmentVariables($root)
+
+        if (-not (Test-Path $expandedRoot)) {
+            Write-Warn "Search root does not exist: $expandedRoot"
             continue
         }
 
         $stack = [System.Collections.Generic.Stack[string]]::new()
-        $stack.Push($root)
+        $stack.Push($expandedRoot)
 
         while ($stack.Count -gt 0) {
 
             $current = $stack.Pop()
 
             try {
+
                 $gitPath = Join-Path $current ".git"
 
+                # A .git entry may be either a directory or a file
+                # (for example when using Git worktrees).
                 if (Test-Path $gitPath) {
 
                     $repoName = Split-Path $current -Leaf
@@ -88,7 +110,8 @@ function Find-GitRepositories {
                         Path = $current
                     }
 
-                    # Repo nalezeno -> dál dovnitř už nemusíme.
+                    # Repository found.
+                    # Do not scan deeper inside it.
                     continue
                 }
 
@@ -108,13 +131,21 @@ function Find-GitRepositories {
                 }
             }
             catch {
-                # Nedostupnou složku jednoduše přeskočíme.
+                # Skip inaccessible directories.
             }
         }
     }
 
-    return $result | Sort-Object Name, Path
+    return @(
+        $result |
+            Sort-Object Path -Unique |
+            Sort-Object Name, Path
+    )
 }
+
+# ============================================================
+# CACHE
+# ============================================================
 
 function Save-Cache {
     param($Repos)
@@ -133,6 +164,10 @@ function Save-Cache {
             -Encoding UTF8
 }
 
+# ============================================================
+# REPOSITORY SELECTION
+# ============================================================
+
 function Select-Repository {
     param(
         $Repos,
@@ -143,14 +178,14 @@ function Select-Repository {
         $Search = Read-Host "Project"
     }
 
-    # 1. Nejprve všechny názvy začínající hledaným textem
+    # First try repositories whose names start with the query.
     $matches = @(
         $Repos | Where-Object {
             $_.Name -ilike "$Search*"
         }
     )
 
-    # 2. Pokud nic, hledej kdekoliv v názvu
+    # If nothing matches, search anywhere in the repository name.
     if ($matches.Count -eq 0) {
         $matches = @(
             $Repos | Where-Object {
@@ -159,7 +194,7 @@ function Select-Repository {
         )
     }
 
-    # 3. Pokud stále nic, zkus cestu
+    # Finally search the full path.
     if ($matches.Count -eq 0) {
         $matches = @(
             $Repos | Where-Object {
@@ -174,33 +209,45 @@ function Select-Repository {
         return $null
     }
 
-    # Jediný výsledek = rovnou použij
+    # Only one repository matched.
     if ($matches.Count -eq 1) {
         return $matches[0]
     }
 
-    # Více výsledků = nabídnout výběr
+    # Multiple repositories matched.
     Write-Host ""
     Write-Warn "Multiple repositories found:"
     Write-Host ""
 
     for ($i = 0; $i -lt $matches.Count; $i++) {
-        Write-Host "[$($i + 1)] " -NoNewline -ForegroundColor DarkGray
-        Write-Host "$($matches[$i].Name)" -ForegroundColor White
-        Write-Host "    $($matches[$i].Path)" -ForegroundColor DarkGray
+
+        Write-Host "[$($i + 1)] " `
+            -NoNewline `
+            -ForegroundColor DarkGray
+
+        Write-Host $matches[$i].Name `
+            -ForegroundColor White
+
+        Write-Host "    $($matches[$i].Path)" `
+            -ForegroundColor DarkGray
     }
 
     Write-Host ""
 
     while ($true) {
+
         $selection = Read-Host "Select repository"
 
         $number = 0
 
         if ([int]::TryParse($selection, [ref]$number)) {
+
             $index = $number - 1
 
-            if ($index -ge 0 -and $index -lt $matches.Count) {
+            if (
+                $index -ge 0 -and
+                $index -lt $matches.Count
+            ) {
                 return $matches[$index]
             }
         }
@@ -210,7 +257,7 @@ function Select-Repository {
 }
 
 # ============================================================
-# SCAN
+# SCAN REPOSITORIES
 # ============================================================
 
 Write-Host ""
@@ -219,7 +266,10 @@ Write-Info "Scanning Git repositories..."
 $repos = @(Find-GitRepositories -Roots $SearchRoots)
 
 if ($repos.Count -eq 0) {
+    Write-Host ""
     Write-Err "No Git repositories found."
+    Write-Host ""
+    Write-Host "Check the SearchRoots configuration in gp.ps1."
     exit 1
 }
 
@@ -229,7 +279,7 @@ Write-Ok "Found $($repos.Count) repositories."
 Write-Host "Cache: $CacheFile" -ForegroundColor DarkGray
 
 # ============================================================
-# SELECT PROJECT
+# SELECT REPOSITORY
 # ============================================================
 
 $repo = Select-Repository `
@@ -258,9 +308,17 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
+if ([string]::IsNullOrWhiteSpace($branch)) {
+    $branch = "DETACHED HEAD"
+}
+
 Write-Host ""
-Write-Host "Branch: " -NoNewline -ForegroundColor DarkGray
-Write-Host $branch -ForegroundColor Magenta
+Write-Host "Branch: " `
+    -NoNewline `
+    -ForegroundColor DarkGray
+
+Write-Host $branch `
+    -ForegroundColor Magenta
 
 # ============================================================
 # STATUS
@@ -268,12 +326,15 @@ Write-Host $branch -ForegroundColor Magenta
 
 $status = @(git status --short)
 
+if ($LASTEXITCODE -ne 0) {
+    Write-Err "Could not read repository status."
+    exit 1
+}
+
 Write-Host ""
 
 if ($status.Count -eq 0) {
-
     Write-Warn "No local changes."
-
 }
 else {
 
@@ -348,8 +409,8 @@ if ($status.Count -gt 0) {
 Write-Host ""
 Write-Info "[PUSH] git push"
 
-$pushOutput = git push 2>&1
-$pushExit   = $LASTEXITCODE
+$pushOutput = @(git push 2>&1)
+$pushExit = $LASTEXITCODE
 
 $pushOutput | ForEach-Object {
     Write-Host $_
@@ -359,8 +420,10 @@ if ($pushExit -eq 0) {
 
     Write-Host ""
     Write-Ok "[PUSH] OK"
+
     Write-Host ""
     Write-Ok "Done."
+
     exit 0
 }
 
@@ -373,21 +436,20 @@ Write-Warn "[PUSH] Failed."
 
 $pushText = $pushOutput -join "`n"
 
-# Typický případ:
-# ! [rejected] main -> main (fetch first)
-# ! [rejected] main -> main (non-fast-forward)
-
+# Detect a rejected push caused by the remote branch
+# containing commits that are not available locally.
 $remoteAhead = (
     $pushText -match "non-fast-forward" -or
     $pushText -match "fetch first" -or
-    $pushText -match "rejected"
+    $pushText -match "\[rejected\]"
 )
 
 if (-not $remoteAhead) {
 
-    Write-Err ""
+    Write-Host ""
     Write-Err "Push failed for another reason."
     Write-Err "Automatic pull will NOT be attempted."
+
     exit 1
 }
 
@@ -405,21 +467,33 @@ if ($LASTEXITCODE -ne 0) {
 
     Write-Host ""
     Write-Err "[PULL] REBASE FAILED"
+
     Write-Host ""
     Write-Warn "There is probably a merge conflict."
+
     Write-Host ""
     Write-Host "Resolve the conflicting files, then run:"
     Write-Host ""
-    Write-Host "  git add ." -ForegroundColor Cyan
-    Write-Host "  git rebase --continue" -ForegroundColor Cyan
+
+    Write-Host "  git add ." `
+        -ForegroundColor Cyan
+
+    Write-Host "  git rebase --continue" `
+        -ForegroundColor Cyan
+
     Write-Host ""
     Write-Host "When the rebase is finished:"
     Write-Host ""
-    Write-Host "  git push" -ForegroundColor Cyan
+
+    Write-Host "  git push" `
+        -ForegroundColor Cyan
+
     Write-Host ""
     Write-Host "To cancel the rebase:"
     Write-Host ""
-    Write-Host "  git rebase --abort" -ForegroundColor Cyan
+
+    Write-Host "  git rebase --abort" `
+        -ForegroundColor Cyan
 
     exit 1
 }
@@ -439,10 +513,12 @@ if ($LASTEXITCODE -ne 0) {
 
     Write-Host ""
     Write-Err "[PUSH] FAILED AGAIN"
+
     exit 1
 }
 
 Write-Host ""
 Write-Ok "[PUSH] OK"
+
 Write-Host ""
 Write-Ok "Done."
