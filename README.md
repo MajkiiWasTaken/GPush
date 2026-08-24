@@ -178,7 +178,7 @@ Everything after the repository name becomes the commit message.
 Repository names containing spaces must be enclosed in quotes:
 
 ```powershell
-gp "Test" Fix communication issue
+gp "Test" Fixed communication issue
 ```
 
 You may also quote the commit message:
