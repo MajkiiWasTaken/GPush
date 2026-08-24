@@ -269,7 +269,7 @@ GitPush intentionally does not attempt to resolve merge conflicts automatically.
 
 ### Example
 
-![alt text](image.png)
+<img width="780" height="898" alt="image" src="https://github.com/user-attachments/assets/b18aa10e-5be2-4550-b8ef-f569d1325252" />
 
 ---
 
