@@ -7,9 +7,9 @@
 
 A small PowerShell utility for quickly finding Git repositories, creating commits, and pushing changes without manually navigating between project directories.
 
-GitPush scans configured directories for Git repositories, lets you select a project by name, stages all changes, creates a commit, and pushes it to the remote repository.
+GPush scans configured directories for Git repositories, lets you select a project by name, stages all changes, creates a commit, and pushes it to the remote repository.
 
-If the remote branch contains newer commits and the push is rejected, GitPush automatically attempts a `git pull --rebase` and retries the push.
+If the remote branch contains newer commits and the push is rejected, GPush automatically attempts a `git pull --rebase` and retries the push.
 
 ---
 
@@ -80,17 +80,17 @@ $SearchRoots = @(
 
 ### PowerShell command
 
-To use GitPush as the `gp` command, add the following to your PowerShell profile:
+To use GPush as the `gp` command, add the following to your PowerShell profile:
 
 ```powershell
 Remove-Item Alias:gp -Force -ErrorAction SilentlyContinue
 
 function Global:gp {
-    & "C:\Path\To\GitPush\gp.ps1" @args
+    & "C:\Path\To\GPush\gp.ps1" @args
 }
 ```
 
-`gp` is normally a PowerShell alias for `Get-ItemProperty`, therefore the original alias has to be removed before the GitPush function can use the same name.
+`gp` is normally a PowerShell alias for `Get-ItemProperty`, therefore the original alias has to be removed before the GPush function can use the same name.
 
 To open your PowerShell profile:
 
@@ -123,7 +123,7 @@ Search for a repository:
 gp lorem
 ```
 
-GitPush scans the configured directories and finds repositories whose names match the query.
+GPush scans the configured directories and finds repositories whose names match the query.
 
 If exactly one repository matches, it is selected automatically.
 
@@ -151,7 +151,7 @@ Run:
 gp lorem
 ```
 
-If the repository contains changes, GitPush asks for a commit message:
+If the repository contains changes, GPush asks for a commit message:
 
 ```text
 Commit message: Fixed ethernet receiver
@@ -191,7 +191,7 @@ gp "TestProject" "Fixed communication issue"
 
 ### Repository scanning
 
-GitPush recursively scans every directory configured in `$SearchRoots`.
+GPush recursively scans every directory configured in `$SearchRoots`.
 
 When a `.git` directory or file is found, the parent directory is registered as a Git repository.
 
@@ -209,7 +209,7 @@ packages
 .idea
 ```
 
-This prevents GitPush from wasting time scanning dependency folders and build output directories.
+This prevents GPush from wasting time scanning dependency folders and build output directories.
 
 ---
 
@@ -218,10 +218,10 @@ This prevents GitPush from wasting time scanning dependency folders and build ou
 The repository list is stored in:
 
 ```text
-%LOCALAPPDATA%\GitPush\repos.json
+%LOCALAPPDATA%\GPush\repos.json
 ```
 
-The cache is refreshed every time GitPush starts.
+The cache is refreshed every time GPush starts.
 
 This means newly created or deleted repositories are automatically reflected on the next run.
 
@@ -229,13 +229,13 @@ This means newly created or deleted repositories are automatically reflected on 
 
 ### Push conflicts
 
-GitPush first attempts a normal:
+GPush first attempts a normal:
 
 ```powershell
 git push
 ```
 
-If Git reports that the remote branch contains newer commits, GitPush automatically runs:
+If Git reports that the remote branch contains newer commits, GPush automatically runs:
 
 ```powershell
 git pull --rebase
@@ -247,7 +247,7 @@ and then retries:
 git push
 ```
 
-If the rebase produces a conflict, GitPush stops and lets you resolve it manually.
+If the rebase produces a conflict, GPush stops and lets you resolve it manually.
 
 After resolving the conflicting files:
 
@@ -263,7 +263,7 @@ To cancel the rebase:
 git rebase --abort
 ```
 
-GitPush intentionally does not attempt to resolve merge conflicts automatically.
+GPush intentionally does not attempt to resolve merge conflicts automatically.
 
 ---
 
