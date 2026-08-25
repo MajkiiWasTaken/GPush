@@ -58,6 +58,48 @@ function Write-Err {
 }
 
 # ============================================================
+# GIT STATUS CODE TRANSLATION
+# Converts the raw two-letter codes from "git status --short"
+# (e.g. "??", " M", "A ", "D ") into a readable label + color.
+# ============================================================
+
+function Get-StatusInfo {
+    param([string]$Code)
+
+    switch -Regex ($Code) {
+        '^\?\?$' { return @{ Label = "Added";     Color = "Green"  } } # untracked / new file
+        '^A.$'   { return @{ Label = "Added";     Color = "Green"  } } # staged new file
+        '^.A$'   { return @{ Label = "Added";     Color = "Green"  } }
+        '^M.$'   { return @{ Label = "Modified";  Color = "Yellow" } } # staged modification
+        '^.M$'   { return @{ Label = "Modified";  Color = "Yellow" } } # unstaged modification
+        '^D.$'   { return @{ Label = "Deleted";   Color = "Red"    } }
+        '^.D$'   { return @{ Label = "Deleted";   Color = "Red"    } }
+        '^R.$'   { return @{ Label = "Renamed";   Color = "Cyan"   } }
+        '^C.$'   { return @{ Label = "Copied";    Color = "Cyan"   } }
+        '^U.$'   { return @{ Label = "Conflict";  Color = "Red"    } }
+        '^.U$'   { return @{ Label = "Conflict";  Color = "Red"    } }
+        default  { return @{ Label = $Code.Trim(); Color = "White" } }
+    }
+}
+
+function Format-StatusLine {
+    param([string]$Line)
+
+    # git status --short lines look like: "XY path"
+    # XY is a fixed 2-char code, followed by a space, then the path.
+    $code = $Line.Substring(0, 2)
+    $path = $Line.Substring(3)
+
+    $info = Get-StatusInfo -Code $code
+
+    Write-Host ("  [{0,-8}] " -f $info.Label) `
+        -NoNewline `
+        -ForegroundColor $info.Color
+
+    Write-Host $path
+}
+
+# ============================================================
 # CHECK DEPENDENCIES
 # ============================================================
 
@@ -341,7 +383,7 @@ else {
     Write-Info "Changes:"
 
     foreach ($line in $status) {
-        Write-Host "  $line"
+        Format-StatusLine -Line $line
     }
 }
 
@@ -369,6 +411,7 @@ if (
 ) {
     Write-Err "Commit message cannot be empty."
     exit 1
+
 }
 
 # ============================================================
