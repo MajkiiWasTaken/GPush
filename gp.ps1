@@ -18,7 +18,7 @@ $SearchRoots = @(
     # "C:\Git"
 )
 
-$CacheDir  = Join-Path $env:LOCALAPPDATA "GitPush"
+$CacheDir  = Join-Path $env:LOCALAPPDATA "GPush"
 $CacheFile = Join-Path $CacheDir "repos.json"
 
 $IgnoredDirectories = @(

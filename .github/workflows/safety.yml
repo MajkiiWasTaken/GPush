@@ -1,0 +1,297 @@
+name: Safety & PowerShell checks
+
+on:
+  push:
+    branches:
+      - main
+
+  pull_request:
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  safety:
+    name: PowerShell safety checks
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # ------------------------------------------------------------
+      # 1. Syntax check - Windows PowerShell 5.1
+      # ------------------------------------------------------------
+
+      - name: Check PowerShell 5.1 syntax
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $files = Get-ChildItem -Path . -Filter *.ps1 -Recurse
+
+          foreach ($file in $files) {
+              Write-Host "Checking $($file.FullName)"
+
+              $tokens = $null
+              $errors = $null
+
+              [System.Management.Automation.Language.Parser]::ParseFile(
+                  $file.FullName,
+                  [ref]$tokens,
+                  [ref]$errors
+              ) | Out-Null
+
+              if ($errors.Count -gt 0) {
+                  $errors | ForEach-Object {
+                      Write-Error $_.Message
+                  }
+
+                  exit 1
+              }
+          }
+
+          Write-Host "PowerShell 5.1 syntax OK."
+
+      # ------------------------------------------------------------
+      # 2. Syntax check - PowerShell 7
+      # ------------------------------------------------------------
+
+      - name: Check PowerShell 7 syntax
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $files = Get-ChildItem -Path . -Filter *.ps1 -Recurse
+
+          foreach ($file in $files) {
+              Write-Host "Checking $($file.FullName)"
+
+              $tokens = $null
+              $errors = $null
+
+              [System.Management.Automation.Language.Parser]::ParseFile(
+                  $file.FullName,
+                  [ref]$tokens,
+                  [ref]$errors
+              ) | Out-Null
+
+              if ($errors.Count -gt 0) {
+                  $errors | ForEach-Object {
+                      Write-Error $_.Message
+                  }
+
+                  exit 1
+              }
+          }
+
+          Write-Host "PowerShell 7 syntax OK."
+
+      # ------------------------------------------------------------
+      # 3. PSScriptAnalyzer
+      # ------------------------------------------------------------
+
+      - name: Install PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module PSScriptAnalyzer `
+              -Scope CurrentUser `
+              -Force `
+              -SkipPublisherCheck
+
+      - name: Run PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $results = Invoke-ScriptAnalyzer `
+              -Path . `
+              -Recurse `
+              -Severity Error,Warning
+
+          if ($results) {
+              $results | Format-Table -AutoSize
+          }
+
+          $errors = @(
+              $results | Where-Object {
+                  $_.Severity -eq "Error"
+              }
+          )
+
+          if ($errors.Count -gt 0) {
+              Write-Error "PSScriptAnalyzer found errors."
+              exit 1
+          }
+
+      # ------------------------------------------------------------
+      # 4. Dangerous PowerShell command detection
+      # ------------------------------------------------------------
+
+      - name: Detect dangerous commands
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $files = Get-ChildItem `
+              -Path . `
+              -Filter *.ps1 `
+              -Recurse
+
+          $dangerousPatterns = @(
+              @{
+                  Name = "Invoke-Expression"
+                  Pattern = '\bInvoke-Expression\b|\biex\b'
+              },
+              @{
+                  Name = "Encoded PowerShell command"
+                  Pattern = '(?i)-EncodedCommand\b|-enc\b'
+              },
+              @{
+                  Name = "Download and execute"
+                  Pattern = '(?i)(Invoke-WebRequest|iwr|curl|wget).*(Invoke-Expression|iex)'
+              },
+              @{
+                  Name = "Format disk"
+                  Pattern = '(?i)\bFormat-Volume\b|\bClear-Disk\b'
+              },
+              @{
+                  Name = "Partition deletion"
+                  Pattern = '(?i)\bRemove-Partition\b'
+              },
+              @{
+                  Name = "Mass file deletion"
+                  Pattern = '(?i)Remove-Item\s+[^`r`n]*(-Recurse)[^`r`n]*(-Force)'
+              },
+              @{
+                  Name = "Windows Defender exclusion"
+                  Pattern = '(?i)Add-MpPreference.*Exclusion'
+              },
+              @{
+                  Name = "Disable Defender"
+                  Pattern = '(?i)Set-MpPreference.*Disable'
+              },
+              @{
+                  Name = "Registry destruction"
+                  Pattern = '(?i)Remove-Item\s+.*HKLM:'
+              },
+              @{
+                  Name = "Computer shutdown/restart"
+                  Pattern = '(?i)\bStop-Computer\b|\bRestart-Computer\b'
+              },
+              @{
+                  Name = "Privilege elevation"
+                  Pattern = '(?i)Start-Process.*-Verb\s+RunAs'
+              }
+          )
+
+          $failed = $false
+
+          foreach ($file in $files) {
+
+              $content = Get-Content $file.FullName -Raw
+
+              foreach ($rule in $dangerousPatterns) {
+
+                  if ($content -match $rule.Pattern) {
+
+                      Write-Host ""
+                      Write-Host "Potentially dangerous command detected:" `
+                          -ForegroundColor Red
+
+                      Write-Host "  Rule: $($rule.Name)"
+                      Write-Host "  File: $($file.FullName)"
+
+                      $failed = $true
+                  }
+              }
+          }
+
+          if ($failed) {
+              Write-Error "Safety check failed."
+              exit 1
+          }
+
+          Write-Host "No dangerous commands detected." `
+              -ForegroundColor Green
+
+      # ------------------------------------------------------------
+      # 5. Installer-specific safety
+      # ------------------------------------------------------------
+
+      - name: Check installer behavior
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $installer = Get-Content ./install.ps1 -Raw
+
+          #
+          # Installer is allowed to modify the PowerShell profile,
+          # but should not modify machine-wide configuration.
+          #
+
+          $forbidden = @(
+              'HKLM:',
+              'Program Files',
+              'System32',
+              'Set-ExecutionPolicy',
+              'Start-Process.*RunAs',
+              'New-Service',
+              'sc.exe',
+              'schtasks',
+              'Register-ScheduledTask'
+          )
+
+          foreach ($pattern in $forbidden) {
+
+              if ($installer -match $pattern) {
+                  Write-Error "Forbidden installer behavior detected: $pattern"
+                  exit 1
+              }
+          }
+
+          Write-Host "Installer safety check OK." `
+              -ForegroundColor Green
+
+      # ------------------------------------------------------------
+      # 6. Verify gp.ps1 doesn't contain system-destructive commands
+      # ------------------------------------------------------------
+
+      - name: Check GPush command scope
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Get-Content ./gp.ps1 -Raw
+
+          $forbidden = @(
+              'Format-Volume',
+              'Clear-Disk',
+              'Remove-Partition',
+              'Stop-Computer',
+              'Restart-Computer',
+              'Set-ExecutionPolicy',
+              'Add-MpPreference',
+              'Set-MpPreference',
+              'New-Service',
+              'Register-ScheduledTask',
+              'Invoke-Expression'
+          )
+
+          foreach ($command in $forbidden) {
+
+              if ($script -match "\b$command\b") {
+                  Write-Error "Forbidden command found in gp.ps1: $command"
+                  exit 1
+              }
+          }
+
+          Write-Host "GPush contains no system-destructive commands." `
+              -ForegroundColor Green
