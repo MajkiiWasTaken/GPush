@@ -1,4 +1,4 @@
-
+param(
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$Arguments
 )
@@ -30,8 +30,8 @@ if (Test-Path $ConfigFile) {
         }
     }
     catch {
-        Write-Warn "Could not read configuration: $ConfigFile"
-        Write-Warn "Using the built-in fallback search root."
+        Write-Host "Could not read configuration: $ConfigFile" -ForegroundColor Yellow
+        Write-Host "Using the built-in fallback search root." -ForegroundColor Yellow
     }
 }
 
@@ -88,20 +88,21 @@ function Show-Help {
 
     Write-Host "OPTIONS" -ForegroundColor Yellow
     $options = @(
-        @("-h, --help",    "Show this help."),
-        @("-v, --version", "Show GP version."),
-        @("--list",         "List discovered Git repositories."),
-        @("--status",       "Show branch and working tree status only."),
-        @("--pull",         "Run 'git pull --rebase' only."),
-        @("--dry-run",      "Show what would be done without changing anything."),
-        @("--no-push",      "Add and commit changes, but do not push."),
-        @("--cached",       "Use the repository cache instead of scanning."),
-        @("--refresh",      "Force a repository scan and refresh the cache."),
-        @("--",             "Stop parsing options.")
+        [PSCustomObject]@{ Name = "-h, --help";    Description = "Show this help." }
+        [PSCustomObject]@{ Name = "-v, --version"; Description = "Show GP version." }
+        [PSCustomObject]@{ Name = "--list";         Description = "List discovered Git repositories." }
+        [PSCustomObject]@{ Name = "--status";       Description = "Show branch and working tree status only." }
+        [PSCustomObject]@{ Name = "--pull";         Description = "Run 'git pull --rebase' only." }
+        [PSCustomObject]@{ Name = "--dry-run";      Description = "Show what would be done without changing anything." }
+        [PSCustomObject]@{ Name = "--no-push";      Description = "Add and commit changes, but do not push." }
+        [PSCustomObject]@{ Name = "--cached";       Description = "Use the repository cache instead of scanning." }
+        [PSCustomObject]@{ Name = "--refresh";      Description = "Force a repository scan and refresh the cache." }
+        [PSCustomObject]@{ Name = "--";             Description = "Stop parsing options." }
     )
+
     foreach ($option in $options) {
-        Write-Host ("  {0,-18}" -f $option[0]) -NoNewline -ForegroundColor Cyan
-        Write-Host $option[1]
+        Write-Host ("  {0,-18}" -f $option.Name) -NoNewline -ForegroundColor Cyan
+        Write-Host $option.Description
     }
     Write-Host ""
 
