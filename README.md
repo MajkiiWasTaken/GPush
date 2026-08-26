@@ -5,251 +5,83 @@
 ![Windows](https://img.shields.io/badge/Windows-supported-0078D6?style=for-the-badge&logo=windows&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)
 
-A small PowerShell utility for quickly finding Git repositories, creating commits, and pushing changes without manually navigating between project directories.
+GPush is a small PowerShell helper for finding Git repositories, committing changes and pushing them without manually navigating between project folders.
 
-GPush scans configured directories for Git repositories, lets you select a project by name, stages all changes, creates a commit, and pushes it to the remote repository.
+It shows the current branch and changed files, runs `git add .`, creates the commit and pushes it. If the remote is ahead, GPush can automatically run `git pull --rebase` and retry the push.
 
-If the remote branch contains newer commits and the push is rejected, GPush automatically attempts a `git pull --rebase` and retries the push.
-
----
-
-### Features
-
-- Automatically scans configured directories for Git repositories
-- Caches discovered repositories
-- Search repositories by partial name
-- Interactive selection when multiple repositories match
-- Displays the current Git branch
-- Displays modified, added, and deleted files
-- Automatically runs `git add .`
-- Creates commits directly from the terminal
-- Pushes changes to the configured remote
-- Automatically handles rejected pushes using `git pull --rebase`
-- Stops safely when a merge/rebase conflict requires manual resolution
-- Ignores common build and dependency directories while scanning
-- Colored terminal output
+<img width="780" height="898" alt="image" src="https://github.com/user-attachments/assets/b18aa10e-5be2-4550-b8ef-f569d1325252" />
 
 ---
 
-### Requirements
+### Install
 
-- Windows
-- PowerShell
-- Git installed and available in `PATH`
+Requirements: **Windows**, **PowerShell 5.1+** and **Git in PATH**.
 
-Verify that Git is available:
+Clone the repository and run:
 
 ```powershell
-git --version
+powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
----
+The installer:
 
-### Installation
+- detects or asks for directories containing your repositories,
+- saves them to `%LOCALAPPDATA%\GPush\config.json`,
+- adds the `gp` command to your PowerShell profile,
+- updates an existing GPush profile entry safely.
 
-Clone or download this repository.
-
-For example:
-
-```powershell
-git clone https://github.com/MajkiiWasTaken/GPush.git
-```
-
-Open `gp.ps1` and configure the directories containing your Git repositories:
-
-```powershell
-$SearchRoots = @(
-    "$HOME\Documents\Projects"
-    # "$HOME\source\repos"
-    # "D:\Projects"
-    # "C:\Git"
-)
-```
-
-You may specify multiple directories:
-
-```powershell
-$SearchRoots = @(
-    "$HOME\Documents\Projects"
-    "$HOME\source\repos"
-    "D:\Work"
-)
-```
-
----
-
-### PowerShell command
-
-To use GPush as the `gp` command, add the following to your PowerShell profile:
-
-```powershell
-Remove-Item Alias:gp -Force -ErrorAction SilentlyContinue
-
-function Global:gp {
-    & "C:\Path\To\GPush\gp.ps1" @args
-}
-```
-
-`gp` is normally a PowerShell alias for `Get-ItemProperty`, therefore the original alias has to be removed before the GPush function can use the same name.
-
-To open your PowerShell profile:
-
-```powershell
-notepad $PROFILE
-```
-
-If the profile does not exist:
-
-```powershell
-New-Item -ItemType File -Path $PROFILE -Force
-notepad $PROFILE
-```
-
-After modifying the profile, reload it:
+Reload the profile after installation:
 
 ```powershell
 . $PROFILE
 ```
 
-This is only required after changing the profile. PowerShell automatically loads the profile when a new terminal session starts.
+You can also provide repository directories directly:
+
+```powershell
+.\install.ps1 -SearchRoot "D:\Projects","C:\Work"
+```
+
+Run the installer again whenever you want to change the configured repository directories.
 
 ---
 
 ### Usage
 
-Search for a repository:
-
 ```powershell
-gp lorem
+gp MyProject "Fix packet parser"
+gp MyProject
+gp --status MyProject
+gp --pull MyProject
+gp --dry-run MyProject "Test commit"
+gp --no-push MyProject "Local checkpoint"
+gp --list
+gp --refresh --list
+gp --cached MyProject "Quick commit"
+gp --help
 ```
 
-GPush scans the configured directories and finds repositories whose names match the query.
+If no commit message is supplied, GPush asks for it interactively.
 
-If exactly one repository matches, it is selected automatically.
+### Options
 
-If multiple repositories match:
-
-```text
-Multiple repositories found:
-
-[1] Test
-    C:\Users\User\Documents\Projects\Test
-
-[2] TestProject
-    C:\Users\User\Documents\Projects\TestProject
-
-Select repository:
-```
-
-Enter the number of the repository you want to use.
-
-### Commit interactively
-
-Run:
-
-```powershell
-gp lorem
-```
-
-If the repository contains changes, GPush asks for a commit message:
-
-```text
-Commit message: Fixed ethernet receiver
-```
-
-It then performs:
-
-```text
-git add .
-git commit -m "Fixed ethernet receiver"
-git push
-```
-
-### Commit directly
-
-The commit message may also be supplied directly:
-
-```powershell
-gp lorem Fixed something...
-```
-
-Everything after the repository name becomes the commit message.
-
-Repository names containing spaces must be enclosed in quotes:
-
-```powershell
-gp "Test" Fixed communication issue
-```
-
-You may also quote the commit message:
-
-```powershell
-gp "TestProject" "Fixed communication issue"
-```
+| Option | Description |
+|---|---|
+| `-h`, `--help` | Show help |
+| `-v`, `--version` | Show version |
+| `--list` | List discovered repositories |
+| `--status` | Show branch and working tree status only |
+| `--pull` | Run `git pull --rebase` only |
+| `--dry-run` | Preview actions without changing anything |
+| `--no-push` | Commit locally without pushing |
+| `--cached` | Use the saved repository cache |
+| `--refresh` | Rescan repositories and refresh the cache |
 
 ---
 
-### Repository scanning
+### Safety
 
-GPush recursively scans every directory configured in `$SearchRoots`.
-
-When a `.git` directory or file is found, the parent directory is registered as a Git repository.
-
-The following directories are ignored by default:
-
-```text
-node_modules
-bin
-obj
-.venv
-venv
-target
-packages
-.vs
-.idea
-```
-
-This prevents GPush from wasting time scanning dependency folders and build output directories.
-
----
-
-### Cache
-
-The repository list is stored in:
-
-```text
-%LOCALAPPDATA%\GPush\repos.json
-```
-
-The cache is refreshed every time GPush starts.
-
-This means newly created or deleted repositories are automatically reflected on the next run.
-
----
-
-### Push conflicts
-
-GPush first attempts a normal:
-
-```powershell
-git push
-```
-
-If Git reports that the remote branch contains newer commits, GPush automatically runs:
-
-```powershell
-git pull --rebase
-```
-
-and then retries:
-
-```powershell
-git push
-```
-
-If the rebase produces a conflict, GPush stops and lets you resolve it manually.
-
-After resolving the conflicting files:
+GPush does **not** resolve merge or rebase conflicts automatically. If a rebase fails, resolve the conflict manually and continue with:
 
 ```powershell
 git add .
@@ -263,16 +95,10 @@ To cancel the rebase:
 git rebase --abort
 ```
 
-GPush intentionally does not attempt to resolve merge conflicts automatically.
-
 ---
 
-### Example
+### Author
 
-<img width="780" height="898" alt="image" src="https://github.com/user-attachments/assets/b18aa10e-5be2-4550-b8ef-f569d1325252" />
+Michal Švrček
 
----
-
-### Author: Michal Švrček
-
-This project can be distributed under the MIT License.
+Distributed under the MIT License.

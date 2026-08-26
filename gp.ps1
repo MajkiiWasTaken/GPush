@@ -1,4 +1,4 @@
-param(
+
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$Arguments
 )
@@ -10,16 +10,30 @@ $ScriptVersion = "2.0.0"
 # Add directories where your Git repositories are located.
 # ============================================================
 
+$CacheDir   = Join-Path $env:LOCALAPPDATA "GPush"
+$CacheFile  = Join-Path $CacheDir "repos.json"
+$ConfigFile = Join-Path $CacheDir "config.json"
+
+# Search roots are normally created by install.ps1.
+# These values are only a fallback when no configuration exists yet.
 $SearchRoots = @(
     "$HOME\Documents\Projects"
-    "$HOME\Documents\Work"
-    # "$HOME\source\repos"
-    # "D:\Projects"
-    # "C:\Git"
 )
 
-$CacheDir  = Join-Path $env:LOCALAPPDATA "GPush"
-$CacheFile = Join-Path $CacheDir "repos.json"
+if (Test-Path $ConfigFile) {
+    try {
+        $config = Get-Content -Path $ConfigFile -Raw -ErrorAction Stop |
+            ConvertFrom-Json -ErrorAction Stop
+
+        if ($config.SearchRoots) {
+            $SearchRoots = @($config.SearchRoots)
+        }
+    }
+    catch {
+        Write-Warn "Could not read configuration: $ConfigFile"
+        Write-Warn "Using the built-in fallback search root."
+    }
+}
 
 $IgnoredDirectories = @(
     "node_modules",
@@ -476,7 +490,7 @@ if ($repos.Count -eq 0) {
     Write-Host ""
     Write-Err "No Git repositories found."
     Write-Host ""
-    Write-Host "Check the SearchRoots configuration in gp.ps1."
+    Write-Host "Run install.ps1 again or edit: $ConfigFile"
     exit 1
 }
 
