@@ -9,7 +9,7 @@ GPush is a small PowerShell helper for finding Git repositories, committing chan
 
 It shows the current branch and changed files, runs `git add .`, creates the commit and pushes it. If the remote is ahead, GPush can automatically run `git pull --rebase` and retry the push.
 
-<img width="780" height="898" alt="image" src="https://github.com/user-attachments/assets/b18aa10e-5be2-4550-b8ef-f569d1325252" />
+<img width="699" height="785" alt="image" src="https://github.com/user-attachments/assets/bb6dd591-b5d9-4b70-94be-b58d49f1b2c8" />
 
 ---
 
@@ -97,8 +97,6 @@ git rebase --abort
 
 ---
 
-### Author
-
-Michal Švrček
+### Author: Michal Švrček
 
 Distributed under the MIT License.
