@@ -1,10 +1,9 @@
 param(
-    [Parameter(Position = 0)]
-    [string]$Project,
-
-    [Parameter(Position = 1, ValueFromRemainingArguments = $true)]
-    [string[]]$CommitMessageParts
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$Arguments
 )
+
+$ScriptVersion = "2.0.0"
 
 # ============================================================
 # CONFIGURATION
@@ -13,6 +12,7 @@ param(
 
 $SearchRoots = @(
     "$HOME\Documents\Projects"
+    "$HOME\Documents\Work"
     # "$HOME\source\repos"
     # "D:\Projects"
     # "C:\Git"
@@ -56,6 +56,130 @@ function Write-Err {
     param([string]$Text)
     Write-Host $Text -ForegroundColor Red
 }
+
+function Show-Help {
+    Write-Host ""
+    Write-Host "GP " -NoNewline -ForegroundColor Cyan
+    Write-Host $ScriptVersion -NoNewline -ForegroundColor DarkGray
+    Write-Host " - simple Git repository helper" -ForegroundColor White
+    Write-Host ""
+
+    Write-Host "USAGE" -ForegroundColor Yellow
+    Write-Host "  gp " -NoNewline -ForegroundColor Green; Write-Host "<project> [commit message]"
+    Write-Host "  gp " -NoNewline -ForegroundColor Green; Write-Host "[options] <project> [commit message]"
+    Write-Host "  gp " -NoNewline -ForegroundColor Green; Write-Host "--status <project>" -ForegroundColor Cyan
+    Write-Host "  gp " -NoNewline -ForegroundColor Green; Write-Host "--pull <project>" -ForegroundColor Cyan
+    Write-Host "  gp " -NoNewline -ForegroundColor Green; Write-Host "--list" -ForegroundColor Cyan
+    Write-Host ""
+
+    Write-Host "OPTIONS" -ForegroundColor Yellow
+    $options = @(
+        @("-h, --help",    "Show this help."),
+        @("-v, --version", "Show GP version."),
+        @("--list",         "List discovered Git repositories."),
+        @("--status",       "Show branch and working tree status only."),
+        @("--pull",         "Run 'git pull --rebase' only."),
+        @("--dry-run",      "Show what would be done without changing anything."),
+        @("--no-push",      "Add and commit changes, but do not push."),
+        @("--cached",       "Use the repository cache instead of scanning."),
+        @("--refresh",      "Force a repository scan and refresh the cache."),
+        @("--",             "Stop parsing options.")
+    )
+    foreach ($option in $options) {
+        Write-Host ("  {0,-18}" -f $option[0]) -NoNewline -ForegroundColor Cyan
+        Write-Host $option[1]
+    }
+    Write-Host ""
+
+    Write-Host "EXAMPLES" -ForegroundColor Yellow
+    @(
+        'gp FooBar "Fix packet parser"',
+        'gp --status FooBar',
+        'gp --dry-run FooBar "Test commit"',
+        'gp --no-push FooBar "Local work"',
+        'gp --pull FooBar',
+        'gp --list',
+        'gp --refresh --list',
+        'gp --cached FooBar "Quick commit"'
+    ) | ForEach-Object { Write-Host "  $_" -ForegroundColor Green }
+    Write-Host ""
+
+    Write-Host "NORMAL WORKFLOW" -ForegroundColor Yellow
+    Write-Host "  1. " -NoNewline -ForegroundColor DarkGray; Write-Host "Find the repository."
+    Write-Host "  2. " -NoNewline -ForegroundColor DarkGray; Write-Host "Show branch and local changes."
+    Write-Host "  3. " -NoNewline -ForegroundColor DarkGray
+    Write-Host "Run " -NoNewline; Write-Host "'git add .'" -ForegroundColor Cyan
+    Write-Host "  4. " -NoNewline -ForegroundColor DarkGray; Write-Host "Create a commit when changes exist."
+    Write-Host "  5. " -NoNewline -ForegroundColor DarkGray; Write-Host "Push to the remote."
+    Write-Host "  6. " -NoNewline -ForegroundColor DarkGray
+    Write-Host "If push is rejected because the remote is ahead, run"
+    Write-Host "     'git pull --rebase'" -NoNewline -ForegroundColor Cyan
+    Write-Host " and try the push again."
+    Write-Host ""
+
+    Write-Host "CACHE" -ForegroundColor Yellow
+    Write-Host "  $CacheFile" -ForegroundColor DarkGray
+    Write-Host ""
+}
+
+# ============================================================
+# ARGUMENT PARSER
+# ============================================================
+
+$ShowHelp = $false
+$ShowVersion = $false
+$ListRepos = $false
+$StatusOnly = $false
+$PullOnly = $false
+$DryRun = $false
+$NoPush = $false
+$UseCache = $false
+$Refresh = $false
+$StopOptionParsing = $false
+$Positional = [System.Collections.Generic.List[string]]::new()
+
+foreach ($arg in @($Arguments)) {
+    if ($StopOptionParsing) {
+        $Positional.Add($arg)
+        continue
+    }
+
+    switch ($arg) {
+        "--"        { $StopOptionParsing = $true }
+        "-h"        { $ShowHelp = $true }
+        "--help"    { $ShowHelp = $true }
+        "-v"        { $ShowVersion = $true }
+        "--version" { $ShowVersion = $true }
+        "--list"    { $ListRepos = $true }
+        "--status"  { $StatusOnly = $true }
+        "--pull"    { $PullOnly = $true }
+        "--dry-run" { $DryRun = $true }
+        "--no-push" { $NoPush = $true }
+        "--cached"  { $UseCache = $true }
+        "--refresh" { $Refresh = $true }
+        default {
+            if ($arg.StartsWith("-")) {
+                Write-Err "Unknown option: $arg"
+                Write-Host "Run 'gp --help' for usage."
+                exit 2
+            }
+            $Positional.Add($arg)
+        }
+    }
+}
+
+if ($ShowHelp) { Show-Help; exit 0 }
+if ($ShowVersion) { Write-Host "GP $ScriptVersion"; exit 0 }
+if ($StatusOnly -and $PullOnly) {
+    Write-Err "'--status' and '--pull' cannot be used together."
+    exit 2
+}
+if ($Refresh) { $UseCache = $false }
+
+$Project = $null
+$CommitMessageParts = @()
+if ($Positional.Count -gt 0) { $Project = $Positional[0] }
+if ($Positional.Count -gt 1) { $CommitMessageParts = @($Positional | Select-Object -Skip 1) }
 
 # ============================================================
 # GIT STATUS CODE TRANSLATION
@@ -206,6 +330,29 @@ function Save-Cache {
             -Encoding UTF8
 }
 
+function Load-Cache {
+    if (-not (Test-Path $CacheFile)) { return @() }
+
+    try {
+        $data = Get-Content -Path $CacheFile -Raw -ErrorAction Stop |
+            ConvertFrom-Json -ErrorAction Stop
+
+        return @(
+            @($data) |
+                Where-Object {
+                    $_.Name -and $_.Path -and
+                    (Test-Path $_.Path) -and
+                    (Test-Path (Join-Path $_.Path ".git"))
+                } |
+                Sort-Object Name, Path
+        )
+    }
+    catch {
+        Write-Warn "Repository cache could not be read."
+        return @()
+    }
+}
+
 # ============================================================
 # REPOSITORY SELECTION
 # ============================================================
@@ -299,13 +446,31 @@ function Select-Repository {
 }
 
 # ============================================================
-# SCAN REPOSITORIES
+# LOAD / SCAN REPOSITORIES
 # ============================================================
 
-Write-Host ""
-Write-Info "Scanning Git repositories..."
+$repos = @()
 
-$repos = @(Find-GitRepositories -Roots $SearchRoots)
+if ($UseCache) {
+    Write-Host ""
+    Write-Info "Loading Git repositories from cache..."
+    $repos = @(Load-Cache)
+
+    if ($repos.Count -eq 0) {
+        Write-Warn "Cache is empty or unavailable. Scanning instead..."
+        $UseCache = $false
+    }
+}
+
+if (-not $UseCache) {
+    Write-Host ""
+    Write-Info "Scanning Git repositories..."
+    $repos = @(Find-GitRepositories -Roots $SearchRoots)
+
+    if ($repos.Count -gt 0) {
+        Save-Cache -Repos $repos
+    }
+}
 
 if ($repos.Count -eq 0) {
     Write-Host ""
@@ -315,10 +480,24 @@ if ($repos.Count -eq 0) {
     exit 1
 }
 
-Save-Cache -Repos $repos
+if ($UseCache) {
+    Write-Ok "Loaded $($repos.Count) repositories from cache."
+}
+else {
+    Write-Ok "Found $($repos.Count) repositories."
+    Write-Host "Cache: $CacheFile" -ForegroundColor DarkGray
+}
 
-Write-Ok "Found $($repos.Count) repositories."
-Write-Host "Cache: $CacheFile" -ForegroundColor DarkGray
+if ($ListRepos) {
+    Write-Host ""
+    foreach ($item in $repos) {
+        Write-Host ("  {0,-30}" -f $item.Name) -NoNewline -ForegroundColor White
+        Write-Host $item.Path -ForegroundColor DarkGray
+    }
+    Write-Host ""
+    Write-Info "Total: $($repos.Count)"
+    exit 0
+}
 
 # ============================================================
 # SELECT REPOSITORY
@@ -387,6 +566,32 @@ else {
     }
 }
 
+if ($StatusOnly) {
+    exit 0
+}
+
+if ($PullOnly) {
+    Write-Host ""
+
+    if ($DryRun) {
+        Write-Warn "[DRY RUN] git pull --rebase"
+        exit 0
+    }
+
+    Write-Info "[PULL] git pull --rebase"
+    git pull --rebase
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host ""
+        Write-Err "[PULL] REBASE FAILED"
+        exit 1
+    }
+
+    Write-Host ""
+    Write-Ok "[PULL] OK"
+    exit 0
+}
+
 # ============================================================
 # COMMIT MESSAGE
 # ============================================================
@@ -401,8 +606,13 @@ if (
     $status.Count -gt 0 -and
     [string]::IsNullOrWhiteSpace($commitMessage)
 ) {
-    Write-Host ""
-    $commitMessage = Read-Host "Commit message"
+    if ($DryRun) {
+        $commitMessage = "<commit message>"
+    }
+    else {
+        Write-Host ""
+        $commitMessage = Read-Host "Commit message"
+    }
 }
 
 if (
@@ -412,6 +622,29 @@ if (
     Write-Err "Commit message cannot be empty."
     exit 1
 
+}
+
+if ($DryRun) {
+    Write-Host ""
+    Write-Warn "DRY RUN - no changes will be made."
+
+    if ($status.Count -gt 0) {
+        Write-Host ""
+        Write-Info "[DRY RUN] git add ."
+        Write-Info "[DRY RUN] git commit -m `"$commitMessage`""
+    }
+
+    if ($NoPush) {
+        Write-Host ""
+        Write-Info "[DRY RUN] Push skipped (--no-push)."
+    }
+    else {
+        Write-Host ""
+        Write-Info "[DRY RUN] git push"
+        Write-Info "[DRY RUN] If rejected because remote is ahead: git pull --rebase, then git push"
+    }
+
+    exit 0
 }
 
 # ============================================================
@@ -443,6 +676,23 @@ if ($status.Count -gt 0) {
     }
 
     Write-Ok "[COMMIT] OK"
+}
+
+# ============================================================
+# OPTIONAL LOCAL-ONLY MODE
+# ============================================================
+
+if ($NoPush) {
+    Write-Host ""
+
+    if ($status.Count -gt 0) {
+        Write-Ok "Commit created locally. Push skipped (--no-push)."
+    }
+    else {
+        Write-Warn "Nothing to commit. Push skipped (--no-push)."
+    }
+
+    exit 0
 }
 
 # ============================================================
