@@ -359,6 +359,7 @@ function Load-Cache {
                     (Test-Path $_.Path) -and
                     (Test-Path (Join-Path $_.Path ".git"))
                 } |
+                Sort-Object Path -Unique |
                 Sort-Object Name, Path
         )
     }
