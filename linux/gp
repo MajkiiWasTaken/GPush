@@ -1,1264 +1,1543 @@
 #!/usr/bin/env bash
 set -u
 
-SCRIPT_VERSION="3.2.1"
-
-# ============================================================
-# PATHS / XDG
-# ============================================================
+SCRIPT_VERSION="4.0.1"
+AUTHOR="Michal Švrček"
+GITHUB="https://github.com/MajkiiWasTaken"
 
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
-
 CONFIG_DIR="$CONFIG_HOME/gpush"
 CACHE_DIR="$CACHE_HOME/gpush"
-
 CONFIG_FILE="$CONFIG_DIR/config"
+ALIASES_FILE="$CONFIG_DIR/aliases"
+FAVORITES_FILE="$CONFIG_DIR/favorites"
+RECENT_FILE="$CONFIG_DIR/recent"
 CACHE_FILE="$CACHE_DIR/repos"
 
-DEFAULT_SEARCH_ROOTS=(
-  "$HOME/Projects"
-  "$HOME/Documents"
-)
-
-IGNORED_DIRECTORIES=(
-  node_modules
-  bin
-  obj
-  .venv
-  venv
-  target
-  packages
-  .idea
-  .vscode
-)
-
-# ============================================================
-# OUTPUT HELPERS
-# ============================================================
+DEFAULT_REMOTE="origin"
+LARGE_FILE_MB=25
+SEARCH_ROOTS=("$HOME/Projects" "$HOME/Documents")
+PROTECTED_BRANCHES=("main" "master" "release/*")
+IGNORED_DIRS=(node_modules bin obj .venv venv target packages .idea .vscode .vs)
 
 if [[ -t 1 ]]; then
-  C_RESET=$'\033[0m'
-  C_CYAN=$'\033[36m'
-  C_GREEN=$'\033[32m'
-  C_YELLOW=$'\033[33m'
-  C_RED=$'\033[31m'
-  C_MAGENTA=$'\033[35m'
-  C_GRAY=$'\033[90m'
-  C_WHITE=$'\033[97m'
+    C_RESET=$'\033[0m'
+    C_CYAN=$'\033[36m'
+    C_GREEN=$'\033[32m'
+    C_YELLOW=$'\033[33m'
+    C_RED=$'\033[31m'
+    C_MAGENTA=$'\033[35m'
+    C_GRAY=$'\033[90m'
+    C_WHITE=$'\033[97m'
 else
-  C_RESET=""
-  C_CYAN=""
-  C_GREEN=""
-  C_YELLOW=""
-  C_RED=""
-  C_MAGENTA=""
-  C_GRAY=""
-  C_WHITE=""
+    C_RESET=""
+    C_CYAN=""
+    C_GREEN=""
+    C_YELLOW=""
+    C_RED=""
+    C_MAGENTA=""
+    C_GRAY=""
+    C_WHITE=""
 fi
 
-info() { printf '%s%s%s\n' "$C_CYAN" "$*" "$C_RESET"; }
-ok()   { printf '%s%s%s\n' "$C_GREEN" "$*" "$C_RESET"; }
-warn() { printf '%s%s%s\n' "$C_YELLOW" "$*" "$C_RESET"; }
-err()  { printf '%s%s%s\n' "$C_RED" "$*" "$C_RESET" >&2; }
-dim()  { printf '%s%s%s\n' "$C_GRAY" "$*" "$C_RESET"; }
+info() {
+    printf '%s%s%s\n' "$C_CYAN" "$*" "$C_RESET"
+}
+
+ok() {
+    printf '%s%s%s\n' "$C_GREEN" "$*" "$C_RESET"
+}
+
+warn() {
+    printf '%s%s%s\n' "$C_YELLOW" "$*" "$C_RESET"
+}
+
+err() {
+    printf '%s%s%s\n' "$C_RED" "$*" "$C_RESET" >&2
+}
+
+dim() {
+    printf '%s%s%s\n' "$C_GRAY" "$*" "$C_RESET"
+}
 
 section() {
-  printf '\n%s%s%s\n' "$C_CYAN" "$1" "$C_RESET"
+    printf '\n%s%s%s\n' "$C_CYAN" "$1" "$C_RESET"
 }
 
 separator() {
-  printf '\n%s----------------------------------------------------%s\n' "$C_GRAY" "$C_RESET"
-}
-
-banner() {
-  printf '\n%sGPush %s%s%s\n' "$C_CYAN" "$C_GRAY" "$SCRIPT_VERSION" "$C_RESET"
-  printf '%sMade by %s%sMichal Švrček%s\n' "$C_GRAY" "$C_RESET" "$C_MAGENTA" "$C_RESET"
+    printf '\n%s----------------------------------------------------%s\n' "$C_GRAY" "$C_RESET"
 }
 
 kv() {
-  local key="$1"
-  local value="$2"
-  local color="${3:-$C_WHITE}"
-  printf '%s  %-12s%s%s%s%s\n' "$C_GRAY" "$key" "$C_RESET" "$color" "$value" "$C_RESET"
+    printf '%s  %-12s%s%s%s%s\n' \
+        "$C_GRAY" "$1" "$C_RESET" "${3:-$C_WHITE}" "$2" "$C_RESET"
 }
 
-# ============================================================
-# HELP
-# ============================================================
-
-show_help() {
-  banner
-  printf 'A small Git helper for finding repositories, checking sync state,\n'
-  printf 'committing local changes, and pushing the current branch safely.\n\n'
-
-  printf '%sUSAGE%s\n' "$C_YELLOW" "$C_RESET"
-  printf '  %sgp%s <project> [commit message]\n' "$C_GREEN" "$C_RESET"
-  printf '  %sgp%s [options] <project> [commit message]\n' "$C_GREEN" "$C_RESET"
-  printf '  %sgp%s --list\n' "$C_GREEN" "$C_RESET"
-  printf '  %sgp%s --help\n\n' "$C_GREEN" "$C_RESET"
-
-  printf '%sOPTIONS%s\n' "$C_YELLOW" "$C_RESET"
-  printf '  %-20s %s\n' '-h, --help' 'Show this help and exit.'
-  printf '  %-20s %s\n' '-v, --version' 'Show the script version and exit.'
-  printf '  %-20s %s\n' '-l, --list' 'List cached Git repositories and exit.'
-  printf '  %-20s %s\n' '-r, --refresh' 'Rescan configured roots, rebuild the cache, and exit.'
-  printf '  %-20s %s\n' '--add' 'Add a Git repository to the cache manually.'
-  printf '  %-20s %s\n' '' 'Examples: gp --add .'
-  printf '  %-20s %s\n' '' '          gp --add ~/Projects/Repo'
-  printf '  %-20s %s\n' '--cached' 'Use the repository cache only.'
-  printf '  %-20s %s\n' '-s, --status' 'Show repository, branch, remote, sync, and local status.'
-  printf '  %-20s %s\n' '--diff' 'Show local diff statistics only.'
-  printf '  %-20s %s\n' '--renormalize' 'Renormalize tracked files using .gitattributes.'
-  printf '  %-20s %s\n' '--fetch' 'Fetch and prune the selected repository remote.'
-  printf '  %-20s %s\n' '--log' 'Show the last 10 commits.'
-  printf '  %-20s %s\n' '--branches' 'Show local and remote branches.'
-  printf '  %-20s %s\n' '--remotes' 'Show configured Git remotes.'
-  printf '  %-20s %s\n' '--pull' 'Run a safe git pull --rebase only.'
-  printf '  %-20s %s\n' '--dry-run' 'Preview add/commit/push actions without changing Git state.'
-  printf '  %-20s %s\n' '--no-push' 'Add and commit changes, but do not fetch, pull, or push.'
-  printf '  %-20s %s\n' '--' 'Stop option parsing.'
-  printf '\n'
-
-  printf '%sEXAMPLES%s\n' "$C_YELLOW" "$C_RESET"
-  cat <<'EOF'
-  gp RSUManager "Fix GNSS handling"
-  gp RSUManager Fix GNSS handling
-  gp --status RSUManager
-  gp --diff RSUManager
-  gp --renormalize
-  gp --renormalize RSUManager
-  gp --fetch RSUManager
-  gp --log RSUManager
-  gp --branches RSUManager
-  gp --remotes RSUManager
-  gp --pull RSUManager
-  gp --dry-run RSUManager "Test commit"
-  gp --no-push RSUManager "Local checkpoint"
-  gp --list
-  gp --refresh
-  gp --refresh --list
-  gp --add .
-  gp --add ~/Projects/RSUManager
-EOF
-  printf '\n'
+banner() {
+    printf '\n%sGPush %s%s%s\n' "$C_CYAN" "$C_GRAY" "$SCRIPT_VERSION" "$C_RESET"
+    printf '%sMade by %s%s%s%s\n' "$C_GRAY" "$C_RESET" "$C_MAGENTA" "$AUTHOR" "$C_RESET"
+    printf '%sGitHub  %s%s\n' "$C_GRAY" "$GITHUB" "$C_RESET"
 }
 
-# ============================================================
-# CONFIG / CACHE
-# ============================================================
-
-load_search_roots() {
-  SEARCH_ROOTS=()
-
-  if [[ -f "$CONFIG_FILE" ]]; then
-    while IFS= read -r line || [[ -n "$line" ]]; do
-      [[ -z "$line" ]] && continue
-      [[ "$line" =~ ^[[:space:]]*# ]] && continue
-      line="${line/#\~/$HOME}"
-      SEARCH_ROOTS+=("$line")
-    done < "$CONFIG_FILE"
-  fi
-
-  if [[ ${#SEARCH_ROOTS[@]} -eq 0 ]]; then
-    SEARCH_ROOTS=("${DEFAULT_SEARCH_ROOTS[@]}")
-  fi
+confirm() {
+    local answer
+    read -r -p "$1 [y/N] " answer
+    [[ "$answer" =~ ^([yY]|[yY][eE][sS])$ ]]
 }
 
 ensure_dirs() {
-  mkdir -p "$CONFIG_DIR" "$CACHE_DIR"
+    mkdir -p "$CONFIG_DIR" "$CACHE_DIR"
 }
 
-is_ignored_dir() {
-  local name="$1"
-  local item
-  for item in "${IGNORED_DIRECTORIES[@]}"; do
-    [[ "$name" == "$item" ]] && return 0
-  done
-  return 1
+load_config() {
+    ensure_dirs
+
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        return 0
+    fi
+
+    SEARCH_ROOTS=()
+
+    local key=""
+    local value=""
+
+    while IFS='=' read -r key value || [[ -n "${key:-}" ]]; do
+        if [[ -z "${key:-}" || "$key" =~ ^[[:space:]]*# ]]; then
+            continue
+        fi
+
+        case "$key" in
+            search_root)
+                value="${value/#\~/$HOME}"
+                SEARCH_ROOTS+=("$value")
+                ;;
+            default_remote)
+                if [[ -n "$value" ]]; then
+                    DEFAULT_REMOTE="$value"
+                fi
+                ;;
+            large_file_mb)
+                if [[ "$value" =~ ^[0-9]+$ ]]; then
+                    LARGE_FILE_MB="$value"
+                fi
+                ;;
+        esac
+    done < "$CONFIG_FILE"
+
+    if [[ ${#SEARCH_ROOTS[@]} -eq 0 ]]; then
+        SEARCH_ROOTS=("$HOME/Projects" "$HOME/Documents")
+    fi
+}
+
+show_help() {
+    banner
+    printf '\n'
+
+    cat <<'EOFH'
+  ###  ####            o
+ #     #   #          / \
+ #  ## ####      o---o   o
+ #   # #          \   \ /
+  ###  #           o---o---o
+                            \
+                             o---o
+EOFH
+
+    printf '\nA small Git helper for finding repositories, checking sync state,\n'
+    printf 'committing local changes, and pushing the current branch safely.\n\n'
+
+    printf '%sUSAGE%s\n' "$C_YELLOW" "$C_RESET"
+    printf '  %sgp%s <project> [commit message]\n' "$C_GREEN" "$C_RESET"
+    printf '  %sgp%s <command> <action> [arguments]\n\n' "$C_GREEN" "$C_RESET"
+
+    printf '%sCOMMANDS%s\n' "$C_YELLOW" "$C_RESET"
+    printf '  %-11s%s\n' 'Command' 'Actions / usage'
+    printf '  --------------------------------------------------------\n'
+    printf '  %-11s%s\n' repo 'status, diff, log, open, fetch, pull, sync'
+    printf '  %-11s%s\n' branch 'list, new, switch, delete, prune'
+    printf '  %-11s%s\n' tag 'list, create, push, delete, release'
+    printf '  %-11s%s\n' remote 'list, add, set-url, remove'
+    printf '  %-11s%s\n' stash 'push, list, pop'
+    printf '  %-11s%s\n' cache 'list, refresh, add'
+    printf '  %-11s%s\n' config 'show, path, doctor'
+    printf '  %-11s%s\n' alias 'list, set, remove'
+    printf '  %-11s%s\n' favorite 'list, add, remove'
+    printf '  %-11s%s\n' all 'status, fetch, sync'
+    printf '  %-11s%s\n' clone '<url> [destination]'
+    printf '  %-11s%s\n' recent 'show recent repositories'
+    printf '  %-11s%s\n' help 'show help'
+    printf '  %-11s%s\n\n' version 'show version'
+
+    printf '%sOPTIONS%s\n' "$C_YELLOW" "$C_RESET"
+    printf '  %-26s%s\n' '-h, --help' 'Show help.'
+    printf '  %-26s%s\n' '-v, --version' 'Show version.'
+    printf '  %-26s%s\n' '-l, --list' 'List cached repositories.'
+    printf '  %-26s%s\n' '-r, --refresh' 'Rescan repository roots.'
+    printf '  %-26s%s\n' '--status' 'Repository status.'
+    printf '  %-26s%s\n' '--diff' 'Diff statistics.'
+    printf '  %-26s%s\n' '--fetch' 'Fetch/prune selected remote.'
+    printf '  %-26s%s\n' '--sync' 'Safely synchronize without commit.'
+    printf '  %-26s%s\n' '--pull' 'Pull with rebase.'
+    printf '  %-26s%s\n' '--no-push' 'Commit locally without push.'
+    printf '  %-26s%s\n\n' '--dry-run' 'Preview commit workflow.'
 }
 
 normalize_path() {
-  local p="$1"
-  if command -v realpath >/dev/null 2>&1; then
-    realpath "$p"
-  else
-    (cd "$p" 2>/dev/null && pwd -P)
-  fi
-}
-
-scan_repositories() {
-  local root dir
-  declare -A seen=()
-  FOUND_REPOS=()
-
-  for root in "${SEARCH_ROOTS[@]}"; do
-    root="${root/#\~/$HOME}"
-
-    if [[ ! -d "$root" ]]; then
-      warn "Search root does not exist: $root"
-      continue
+    if command -v realpath >/dev/null 2>&1; then
+        realpath "$1"
+        return
     fi
 
-    while IFS= read -r -d '' dir; do
-      if [[ -e "$dir/.git" ]]; then
-        local normalized
-        normalized="$(normalize_path "$dir")"
-        if [[ -n "$normalized" && -z "${seen[$normalized]+x}" ]]; then
-          seen["$normalized"]=1
-          FOUND_REPOS+=("$normalized")
-        fi
-      fi
-    done < <(
-      find "$root" \
-        \( \
-          -type d \
-          \( -name node_modules -o -name bin -o -name obj -o -name .venv -o -name venv -o -name target -o -name packages -o -name .idea -o -name .vscode \) \
-          -prune \
-        \) -o \
-        \( -type d -print0 \) 2>/dev/null
+    (
+        cd "$1" 2>/dev/null || exit 1
+        pwd -P
     )
-  done
+}
 
-  if [[ ${#FOUND_REPOS[@]} -gt 0 ]]; then
-    mapfile -t FOUND_REPOS < <(printf '%s\n' "${FOUND_REPOS[@]}" | sort -u)
-  fi
+repo_name() {
+    basename "$1"
+}
+
+is_ignored() {
+    local entry
+
+    for entry in "${IGNORED_DIRS[@]}"; do
+        if [[ "$1" == "$entry" ]]; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+scan_repos() {
+    FOUND_REPOS=()
+    declare -A seen=()
+
+    local root
+    local directory
+    local base
+    local normalized
+
+    for root in "${SEARCH_ROOTS[@]}"; do
+        if [[ ! -d "$root" ]]; then
+            warn "Search root does not exist: $root"
+            continue
+        fi
+
+        while IFS= read -r -d '' directory; do
+            base="$(basename "$directory")"
+
+            if is_ignored "$base"; then
+                continue
+            fi
+
+            if [[ ! -e "$directory/.git" ]]; then
+                continue
+            fi
+
+            normalized="$(normalize_path "$directory" 2>/dev/null || true)"
+
+            if [[ -n "$normalized" && -z "${seen[$normalized]+x}" ]]; then
+                seen[$normalized]=1
+                FOUND_REPOS+=("$normalized")
+            fi
+        done < <(find "$root" -type d -print0 2>/dev/null)
+    done
+
+    if [[ ${#FOUND_REPOS[@]} -gt 0 ]]; then
+        mapfile -t FOUND_REPOS < <(printf '%s\n' "${FOUND_REPOS[@]}" | sort -u)
+    fi
 }
 
 save_cache() {
-  ensure_dirs
-  : > "$CACHE_FILE"
-
-  local repo
-  for repo in "$@"; do
-    [[ -n "$repo" ]] || continue
-    printf '%s\n' "$repo" >> "$CACHE_FILE"
-  done
+    ensure_dirs
+    printf '%s\n' "$@" > "$CACHE_FILE"
 }
 
 load_cache() {
-  CACHED_REPOS=()
+    CACHED_REPOS=()
 
-  [[ -f "$CACHE_FILE" ]] || return 0
-
-  local repo
-  while IFS= read -r repo || [[ -n "$repo" ]]; do
-    [[ -z "$repo" ]] && continue
-    if [[ -d "$repo" && -e "$repo/.git" ]]; then
-      CACHED_REPOS+=("$repo")
-    fi
-  done < "$CACHE_FILE"
-}
-
-add_repo_to_cache() {
-  local path="$1"
-  path="${path/#\~/$HOME}"
-
-  if [[ ! -d "$path" ]]; then
-    err "Path does not exist: $path"
-    return 1
-  fi
-
-  local resolved
-  resolved="$(normalize_path "$path")"
-
-  if [[ ! -e "$resolved/.git" ]]; then
-    err "Not a Git repository: $resolved"
-    return 1
-  fi
-
-  load_cache
-  CACHED_REPOS+=("$resolved")
-  mapfile -t CACHED_REPOS < <(printf '%s\n' "${CACHED_REPOS[@]}" | sort -u)
-  save_cache "${CACHED_REPOS[@]}"
-
-  ok "Repository added to cache."
-  kv "Name" "$(basename "$resolved")"
-  kv "Path" "$resolved" "$C_GRAY"
-  dim "Cache: $CACHE_FILE"
-}
-
-# ============================================================
-# REPOSITORY SELECTION
-# ============================================================
-
-repo_name() {
-  basename "$1"
-}
-
-get_matches() {
-  local query="$1"
-  shift
-  local repos=("$@")
-  MATCHES=()
-  local repo name ql nl pl
-
-  ql="${query,,}"
-
-  for repo in "${repos[@]}"; do
-    name="$(repo_name "$repo")"
-    nl="${name,,}"
-    if [[ "$nl" == "$ql" ]]; then
-      MATCHES+=("$repo")
-    fi
-  done
-  [[ ${#MATCHES[@]} -gt 0 ]] && return
-
-  for repo in "${repos[@]}"; do
-    name="$(repo_name "$repo")"
-    nl="${name,,}"
-    if [[ "$nl" == "$ql"* ]]; then
-      MATCHES+=("$repo")
-    fi
-  done
-  [[ ${#MATCHES[@]} -gt 0 ]] && return
-
-  for repo in "${repos[@]}"; do
-    name="$(repo_name "$repo")"
-    nl="${name,,}"
-    if [[ "$nl" == *"$ql"* ]]; then
-      MATCHES+=("$repo")
-    fi
-  done
-  [[ ${#MATCHES[@]} -gt 0 ]] && return
-
-  for repo in "${repos[@]}"; do
-    pl="${repo,,}"
-    if [[ "$pl" == *"$ql"* ]]; then
-      MATCHES+=("$repo")
-    fi
-  done
-}
-
-select_repository() {
-  local query="$1"
-  shift
-  local repos=("$@")
-
-  if [[ -z "$query" ]]; then
-    read -r -p "Project: " query
-  fi
-
-  LAST_SEARCH="$query"
-  get_matches "$query" "${repos[@]}"
-
-  if [[ ${#MATCHES[@]} -eq 0 ]]; then
-    return 1
-  fi
-
-  if [[ ${#MATCHES[@]} -eq 1 ]]; then
-    SELECTED_REPO="${MATCHES[0]}"
-    return 0
-  fi
-
-  printf '\n'
-  warn "Multiple repositories found:"
-  printf '\n'
-
-  local i
-  for ((i=0; i<${#MATCHES[@]}; i++)); do
-    printf '%s[%d]%s %s\n' "$C_GRAY" "$((i+1))" "$C_RESET" "$(repo_name "${MATCHES[$i]}")"
-    dim "    ${MATCHES[$i]}"
-  done
-
-  printf '\n'
-  while true; do
-    read -r -p "Select repository: " choice
-    if [[ "$choice" =~ ^[0-9]+$ ]]; then
-      local idx=$((choice-1))
-      if (( idx >= 0 && idx < ${#MATCHES[@]} )); then
-        SELECTED_REPO="${MATCHES[$idx]}"
+    if [[ ! -f "$CACHE_FILE" ]]; then
         return 0
-      fi
     fi
-    err "Invalid selection."
-  done
+
+    local repository
+
+    while IFS= read -r repository || [[ -n "$repository" ]]; do
+        if [[ -d "$repository" && -e "$repository/.git" ]]; then
+            CACHED_REPOS+=("$repository")
+        fi
+    done < "$CACHE_FILE"
 }
 
-# ============================================================
-# GIT HELPERS
-# ============================================================
+add_cache() {
+    local repository_path="${1/#\~/$HOME}"
 
-git_path() {
-  git rev-parse --git-path "$1" 2>/dev/null
-}
-
-commit_hash() {
-  git rev-parse --short=8 HEAD 2>/dev/null || printf '-'
-}
-
-commit_subject() {
-  git log -1 --pretty=%s HEAD 2>/dev/null || printf '-'
-}
-
-has_ref() {
-  git show-ref --verify --quiet "$1"
-}
-
-status_lines() {
-  mapfile -t STATUS_LINES < <(git status --short 2>/dev/null)
-}
-
-show_changes() {
-  section "Changes"
-
-  if [[ ${#STATUS_LINES[@]} -eq 0 ]]; then
-    ok "  Clean working tree."
-    return
-  fi
-
-  local line code path label color
-  for line in "${STATUS_LINES[@]}"; do
-    code="${line:0:2}"
-    path="${line:3}"
-
-    label="$code"
-    color="$C_WHITE"
-
-    case "$code" in
-      '??'|'A '*|' A') label="Added"; color="$C_GREEN" ;;
-      'M '*|' M')      label="Modified"; color="$C_YELLOW" ;;
-      'D '*|' D')      label="Deleted"; color="$C_RED" ;;
-      'R '*|' R')      label="Renamed"; color="$C_CYAN" ;;
-      'C '*|' C')      label="Copied"; color="$C_CYAN" ;;
-      'U '*|' U'|'AA'|'DD') label="Conflict"; color="$C_RED" ;;
-    esac
-
-    printf '  %s[%-8s]%s %s\n' "$color" "$label" "$C_RESET" "$path"
-  done
-
-  dim ""
-  dim "  ${#STATUS_LINES[@]} changed item(s)"
-}
-
-# ============================================================
-# ARGUMENT PARSING
-# ============================================================
-
-SHOW_HELP=false
-SHOW_VERSION=false
-LIST_REPOS=false
-REFRESH=false
-ADD_REPO=false
-CACHED_ONLY=false
-STATUS_ONLY=false
-DIFF_ONLY=false
-RENORMALIZE=false
-FETCH_ONLY=false
-LOG_ONLY=false
-BRANCHES_ONLY=false
-REMOTES_ONLY=false
-PULL_ONLY=false
-DRY_RUN=false
-NO_PUSH=false
-
-POSITIONALS=()
-PARSE_OPTIONS=true
-
-while [[ $# -gt 0 ]]; do
-  token="$1"
-  shift
-
-  if $PARSE_OPTIONS && [[ "$token" == "--" ]]; then
-    PARSE_OPTIONS=false
-    continue
-  fi
-
-  if $PARSE_OPTIONS && [[ "$token" == -* ]]; then
-    case "$token" in
-      -h|--help) SHOW_HELP=true ;;
-      -v|--version) SHOW_VERSION=true ;;
-      -l|--list) LIST_REPOS=true ;;
-      -r|--refresh) REFRESH=true ;;
-      --add) ADD_REPO=true ;;
-      --cached) CACHED_ONLY=true ;;
-      -s|--status) STATUS_ONLY=true ;;
-      --diff) DIFF_ONLY=true ;;
-      --renormalize) RENORMALIZE=true ;;
-      --fetch) FETCH_ONLY=true ;;
-      --log) LOG_ONLY=true ;;
-      --branches) BRANCHES_ONLY=true ;;
-      --remotes) REMOTES_ONLY=true ;;
-      --pull) PULL_ONLY=true ;;
-      --dry-run) DRY_RUN=true ;;
-      --no-push) NO_PUSH=true ;;
-      *)
-        err "Unknown option: $token"
-        dim "Run 'gp --help' to see available options."
-        exit 2
-        ;;
-    esac
-  else
-    POSITIONALS+=("$token")
-  fi
-done
-
-if $SHOW_HELP; then
-  show_help
-  exit 0
-fi
-
-if $SHOW_VERSION; then
-  printf 'GPush %s\n' "$SCRIPT_VERSION"
-  exit 0
-fi
-
-modes=0
-$STATUS_ONLY && ((modes++))
-$DIFF_ONLY && ((modes++))
-$RENORMALIZE && ((modes++))
-$FETCH_ONLY && ((modes++))
-$LOG_ONLY && ((modes++))
-$BRANCHES_ONLY && ((modes++))
-$REMOTES_ONLY && ((modes++))
-$PULL_ONLY && ((modes++))
-if (( modes > 1 )); then
-  err "Options '--status', '--diff', and '--pull' cannot be combined."
-  exit 2
-fi
-
-if $PULL_ONLY && $DRY_RUN; then
-  err "Options '--pull' and '--dry-run' cannot be used together."
-  exit 2
-fi
-
-if $PULL_ONLY && $NO_PUSH; then
-  err "Options '--pull' and '--no-push' cannot be used together."
-  exit 2
-fi
-
-if $REFRESH && $CACHED_ONLY; then
-  err "Options '--refresh' and '--cached' cannot be used together."
-  exit 2
-fi
-
-if $ADD_REPO && { $REFRESH || $LIST_REPOS || $STATUS_ONLY || $DIFF_ONLY || $RENORMALIZE || $FETCH_ONLY || $LOG_ONLY || $BRANCHES_ONLY || $REMOTES_ONLY || $PULL_ONLY || $DRY_RUN || $NO_PUSH || $CACHED_ONLY; }; then
-  err "Option '--add' cannot be combined with other operation modes."
-  exit 2
-fi
-
-PROJECT="${POSITIONALS[0]:-}"
-COMMIT_MESSAGE=""
-if [[ ${#POSITIONALS[@]} -gt 1 ]]; then
-  COMMIT_MESSAGE="${POSITIONALS[*]:1}"
-fi
-
-# ============================================================
-# DEPENDENCIES / CONFIG
-# ============================================================
-
-banner
-
-if ! command -v git >/dev/null 2>&1; then
-  err "Git was not found in PATH."
-  exit 1
-fi
-
-load_search_roots
-
-# ============================================================
-# MANUAL CACHE ADD
-# ============================================================
-
-if $ADD_REPO; then
-  section "Add repository"
-  add_repo_to_cache "${PROJECT:-.}"
-  exit $?
-fi
-
-# ============================================================
-# CURRENT REPOSITORY FOR UTILITY MODES
-# ============================================================
-
-UTILITY_MODE=false
-if $RENORMALIZE || $FETCH_ONLY || $LOG_ONLY || $BRANCHES_ONLY || $REMOTES_ONLY; then
-  UTILITY_MODE=true
-fi
-
-DIRECT_REPOSITORY_PATH=""
-if $UTILITY_MODE && [[ -z "$PROJECT" ]]; then
-  DIRECT_REPOSITORY_PATH="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-fi
-
-# ============================================================
-# LOAD REPOSITORIES
-# ============================================================
-
-REPOS=()
-REPO_SOURCE="cache"
-
-if [[ -z "$DIRECT_REPOSITORY_PATH" ]] && ! $REFRESH; then
-  load_cache
-  if [[ ${#CACHED_REPOS[@]} -gt 0 ]]; then
-    info "Loading Git repositories from cache..."
-    ok "Loaded ${#CACHED_REPOS[@]} repositories."
-    dim "Cache: $CACHE_FILE"
-    REPOS=("${CACHED_REPOS[@]}")
-  elif $CACHED_ONLY; then
-    err "No usable repository cache found."
-    exit 1
-  fi
-fi
-
-if [[ -z "$DIRECT_REPOSITORY_PATH" && ${#REPOS[@]} -eq 0 ]]; then
-  REPO_SOURCE="scan"
-  info "Scanning Git repositories..."
-  scan_repositories
-
-  if [[ ${#FOUND_REPOS[@]} -eq 0 ]]; then
-    err "No Git repositories found."
-    exit 1
-  fi
-
-  save_cache "${FOUND_REPOS[@]}"
-  REPOS=("${FOUND_REPOS[@]}")
-  ok "Found ${#REPOS[@]} repositories."
-  dim "Cache: $CACHE_FILE"
-fi
-
-if $REFRESH && ! $LIST_REPOS && [[ -z "$PROJECT" ]]; then
-  section "Cache refreshed"
-  kv "Repositories" "${#REPOS[@]}" "$C_GREEN"
-  kv "Cache" "$CACHE_FILE" "$C_GRAY"
-  printf '\n'
-  exit 0
-fi
-
-if $LIST_REPOS; then
-  section "Repositories"
-
-  local_count=0
-  for repo in "${REPOS[@]}"; do
-    printf '  %-28s %s%s%s\n' "$(repo_name "$repo")" "$C_GRAY" "$repo" "$C_RESET"
-    ((local_count++))
-  done
-
-  printf '\n'
-  dim "Total: $local_count repositories"
-  printf '\n'
-  exit 0
-fi
-
-# ============================================================
-# SELECT REPOSITORY
-# ============================================================
-
-SELECTED_REPO=""
-LAST_SEARCH="$PROJECT"
-
-if [[ -n "$DIRECT_REPOSITORY_PATH" ]]; then
-  SELECTED_REPO="$DIRECT_REPOSITORY_PATH"
-elif ! select_repository "$PROJECT" "${REPOS[@]}"; then
-  if [[ "$REPO_SOURCE" == "cache" ]] && ! $CACHED_ONLY; then
-    printf '\n'
-    warn "Repository was not found in cache. Refreshing repository index..."
-    scan_repositories
-
-    if [[ ${#FOUND_REPOS[@]} -gt 0 ]]; then
-      save_cache "${FOUND_REPOS[@]}"
-      REPOS=("${FOUND_REPOS[@]}")
-      select_repository "$LAST_SEARCH" "${REPOS[@]}" || true
+    if [[ ! -d "$repository_path" ]]; then
+        err "Path does not exist: $repository_path"
+        return 1
     fi
-  fi
-fi
 
-if [[ -z "$SELECTED_REPO" ]]; then
-  err "Repository '${PROJECT}' not found."
-  exit 1
-fi
+    repository_path="$(normalize_path "$repository_path")" || return 1
 
-section "Repository"
-kv "Name" "$(repo_name "$SELECTED_REPO")"
-kv "Path" "$SELECTED_REPO" "$C_GRAY"
+    if [[ ! -e "$repository_path/.git" ]]; then
+        err "Not a Git repository: $repository_path"
+        return 1
+    fi
 
-cd "$SELECTED_REPO" || exit 1
+    load_cache
+    CACHED_REPOS+=("$repository_path")
+    mapfile -t CACHED_REPOS < <(printf '%s\n' "${CACHED_REPOS[@]}" | sort -u)
+    save_cache "${CACHED_REPOS[@]}"
+    ok "Repository added to cache."
+}
 
-# ============================================================
-# UTILITY MODES
-# ============================================================
+alias_resolve() {
+    local query="$1"
 
-if $RENORMALIZE; then
-  section "Renormalize"
+    if [[ ! -f "$ALIASES_FILE" ]]; then
+        printf '%s' "$query"
+        return
+    fi
 
-  mapfile -t MISSING_TRACKED < <(git ls-files --deleted 2>/dev/null)
+    local alias_name
+    local alias_path
 
-  if [[ ${#MISSING_TRACKED[@]} -gt 0 ]]; then
-    warn "Tracked files are missing from the working tree:"
+    while IFS='|' read -r alias_name alias_path; do
+        if [[ "${alias_name,,}" == "${query,,}" ]]; then
+            printf '%s' "$alias_path"
+            return
+        fi
+    done < "$ALIASES_FILE"
 
-    for path in "${MISSING_TRACKED[@]}"; do
-      printf '  %s%s%s
-' "$C_YELLOW" "$path" "$C_RESET"
+    printf '%s' "$query"
+}
+
+get_repos() {
+    REPOS=()
+    load_cache
+
+    if [[ ${#CACHED_REPOS[@]} -gt 0 ]]; then
+        REPOS=("${CACHED_REPOS[@]}")
+        return
+    fi
+
+    scan_repos
+    REPOS=("${FOUND_REPOS[@]}")
+
+    if [[ ${#REPOS[@]} -gt 0 ]]; then
+        save_cache "${REPOS[@]}"
+    fi
+}
+
+select_repo() {
+    local query
+    query="$(alias_resolve "$1")"
+
+    get_repos
+
+    if [[ ${#REPOS[@]} -eq 0 ]]; then
+        err "No Git repositories found."
+        return 1
+    fi
+
+    if [[ -z "$query" ]]; then
+        local current_repository
+        current_repository="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+
+        if [[ -n "$current_repository" ]]; then
+            SELECTED="$current_repository"
+            return 0
+        fi
+
+        read -r -p "Project: " query
+    fi
+
+    local -a exact_matches=()
+    local -a prefix_matches=()
+    local -a contains_matches=()
+    local -a repository_matches=()
+    local repository
+    local name
+
+    for repository in "${REPOS[@]}"; do
+        name="$(repo_name "$repository")"
+        if [[ "${name,,}" == "${query,,}" || "${repository,,}" == "${query,,}" ]]; then
+            exact_matches+=("$repository")
+        fi
     done
 
-    printf '
-'
-    dim "The Git index is out of sync with file moves/deletions."
-    dim "Stage those changes first, then run renormalize again:"
-    printf '
-'
-    printf '  %sgit add -A%s
-' "$C_GREEN" "$C_RESET"
-    printf '  %sgp --renormalize%s
-' "$C_GREEN" "$C_RESET"
-    printf '
-'
-    warn "GPush did not stage anything automatically."
-    exit 1
-  fi
-
-  info "[ADD] git add --renormalize ."
-
-  if ! git add --renormalize .; then
-    err "[RENORMALIZE] FAILED"
-    exit 1
-  fi
-
-  ok "[RENORMALIZE] OK"
-  status_lines
-  show_changes
-  separator
-  ok "Renormalize complete."
-  printf '
-'
-  exit 0
-fi
-
-if $FETCH_ONLY; then
-  section "Fetch"
-  mapfile -t UTILITY_REMOTES < <(git remote 2>/dev/null)
-
-  if [[ ${#UTILITY_REMOTES[@]} -eq 0 ]]; then
-    err "No Git remote is configured."
-    exit 1
-  fi
-
-  UTILITY_REMOTE="${UTILITY_REMOTES[0]}"
-  for r in "${UTILITY_REMOTES[@]}"; do
-    [[ "$r" == "origin" ]] && UTILITY_REMOTE="origin"
-  done
-
-  info "[FETCH] git fetch --prune $UTILITY_REMOTE"
-  git fetch --prune "$UTILITY_REMOTE" || {
-    err "[FETCH] FAILED"
-    exit 1
-  }
-
-  ok "[FETCH] OK"
-  printf '
-'
-  exit 0
-fi
-
-if $LOG_ONLY; then
-  section "Recent commits"
-  git log -10 --oneline --decorate --date=short
-  printf '
-'
-  exit 0
-fi
-
-if $BRANCHES_ONLY; then
-  section "Local branches"
-  git branch -vv
-
-  section "Remote branches"
-  git branch -r
-
-  printf '
-'
-  exit 0
-fi
-
-if $REMOTES_ONLY; then
-  section "Remotes"
-  git remote -v
-  printf '
-'
-  exit 0
-fi
-
-# ============================================================
-# PREFLIGHT
-# ============================================================
-
-section "Preflight"
-
-if [[ "$(git rev-parse --is-inside-work-tree 2>/dev/null)" != "true" ]]; then
-  err "  x Not a valid Git working tree."
-  exit 1
-fi
-ok "  + Git working tree"
-
-BRANCH="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
-if [[ -z "$BRANCH" ]]; then
-  err "  x Detached HEAD at $(commit_hash)"
-  warn "Checkout a branch before using GPush."
-  exit 1
-fi
-ok "  + Branch: $BRANCH"
-
-for state in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD; do
-  p="$(git_path "$state")"
-  if [[ -n "$p" && -e "$p" ]]; then
-    err "  x Git operation in progress: $state"
-    exit 1
-  fi
-done
-
-for state in rebase-merge rebase-apply; do
-  p="$(git_path "$state")"
-  if [[ -n "$p" && -e "$p" ]]; then
-    err "  x A rebase is currently in progress."
-    warn "Finish it with 'git rebase --continue' or cancel it with 'git rebase --abort'."
-    exit 1
-  fi
-done
-ok "  + No merge/rebase/cherry-pick/revert in progress"
-
-mapfile -t CONFLICTS < <(git diff --name-only --diff-filter=U 2>/dev/null)
-if [[ ${#CONFLICTS[@]} -gt 0 ]]; then
-  err "  x Unresolved conflicts detected:"
-  for c in "${CONFLICTS[@]}"; do
-    err "      $c"
-  done
-  exit 1
-fi
-ok "  + No unresolved conflicts"
-
-# ============================================================
-# REMOTE / UPSTREAM
-# ============================================================
-
-mapfile -t REMOTES < <(git remote 2>/dev/null)
-REMOTE=""
-
-for r in "${REMOTES[@]}"; do
-  [[ "$r" == "origin" ]] && REMOTE="origin"
-done
-if [[ -z "$REMOTE" && ${#REMOTES[@]} -gt 0 ]]; then
-  REMOTE="${REMOTES[0]}"
-fi
-
-UPSTREAM="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
-TRACKING_REMOTE="$(git config --get "branch.$BRANCH.remote" 2>/dev/null || true)"
-if [[ -n "$TRACKING_REMOTE" && "$TRACKING_REMOTE" != "." ]]; then
-  for r in "${REMOTES[@]}"; do
-    [[ "$r" == "$TRACKING_REMOTE" ]] && REMOTE="$TRACKING_REMOTE"
-  done
-fi
-
-REMOTE_URL="-"
-if [[ -n "$REMOTE" ]]; then
-  REMOTE_URL="$(git remote get-url "$REMOTE" 2>/dev/null || printf '-')"
-fi
-
-if [[ -z "$REMOTE" && "$NO_PUSH" == false && "$DRY_RUN" == false && "$DIFF_ONLY" == false && "$STATUS_ONLY" == false && "$PULL_ONLY" == false ]]; then
-  err "  x No Git remote is configured."
-  warn "Add a remote or use --no-push for a local-only commit."
-  exit 1
-fi
-
-if [[ -n "$REMOTE" ]]; then
-  ok "  + Remote: $REMOTE"
-else
-  warn "  ! No remote configured"
-fi
-
-if [[ -n "$UPSTREAM" ]]; then
-  ok "  + Upstream: $UPSTREAM"
-elif [[ -n "$REMOTE" ]]; then
-  warn "  ! No upstream configured; first successful push will create it."
-fi
-
-status_lines
-
-# ============================================================
-# FETCH + SYNC
-# ============================================================
-
-SYNC_CHECKED=false
-AHEAD=0
-BEHIND=0
-COMPARE_REF=""
-SYNC_LABEL="Not checked"
-SYNC_COLOR="$C_GRAY"
-
-REMOTE_BRANCH_REF=""
-REMOTE_BRANCH_EXISTS=false
-if [[ -n "$REMOTE" ]]; then
-  REMOTE_BRANCH_REF="$REMOTE/$BRANCH"
-  has_ref "refs/remotes/$REMOTE/$BRANCH" && REMOTE_BRANCH_EXISTS=true
-fi
-
-SHOULD_FETCH=false
-if [[ -n "$REMOTE" ]] && ! $NO_PUSH && ! $DRY_RUN && ! $DIFF_ONLY && ! $PULL_ONLY; then
-  SHOULD_FETCH=true
-fi
-
-if $SHOULD_FETCH; then
-  section "Remote check"
-  info "[FETCH] git fetch --prune $REMOTE"
-
-  if git fetch --prune "$REMOTE"; then
-    ok "[FETCH] OK"
-    if [[ -z "$UPSTREAM" ]]; then
-      has_ref "refs/remotes/$REMOTE/$BRANCH" && REMOTE_BRANCH_EXISTS=true
+    if [[ ${#exact_matches[@]} -eq 1 ]]; then
+        SELECTED="${exact_matches[0]}"
+        return 0
     fi
-  else
-    err "[FETCH] FAILED"
-    if $STATUS_ONLY; then
-      warn "Remote could not be refreshed. Cached refs will be used when available."
+
+    for repository in "${REPOS[@]}"; do
+        name="$(repo_name "$repository")"
+        if [[ "${name,,}" == "${query,,}"* ]]; then
+            prefix_matches+=("$repository")
+        fi
+    done
+
+    repository_matches=("${prefix_matches[@]}")
+
+    if [[ ${#repository_matches[@]} -eq 0 ]]; then
+        for repository in "${REPOS[@]}"; do
+            name="$(repo_name "$repository")"
+            if [[ "${name,,}" == *"${query,,}"* || "${repository,,}" == *"${query,,}"* ]]; then
+                contains_matches+=("$repository")
+            fi
+        done
+
+        repository_matches=("${contains_matches[@]}")
+    fi
+
+    if [[ ${#repository_matches[@]} -eq 1 ]]; then
+        SELECTED="${repository_matches[0]}"
+        return 0
+    fi
+
+    if [[ ${#repository_matches[@]} -eq 0 ]]; then
+        err "Repository '$query' not found."
+        return 1
+    fi
+
+    warn "Multiple repositories found:"
+
+    local index
+    for ((index = 0; index < ${#repository_matches[@]}; index++)); do
+        printf '  [%d] %s  %s%s%s\n' \
+            "$((index + 1))" \
+            "$(repo_name "${repository_matches[$index]}")" \
+            "$C_GRAY" \
+            "${repository_matches[$index]}" \
+            "$C_RESET"
+    done
+
+    local selection
+    while true; do
+        read -r -p "Select repository: " selection
+
+        if [[ "$selection" =~ ^[0-9]+$ ]] && \
+            ((selection >= 1 && selection <= ${#repository_matches[@]})); then
+            SELECTED="${repository_matches[$((selection - 1))]}"
+            return 0
+        fi
+    done
+}
+
+remember_recent() {
+    ensure_dirs
+
+    local repository_path="$1"
+    local temp_file="$RECENT_FILE.tmp"
+
+    {
+        printf '%s|%s\n' "$(date -Iseconds)" "$repository_path"
+
+        if [[ -f "$RECENT_FILE" ]]; then
+            grep -Fv "|$repository_path" "$RECENT_FILE" | head -n 14 || true
+        fi
+    } > "$temp_file"
+
+    mv "$temp_file" "$RECENT_FILE"
+}
+
+protected_branch() {
+    local branch="$1"
+    local pattern
+
+    for pattern in "${PROTECTED_BRANCHES[@]}"; do
+        case "$branch" in
+            $pattern)
+                return 0
+                ;;
+        esac
+    done
+
+    return 1
+}
+
+current_remote() {
+    local -a remote_names=()
+    mapfile -t remote_names < <(git remote 2>/dev/null)
+
+    if [[ ${#remote_names[@]} -eq 0 ]]; then
+        return 1
+    fi
+
+    local remote_name
+    for remote_name in "${remote_names[@]}"; do
+        if [[ "$remote_name" == "$DEFAULT_REMOTE" ]]; then
+            printf '%s' "$remote_name"
+            return
+        fi
+    done
+
+    printf '%s' "${remote_names[0]}"
+}
+
+repo_status() {
+    local repository_path="$1"
+
+    cd "$repository_path" || return 1
+
+    section "Repository"
+    kv Name "$(repo_name "$repository_path")"
+    kv Path "$repository_path" "$C_GRAY"
+
+    local branch
+    local remote_name
+    local upstream
+    local counts
+    local ahead=0
+    local behind=0
+    local dirty_count
+    local sync_state="Not checked"
+    local changes_color="$C_GREEN"
+
+    branch="$(git branch --show-current 2>/dev/null)"
+    if [[ -z "$branch" ]]; then
+        branch="(detached)"
+    fi
+
+    remote_name="$(current_remote 2>/dev/null || true)"
+    upstream="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+    dirty_count="$(git status --porcelain | wc -l | tr -d ' ')"
+
+    if [[ -n "$upstream" ]]; then
+        counts="$(git rev-list --left-right --count "HEAD...$upstream" 2>/dev/null || true)"
+        read -r ahead behind <<< "$counts"
+
+        if [[ "${ahead:-0}" == "0" && "${behind:-0}" == "0" ]]; then
+            sync_state="Up to date"
+        else
+            sync_state="${ahead:-0} ahead / ${behind:-0} behind"
+        fi
+    fi
+
+    if [[ "$dirty_count" != "0" ]]; then
+        changes_color="$C_YELLOW"
+    fi
+
+    section "Git"
+    kv Branch "$branch" "$C_MAGENTA"
+    kv Remote "${remote_name:--}"
+    kv Upstream "${upstream:--}"
+    kv Sync "$sync_state"
+    kv Changes "$dirty_count" "$changes_color"
+}
+
+safe_sync() {
+    local repository_path="$1"
+    local allow_protected="${2:-false}"
+
+    cd "$repository_path" || return 1
+
+    if [[ -n "$(git status --porcelain)" ]]; then
+        warn "SKIP dirty: $(repo_name "$repository_path")"
+        return 2
+    fi
+
+    local branch
+    local remote_name
+    local upstream
+    local counts
+    local ahead
+    local behind
+
+    branch="$(git branch --show-current)"
+    if [[ -z "$branch" ]]; then
+        warn "SKIP detached: $(repo_name "$repository_path")"
+        return 2
+    fi
+
+    remote_name="$(current_remote 2>/dev/null || true)"
+    if [[ -z "$remote_name" ]]; then
+        warn "SKIP no remote: $(repo_name "$repository_path")"
+        return 2
+    fi
+
+    git fetch --prune "$remote_name" || return 1
+    upstream="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+
+    if [[ -z "$upstream" ]]; then
+        if protected_branch "$branch" && [[ "$allow_protected" != "true" ]]; then
+            warn "PROTECTED skip: $(repo_name "$repository_path")/$branch"
+            return 2
+        fi
+
+        if git push -u "$remote_name" "$branch"; then
+            ok "PUSHED $(repo_name "$repository_path")/$branch"
+            return 0
+        fi
+
+        return 1
+    fi
+
+    counts="$(git rev-list --left-right --count "HEAD...$upstream")"
+    read -r ahead behind <<< "$counts"
+
+    if ((ahead > 0 && behind > 0)); then
+        warn "MANUAL diverged: $(repo_name "$repository_path")"
+        return 2
+    fi
+
+    if ((behind > 0)); then
+        if git merge --ff-only "$upstream"; then
+            ok "SYNCED $(repo_name "$repository_path")"
+            return 0
+        fi
+
+        return 1
+    fi
+
+    if ((ahead > 0)); then
+        if protected_branch "$branch" && [[ "$allow_protected" != "true" ]]; then
+            warn "PROTECTED skip: $(repo_name "$repository_path")/$branch"
+            return 2
+        fi
+
+        if git push; then
+            ok "PUSHED $(repo_name "$repository_path")"
+            return 0
+        fi
+
+        return 1
+    fi
+
+    ok "OK $(repo_name "$repository_path")"
+    return 0
+}
+
+classic_commit() {
+    local repository_path="$1"
+    local commit_message="$2"
+    local dry_run="${3:-false}"
+    local no_push="${4:-false}"
+
+    cd "$repository_path" || return 1
+
+    banner
+    repo_status "$repository_path"
+
+    if [[ -z "$(git status --porcelain)" ]]; then
+        ok "Nothing to commit."
+        return 0
+    fi
+
+    if [[ -z "$commit_message" ]]; then
+        read -r -p "Commit message: " commit_message
+    fi
+
+    if [[ -z "$commit_message" ]]; then
+        err "Commit message cannot be empty."
+        return 2
+    fi
+
+    if [[ "$dry_run" == "true" ]]; then
+        section "Dry run"
+        info "[ADD] git add -A"
+        info "[COMMIT] git commit -m '$commit_message'"
+
+        if [[ "$no_push" == "false" ]]; then
+            info "[PUSH] git push"
+        fi
+
+        return 0
+    fi
+
+    git add -A || return 1
+    git commit -m "$commit_message" || return 1
+
+    if [[ "$no_push" == "true" ]]; then
+        ok "Done."
+        return 0
+    fi
+
+    local branch
+    local remote_name
+    local upstream
+
+    branch="$(git branch --show-current)"
+    remote_name="$(current_remote 2>/dev/null || true)"
+
+    if [[ -z "$remote_name" ]]; then
+        err "No remote configured."
+        return 1
+    fi
+
+    git fetch --prune "$remote_name" || return 1
+    upstream="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+
+    if [[ -z "$upstream" ]]; then
+        git push -u "$remote_name" "$branch" || return 1
     else
-      err "Remote state could not be verified."
-      warn "GPush will stop before creating a commit. Use --no-push for a local-only commit."
-      exit 1
+        git pull --rebase || return 1
+        git push || return 1
     fi
-  fi
-fi
 
-if [[ -n "$UPSTREAM" ]]; then
-  COMPARE_REF="$UPSTREAM"
-elif [[ -n "$REMOTE" ]] && $REMOTE_BRANCH_EXISTS; then
-  COMPARE_REF="$REMOTE_BRANCH_REF"
-fi
+    ok "Done."
+}
 
-if [[ -n "$COMPARE_REF" ]]; then
-  COUNTS="$(git rev-list --left-right --count "HEAD...$COMPARE_REF" 2>/dev/null || true)"
-  if [[ "$COUNTS" =~ ^([0-9]+)[[:space:]]+([0-9]+)$ ]]; then
-    AHEAD="${BASH_REMATCH[1]}"
-    BEHIND="${BASH_REMATCH[2]}"
-    SYNC_CHECKED=true
-  fi
-elif [[ -n "$REMOTE" ]] && ! $REMOTE_BRANCH_EXISTS; then
-  SYNC_CHECKED=true
-  SYNC_LABEL="New remote branch"
-  SYNC_COLOR="$C_YELLOW"
-fi
+translate_legacy() {
+    LEGACY_DRY=false
+    LEGACY_NOPUSH=false
+    local -a translated_args=()
 
-if $SYNC_CHECKED && [[ "$SYNC_LABEL" != "New remote branch" ]]; then
-  if (( AHEAD == 0 && BEHIND == 0 )); then
-    SYNC_LABEL="Up to date"
-    SYNC_COLOR="$C_GREEN"
-  elif (( AHEAD > 0 && BEHIND == 0 )); then
-    SYNC_LABEL="$AHEAD commit(s) ahead"
-    SYNC_COLOR="$C_YELLOW"
-  elif (( AHEAD == 0 && BEHIND > 0 )); then
-    SYNC_LABEL="$BEHIND commit(s) behind"
-    SYNC_COLOR="$C_YELLOW"
-  else
-    SYNC_LABEL="$AHEAD ahead / $BEHIND behind"
-    SYNC_COLOR="$C_RED"
-  fi
-fi
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --help|-h)
+                translated_args=(help)
+                shift
+                break
+                ;;
+            --version|-v)
+                translated_args=(version)
+                shift
+                break
+                ;;
+            --list|-l)
+                translated_args=(cache list)
+                shift
+                break
+                ;;
+            --refresh|-r)
+                translated_args=(cache refresh)
+                shift
+                break
+                ;;
+            --status|-s)
+                translated_args=(repo status)
+                shift
+                translated_args+=("$@")
+                break
+                ;;
+            --diff)
+                translated_args=(repo diff)
+                shift
+                translated_args+=("$@")
+                break
+                ;;
+            --fetch)
+                translated_args=(repo fetch)
+                shift
+                translated_args+=("$@")
+                break
+                ;;
+            --log)
+                translated_args=(repo log)
+                shift
+                translated_args+=("$@")
+                break
+                ;;
+            --branches)
+                translated_args=(branch list)
+                shift
+                translated_args+=("$@")
+                break
+                ;;
+            --remotes)
+                translated_args=(remote list)
+                shift
+                translated_args+=("$@")
+                break
+                ;;
+            --pull)
+                translated_args=(repo pull)
+                shift
+                translated_args+=("$@")
+                break
+                ;;
+            --sync)
+                translated_args=(repo sync)
+                shift
+                translated_args+=("$@")
+                break
+                ;;
+            --stash)
+                translated_args=(stash push)
+                shift
+                translated_args+=("$@")
+                break
+                ;;
+            --stash-list)
+                translated_args=(stash list)
+                shift
+                translated_args+=("$@")
+                break
+                ;;
+            --stash-pop)
+                translated_args=(stash pop)
+                shift
+                translated_args+=("$@")
+                break
+                ;;
+            --tags)
+                translated_args=(tag list)
+                shift
+                translated_args+=("$@")
+                break
+                ;;
+            --tag)
+                translated_args=(tag create)
+                shift
+                translated_args+=("$@")
+                break
+                ;;
+            --tag-push)
+                translated_args=(tag push)
+                shift
+                translated_args+=("$@")
+                break
+                ;;
+            --tag-delete)
+                translated_args=(tag delete)
+                shift
+                translated_args+=("$@")
+                break
+                ;;
+            --release)
+                translated_args=(tag release)
+                shift
+                translated_args+=("$@")
+                break
+                ;;
+            --open)
+                translated_args=(repo open)
+                shift
+                translated_args+=("$@")
+                break
+                ;;
+            --clone)
+                translated_args=(clone)
+                shift
+                translated_args+=("$@")
+                break
+                ;;
+            --recent)
+                translated_args=(recent)
+                shift
+                break
+                ;;
+            --aliases)
+                translated_args=(alias list)
+                shift
+                break
+                ;;
+            --favorites)
+                translated_args=(favorite list)
+                shift
+                break
+                ;;
+            --doctor)
+                translated_args=(config doctor)
+                shift
+                break
+                ;;
+            --config)
+                translated_args=(config show)
+                shift
+                break
+                ;;
+            --config-path)
+                translated_args=(config path)
+                shift
+                break
+                ;;
+            --all)
+                translated_args=(all)
+                shift
+                translated_args+=("$@")
+                break
+                ;;
+            --dry-run)
+                LEGACY_DRY=true
+                shift
+                ;;
+            --no-push)
+                LEGACY_NOPUSH=true
+                shift
+                ;;
+            *)
+                translated_args+=("$1")
+                shift
+                ;;
+        esac
+    done
 
-section "Git"
-kv "Branch" "$BRANCH" "$C_MAGENTA"
-kv "Remote" "${REMOTE:--}"
-if [[ -n "$UPSTREAM" ]]; then
-  kv "Upstream" "$UPSTREAM"
-elif $REMOTE_BRANCH_EXISTS; then
-  kv "Upstream" "$REMOTE_BRANCH_REF (not tracking)"
-else
-  kv "Upstream" "-"
-fi
-kv "URL" "$REMOTE_URL" "$C_GRAY"
-kv "Sync" "$SYNC_LABEL" "$SYNC_COLOR"
-kv "HEAD" "$(commit_hash)" "$C_GRAY"
+    TRANSLATED=("${translated_args[@]}")
+}
 
-show_changes
+show_config() {
+    banner
+    section "Configuration"
+    kv Path "$CONFIG_FILE" "$C_GRAY"
+    kv Remote "$DEFAULT_REMOTE"
+    kv "Large files" "$LARGE_FILE_MB MB"
+    section "Search roots"
+    printf '  %s\n' "${SEARCH_ROOTS[@]}"
+}
 
-# ============================================================
-# STATUS / DIFF / PULL
-# ============================================================
+run_doctor() {
+    banner
+    section "Doctor"
 
-if $STATUS_ONLY; then
-  separator
-  ok "Status check complete."
-  printf '\n'
-  exit 0
-fi
-
-if $DIFF_ONLY; then
-  section "Diff summary"
-
-  UNSTAGED="$(git diff --stat 2>/dev/null || true)"
-  STAGED="$(git diff --cached --stat 2>/dev/null || true)"
-
-  if [[ -n "$UNSTAGED" ]]; then
-    printf '  %sUnstaged%s\n' "$C_YELLOW" "$C_RESET"
-    printf '    %s\n' "${UNSTAGED//$'\n'/$'\n    '}"
-  fi
-
-  if [[ -n "$STAGED" ]]; then
-    [[ -n "$UNSTAGED" ]] && printf '\n'
-    printf '  %sStaged%s\n' "$C_GREEN" "$C_RESET"
-    printf '    %s\n' "${STAGED//$'\n'/$'\n    '}"
-  fi
-
-  if [[ -z "$UNSTAGED" && -z "$STAGED" ]]; then
-    if [[ ${#STATUS_LINES[@]} -gt 0 ]]; then
-      dim "  Only untracked files are present; Git has no diff statistics for them yet."
+    if command -v git >/dev/null 2>&1; then
+        ok "  [OK] Git"
     else
-      ok "  No diff."
+        err "  [FAIL] Git"
     fi
-  fi
 
-  separator
-  ok "Diff check complete."
-  printf '\n'
-  exit 0
-fi
-
-if $PULL_ONLY; then
-  if [[ -z "$REMOTE" ]]; then
-    err "No remote is configured."
-    exit 1
-  fi
-
-  if [[ ${#STATUS_LINES[@]} -gt 0 ]]; then
-    err "Pull-only mode requires a clean working tree."
-    exit 1
-  fi
-
-  section "Pull"
-
-  if [[ -n "$UPSTREAM" ]]; then
-    info "[PULL] git pull --rebase"
-    git pull --rebase || exit 1
-  else
-    info "[PULL] git pull --rebase $REMOTE $BRANCH"
-    git pull --rebase "$REMOTE" "$BRANCH" || exit 1
-  fi
-
-  ok "[PULL] OK"
-  separator
-  ok "Complete."
-  printf '\n'
-  exit 0
-fi
-
-# ============================================================
-# COMMIT MESSAGE / DRY RUN
-# ============================================================
-
-if [[ ${#STATUS_LINES[@]} -gt 0 && -z "$COMMIT_MESSAGE" ]] && ! $DRY_RUN; then
-  printf '\n'
-  read -r -p "Commit message: " COMMIT_MESSAGE
-fi
-
-if [[ ${#STATUS_LINES[@]} -gt 0 && -z "$COMMIT_MESSAGE" ]] && ! $DRY_RUN; then
-  err "Commit message cannot be empty."
-  exit 1
-fi
-
-if $DRY_RUN; then
-  section "Dry run"
-  warn "No Git state will be changed."
-
-  if [[ ${#STATUS_LINES[@]} -gt 0 ]]; then
-    dim "  Would run: git add ."
-    if [[ -n "$COMMIT_MESSAGE" ]]; then
-      dim "  Would commit: $COMMIT_MESSAGE"
+    if [[ -d "$CONFIG_DIR" ]]; then
+        ok "  [OK] Config directory"
     else
-      dim "  Would ask for a commit message."
+        warn "  [WARN] Config directory"
     fi
-  else
-    dim "  No local commit would be created."
-  fi
 
-  if $NO_PUSH; then
-    dim "  Push is disabled by --no-push."
-  elif [[ -n "$REMOTE" ]]; then
-    if [[ -n "$UPSTREAM" ]]; then
-      dim "  Would verify/sync against: $UPSTREAM"
-      dim "  Would run: git push"
+    local existing_roots=0
+    local root
+
+    for root in "${SEARCH_ROOTS[@]}"; do
+        if [[ -d "$root" ]]; then
+            ((existing_roots += 1))
+        fi
+    done
+
+    if [[ $existing_roots -gt 0 ]]; then
+        ok "  [OK] Search roots: $existing_roots"
     else
-      dim "  Would verify remote branch state."
-      dim "  Would run: git push -u $REMOTE $BRANCH"
+        err "  [FAIL] No search roots exist"
     fi
-  fi
+}
 
-  separator
-  ok "Dry run complete."
-  printf '\n'
-  exit 0
-fi
+handle_config() {
+    local action="${1:-show}"
 
-# ============================================================
-# ADD + COMMIT
-# ============================================================
+    case "$action" in
+        show)
+            show_config
+            ;;
+        path)
+            printf '%s\n' "$CONFIG_FILE"
+            ;;
+        doctor)
+            run_doctor
+            ;;
+        *)
+            err "Unknown config command: $action"
+            return 2
+            ;;
+    esac
+}
 
-COMMIT_CREATED=false
-CREATED_COMMIT_HASH="-"
-CREATED_COMMIT_MESSAGE="-"
+handle_cache() {
+    local action="${1:-list}"
+    shift || true
 
-if [[ ${#STATUS_LINES[@]} -gt 0 ]]; then
-  section "Commit"
-  info "[ADD] git add ."
+    case "$action" in
+        list)
+            get_repos
+            banner
+            section "Repositories"
 
-  git add . || {
-    err "[ADD] FAILED"
-    exit 1
-  }
-  ok "[ADD] OK"
+            local repository
+            for repository in "${REPOS[@]}"; do
+                printf '  %-28s %s%s%s\n' \
+                    "$(repo_name "$repository")" \
+                    "$C_GRAY" "$repository" "$C_RESET"
+            done
+            ;;
+        refresh)
+            scan_repos
+            save_cache "${FOUND_REPOS[@]}"
+            ok "Found ${#FOUND_REPOS[@]} repositories."
+            ;;
+        add)
+            add_cache "${1:-.}"
+            ;;
+        *)
+            err "Unknown cache command: $action"
+            return 2
+            ;;
+    esac
+}
 
-  printf '\n'
-  info "[COMMIT] $COMMIT_MESSAGE"
+handle_recent() {
+    banner
+    section "Recent repositories"
 
-  git commit -m "$COMMIT_MESSAGE" || {
-    err "[COMMIT] FAILED"
-    exit 1
-  }
-
-  COMMIT_CREATED=true
-  CREATED_COMMIT_HASH="$(commit_hash)"
-  CREATED_COMMIT_MESSAGE="$COMMIT_MESSAGE"
-  ok "[COMMIT] OK ($CREATED_COMMIT_HASH)"
-fi
-
-if $NO_PUSH; then
-  separator
-  ok "GPush completed locally."
-  kv "Repository" "$(repo_name "$SELECTED_REPO")"
-  kv "Branch" "$BRANCH" "$C_MAGENTA"
-  if $COMMIT_CREATED; then
-    kv "Commit" "$CREATED_COMMIT_HASH"
-  else
-    kv "Commit" "No new commit"
-  fi
-  warn "  Push skipped because --no-push was specified."
-  printf '\n'
-  exit 0
-fi
-
-# ============================================================
-# SYNC BEFORE PUSH
-# ============================================================
-
-if [[ -n "$COMPARE_REF" ]]; then
-  COUNTS="$(git rev-list --left-right --count "HEAD...$COMPARE_REF" 2>/dev/null || true)"
-  if [[ "$COUNTS" =~ ^([0-9]+)[[:space:]]+([0-9]+)$ ]]; then
-    AHEAD="${BASH_REMATCH[1]}"
-    BEHIND="${BASH_REMATCH[2]}"
-  fi
-fi
-
-if (( BEHIND > 0 )); then
-  section "Sync"
-  warn "Remote contains $BEHIND newer commit(s)."
-
-  info "[REBASE] git rebase $COMPARE_REF"
-  if ! git rebase "$COMPARE_REF"; then
-    err "[REBASE] FAILED"
-    warn "Resolve the conflict manually."
-    printf '  git add .\n'
-    printf '  git rebase --continue\n'
-    printf '  git rebase --abort\n'
-    exit 1
-  fi
-
-  ok "[REBASE] OK"
-  $COMMIT_CREATED && CREATED_COMMIT_HASH="$(commit_hash)"
-fi
-
-# ============================================================
-# PUSH
-# ============================================================
-
-section "Push"
-
-PUSH_ARGS=(push)
-PUSH_DESC="git push"
-
-if [[ -z "$UPSTREAM" ]]; then
-  PUSH_ARGS=(push -u "$REMOTE" "$BRANCH")
-  PUSH_DESC="git push -u $REMOTE $BRANCH"
-fi
-
-info "[PUSH] $PUSH_DESC"
-
-if ! PUSH_OUTPUT="$(git "${PUSH_ARGS[@]}" 2>&1)"; then
-  printf '%s\n' "$PUSH_OUTPUT"
-  err "[PUSH] FAILED"
-
-  if grep -Eqi 'non-fast-forward|fetch first|remote contains work' <<< "$PUSH_OUTPUT"; then
-    warn "The remote changed after the pre-push fetch."
-    info "[FETCH] git fetch --prune $REMOTE"
-
-    git fetch --prune "$REMOTE" || exit 1
-    ok "[FETCH] OK"
-
-    RETRY_TARGET="$UPSTREAM"
-    if [[ -z "$RETRY_TARGET" ]] && has_ref "refs/remotes/$REMOTE/$BRANCH"; then
-      RETRY_TARGET="$REMOTE/$BRANCH"
-    fi
-
-    if [[ -n "$RETRY_TARGET" ]]; then
-      info "[REBASE] git rebase $RETRY_TARGET"
-      git rebase "$RETRY_TARGET" || {
-        err "[REBASE] FAILED"
-        exit 1
-      }
-      ok "[REBASE] OK"
-    fi
-
-    info "[PUSH] Trying again..."
-    git "${PUSH_ARGS[@]}" || {
-      err "[PUSH] FAILED AGAIN"
-      exit 1
-    }
-  else
-    err "Push failed for a reason that GPush will not try to repair automatically."
-    exit 1
-  fi
-fi
-
-ok "[PUSH] OK"
-
-# ============================================================
-# SUMMARY
-# ============================================================
-
-FINAL_UPSTREAM="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
-FINAL_SYNC="Unknown"
-FINAL_SYNC_COLOR="$C_GRAY"
-
-if [[ -n "$FINAL_UPSTREAM" ]]; then
-  COUNTS="$(git rev-list --left-right --count "HEAD...$FINAL_UPSTREAM" 2>/dev/null || true)"
-  if [[ "$COUNTS" =~ ^([0-9]+)[[:space:]]+([0-9]+)$ ]]; then
-    FA="${BASH_REMATCH[1]}"
-    FB="${BASH_REMATCH[2]}"
-    if (( FA == 0 && FB == 0 )); then
-      FINAL_SYNC="Up to date"
-      FINAL_SYNC_COLOR="$C_GREEN"
+    if [[ -f "$RECENT_FILE" ]]; then
+        cut -d'|' -f2- "$RECENT_FILE"
     else
-      FINAL_SYNC="$FA ahead / $FB behind"
-      FINAL_SYNC_COLOR="$C_YELLOW"
+        dim "  No recent repositories yet."
     fi
-  fi
-fi
+}
 
-status_lines
+handle_clone() {
+    local clone_url="${1:-}"
+    local destination="${2:-}"
 
-separator
-ok "GPush completed"
-printf '\n'
-kv "Repository" "$(repo_name "$SELECTED_REPO")"
-kv "Branch" "$BRANCH" "$C_MAGENTA"
-kv "Upstream" "${FINAL_UPSTREAM:--}"
-if $COMMIT_CREATED; then
-  kv "Commit" "$CREATED_COMMIT_HASH" "$C_GRAY"
-  kv "Message" "$CREATED_COMMIT_MESSAGE"
-else
-  kv "Commit" "$(commit_hash)" "$C_GRAY"
-  kv "Message" "$(commit_subject)" "$C_GRAY"
-fi
-kv "Sync" "$FINAL_SYNC" "$FINAL_SYNC_COLOR"
+    if [[ -z "$clone_url" ]]; then
+        err "Clone requires URL."
+        return 2
+    fi
 
-if [[ ${#STATUS_LINES[@]} -eq 0 ]]; then
-  kv "Working tree" "Clean" "$C_GREEN"
-else
-  kv "Working tree" "${#STATUS_LINES[@]} local change(s) remain" "$C_YELLOW"
-fi
+    if [[ -z "$destination" ]]; then
+        destination="${SEARCH_ROOTS[0]}/$(basename "${clone_url%.git}")"
+    fi
 
-printf '\n'
+    destination="${destination/#\~/$HOME}"
+
+    git clone "$clone_url" "$destination" || return 1
+    add_cache "$destination" || return 1
+    remember_recent "$destination"
+}
+
+handle_alias() {
+    local action="${1:-list}"
+    shift || true
+    ensure_dirs
+
+    case "$action" in
+        list)
+            banner
+            section "Aliases"
+
+            if [[ -s "$ALIASES_FILE" ]]; then
+                if command -v column >/dev/null 2>&1; then
+                    column -t -s'|' "$ALIASES_FILE"
+                else
+                    cat "$ALIASES_FILE"
+                fi
+            else
+                dim "  No aliases configured."
+            fi
+            ;;
+        set)
+            local alias_name="${1:-}"
+            local project="${2:-}"
+
+            if [[ -z "$alias_name" || -z "$project" ]]; then
+                err "Use: gp alias set <alias> <project>"
+                return 2
+            fi
+
+            select_repo "$project" || return 1
+
+            if [[ -f "$ALIASES_FILE" ]]; then
+                awk -F'|' -v alias_name="$alias_name" \
+                    'tolower($1) != tolower(alias_name)' "$ALIASES_FILE" > "$ALIASES_FILE.tmp"
+            else
+                : > "$ALIASES_FILE.tmp"
+            fi
+
+            printf '%s|%s\n' "$alias_name" "$SELECTED" >> "$ALIASES_FILE.tmp"
+            mv "$ALIASES_FILE.tmp" "$ALIASES_FILE"
+            ok "Alias '$alias_name' set."
+            ;;
+        remove)
+            local alias_name="${1:-}"
+
+            if [[ ! -f "$ALIASES_FILE" ]]; then
+                return 0
+            fi
+
+            awk -F'|' -v alias_name="$alias_name" \
+                'tolower($1) != tolower(alias_name)' "$ALIASES_FILE" > "$ALIASES_FILE.tmp"
+            mv "$ALIASES_FILE.tmp" "$ALIASES_FILE"
+            ;;
+        *)
+            err "Unknown alias command: $action"
+            return 2
+            ;;
+    esac
+}
+
+handle_favorite() {
+    local action="${1:-list}"
+    shift || true
+    ensure_dirs
+
+    case "$action" in
+        list)
+            banner
+            section "Favorites"
+
+            if [[ -s "$FAVORITES_FILE" ]]; then
+                cat "$FAVORITES_FILE"
+            else
+                dim "  No favorites."
+            fi
+            ;;
+        add)
+            select_repo "${1:-}" || return 1
+
+            {
+                if [[ -f "$FAVORITES_FILE" ]]; then
+                    cat "$FAVORITES_FILE"
+                fi
+                printf '%s\n' "$SELECTED"
+            } | sort -u > "$FAVORITES_FILE.tmp"
+
+            mv "$FAVORITES_FILE.tmp" "$FAVORITES_FILE"
+            ok "Added to favorites."
+            ;;
+        remove)
+            select_repo "${1:-}" || return 1
+
+            if [[ -f "$FAVORITES_FILE" ]]; then
+                grep -Fvx "$SELECTED" "$FAVORITES_FILE" > "$FAVORITES_FILE.tmp" || true
+                mv "$FAVORITES_FILE.tmp" "$FAVORITES_FILE"
+            fi
+            ;;
+        *)
+            err "Unknown favorite command: $action"
+            return 2
+            ;;
+    esac
+}
+
+handle_all() {
+    local action="${1:-status}"
+    local allow_protected=false
+
+    if [[ "${2:-}" == "--allow-protected" ]]; then
+        allow_protected=true
+    fi
+
+    get_repos
+    banner
+    section "All repositories"
+
+    local repository
+    local remote_name
+
+    for repository in "${REPOS[@]}"; do
+        case "$action" in
+            status)
+                printf '\n%s%s%s\n' "$C_WHITE" "$(repo_name "$repository")" "$C_RESET"
+                repo_status "$repository"
+                ;;
+            fetch)
+                if ! cd "$repository"; then
+                    warn "Fetch failed $(repo_name "$repository")"
+                    continue
+                fi
+
+                remote_name="$(current_remote 2>/dev/null || true)"
+
+                if [[ -n "$remote_name" ]] && git fetch --prune "$remote_name"; then
+                    ok "Fetched $(repo_name "$repository")"
+                else
+                    warn "Fetch skipped/failed $(repo_name "$repository")"
+                fi
+                ;;
+            sync)
+                safe_sync "$repository" "$allow_protected" || true
+                ;;
+            *)
+                err "Unknown all command: $action"
+                return 2
+                ;;
+        esac
+    done
+}
+
+handle_repo() {
+    local action="${1:-status}"
+    shift || true
+
+    select_repo "${1:-}" || return 1
+    remember_recent "$SELECTED"
+
+    local remote_name
+
+    case "$action" in
+        status)
+            banner
+            repo_status "$SELECTED"
+            ;;
+        diff)
+            cd "$SELECTED" || return 1
+            banner
+            section "Diff summary"
+            git diff --stat
+            git diff --cached --stat
+            ;;
+        log)
+            cd "$SELECTED" || return 1
+            banner
+            section "Recent commits"
+            git log --graph --decorate --oneline --all -20
+            ;;
+        open)
+            if command -v xdg-open >/dev/null 2>&1; then
+                xdg-open "$SELECTED" >/dev/null 2>&1 &
+                disown || true
+            else
+                err "xdg-open was not found."
+                return 1
+            fi
+            ;;
+        fetch)
+            cd "$SELECTED" || return 1
+            remote_name="$(current_remote)" || return 1
+            git fetch --prune "$remote_name"
+            ;;
+        pull)
+            cd "$SELECTED" || return 1
+
+            if [[ -n "$(git status --porcelain)" ]]; then
+                err "Working tree must be clean."
+                return 1
+            fi
+
+            git pull --rebase
+            ;;
+        sync)
+            safe_sync "$SELECTED" false
+            ;;
+        *)
+            err "Unknown repo command: $action"
+            return 2
+            ;;
+    esac
+}
+
+handle_branch() {
+    local action="${1:-list}"
+    shift || true
+
+    local project="${1:-}"
+    local branch_name="${2:-}"
+
+    select_repo "$project" || return 1
+    cd "$SELECTED" || return 1
+
+    case "$action" in
+        list)
+            git branch -vv
+            git branch -r
+            ;;
+        new)
+            [[ -n "$branch_name" ]] || return 2
+            git switch -c "$branch_name"
+            ;;
+        switch)
+            [[ -n "$branch_name" ]] || return 2
+            git switch "$branch_name"
+            ;;
+        delete)
+            [[ -n "$branch_name" ]] || return 2
+
+            if protected_branch "$branch_name"; then
+                err "Protected branch."
+                return 1
+            fi
+
+            git branch -d "$branch_name"
+            ;;
+        prune)
+            prune_local_branches
+            ;;
+        *)
+            err "Unknown branch command: $action"
+            return 2
+            ;;
+    esac
+}
+
+prune_local_branches() {
+    local remote_name
+    remote_name="$(current_remote 2>/dev/null || true)"
+
+    if [[ -n "$remote_name" ]]; then
+        git fetch --prune "$remote_name" || return 1
+    fi
+
+    local current_branch
+    current_branch="$(git branch --show-current)"
+
+    local -a gone_branches=()
+    local -a safe_branches=()
+
+    mapfile -t gone_branches < <(
+        git for-each-ref \
+            --format='%(refname:short)|%(upstream:track)' \
+            refs/heads |
+            awk -F'|' '$2 ~ /\[gone\]/{print $1}'
+    )
+
+    local branch_name
+    for branch_name in "${gone_branches[@]}"; do
+        if [[ "$branch_name" == "$current_branch" ]]; then
+            continue
+        fi
+
+        if protected_branch "$branch_name"; then
+            continue
+        fi
+
+        if git merge-base --is-ancestor "$branch_name" HEAD >/dev/null 2>&1; then
+            safe_branches+=("$branch_name")
+        fi
+    done
+
+    if [[ ${#safe_branches[@]} -eq 0 ]]; then
+        ok "No safe stale branches."
+        return 0
+    fi
+
+    printf '  %s\n' "${safe_branches[@]}"
+
+    if ! confirm "Delete these ${#safe_branches[@]} branch(es)?"; then
+        return 0
+    fi
+
+    for branch_name in "${safe_branches[@]}"; do
+        git branch -d "$branch_name"
+    done
+}
+
+handle_remote() {
+    local action="${1:-list}"
+    shift || true
+
+    local project="${1:-}"
+    local remote_name="${2:-}"
+    local remote_url="${3:-}"
+
+    select_repo "$project" || return 1
+    cd "$SELECTED" || return 1
+
+    case "$action" in
+        list)
+            git remote -v
+            ;;
+        add)
+            [[ -n "$remote_name" && -n "$remote_url" ]] || return 2
+            git remote add "$remote_name" "$remote_url"
+            ;;
+        set-url)
+            [[ -n "$remote_name" && -n "$remote_url" ]] || return 2
+
+            if confirm "Change remote '$remote_name' URL?"; then
+                git remote set-url "$remote_name" "$remote_url"
+            fi
+            ;;
+        remove)
+            [[ -n "$remote_name" ]] || return 2
+
+            if confirm "Remove remote '$remote_name'?"; then
+                git remote remove "$remote_name"
+            fi
+            ;;
+        *)
+            err "Unknown remote command: $action"
+            return 2
+            ;;
+    esac
+}
+
+handle_stash() {
+    local action="${1:-list}"
+    shift || true
+
+    select_repo "${1:-}" || return 1
+    cd "$SELECTED" || return 1
+
+    case "$action" in
+        push)
+            git stash push --include-untracked
+            ;;
+        list)
+            git stash list
+            ;;
+        pop)
+            git stash pop
+            ;;
+        *)
+            err "Unknown stash command: $action"
+            return 2
+            ;;
+    esac
+}
+
+handle_tag() {
+    local action="${1:-list}"
+    shift || true
+
+    local project="${1:-}"
+    local tag_name="${2:-}"
+
+    if [[ $# -ge 2 ]]; then
+        shift 2
+    else
+        set --
+    fi
+
+    local tag_message="$*"
+
+    select_repo "$project" || return 1
+    cd "$SELECTED" || return 1
+
+    local remote_name
+    local upstream
+    local ahead
+    local behind
+
+    case "$action" in
+        list)
+            git for-each-ref \
+                --sort=-creatordate \
+                --format='%(refname:short)  %(creatordate:short)  %(subject)' \
+                refs/tags
+            ;;
+        create)
+            [[ -n "$tag_name" ]] || return 2
+
+            if [[ -z "$tag_message" ]]; then
+                tag_message="Release $tag_name"
+            fi
+
+            git tag -a "$tag_name" -m "$tag_message"
+            ;;
+        push)
+            [[ -n "$tag_name" ]] || return 2
+            remote_name="$(current_remote)" || return 1
+            git push "$remote_name" "refs/tags/$tag_name"
+            ;;
+        delete)
+            [[ -n "$tag_name" ]] || return 2
+            git tag -d "$tag_name"
+            ;;
+        release)
+            [[ -n "$tag_name" ]] || return 2
+
+            if [[ -n "$(git status --porcelain)" ]]; then
+                err "Release requires clean working tree."
+                return 1
+            fi
+
+            remote_name="$(current_remote)" || return 1
+            git fetch --prune "$remote_name" || return 1
+
+            upstream="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+            if [[ -z "$upstream" ]]; then
+                err "Release requires upstream."
+                return 1
+            fi
+
+            read -r ahead behind <<< "$(git rev-list --left-right --count "HEAD...$upstream")"
+            if [[ "$ahead" != "0" || "$behind" != "0" ]]; then
+                err "Branch is not exactly synchronized."
+                return 1
+            fi
+
+            if git show-ref --tags --verify --quiet "refs/tags/$tag_name"; then
+                err "Tag already exists."
+                return 1
+            fi
+
+            if [[ -z "$tag_message" ]]; then
+                tag_message="Release $tag_name"
+            fi
+
+            if ! confirm "Create and push release tag '$tag_name'?"; then
+                return 0
+            fi
+
+            if ! git tag -a "$tag_name" -m "$tag_message"; then
+                return 1
+            fi
+
+            if ! git push "$remote_name" "refs/tags/$tag_name"; then
+                git tag -d "$tag_name" >/dev/null 2>&1 || true
+                return 1
+            fi
+            ;;
+        *)
+            err "Unknown tag command: $action"
+            return 2
+            ;;
+    esac
+}
+
+main() {
+    load_config
+
+    if [[ $# -eq 0 ]]; then
+        show_help
+        return 0
+    fi
+
+    if [[ "$1" == -* ]]; then
+        translate_legacy "$@"
+        set -- "${TRANSLATED[@]}"
+    fi
+
+    local command_name="$1"
+    shift || true
+
+    case "$command_name" in
+        help)
+            show_help
+            ;;
+        version)
+            printf 'GPush %s\n' "$SCRIPT_VERSION"
+            ;;
+        config)
+            handle_config "$@"
+            ;;
+        cache)
+            handle_cache "$@"
+            ;;
+        recent)
+            handle_recent
+            ;;
+        clone)
+            handle_clone "$@"
+            ;;
+        alias)
+            handle_alias "$@"
+            ;;
+        favorite)
+            handle_favorite "$@"
+            ;;
+        all)
+            handle_all "$@"
+            ;;
+        repo)
+            handle_repo "$@"
+            ;;
+        branch)
+            handle_branch "$@"
+            ;;
+        remote)
+            handle_remote "$@"
+            ;;
+        stash)
+            handle_stash "$@"
+            ;;
+        tag)
+            handle_tag "$@"
+            ;;
+        *)
+            # Classic shortcut: gp Project "message"
+            select_repo "$command_name" || return 1
+            remember_recent "$SELECTED"
+
+            local classic_message="$*"
+            classic_commit \
+                "$SELECTED" \
+                "$classic_message" \
+                "${LEGACY_DRY:-false}" \
+                "${LEGACY_NOPUSH:-false}"
+            ;;
+    esac
+}
+
+main "$@"
