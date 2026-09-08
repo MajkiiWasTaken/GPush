@@ -1,4 +1,4 @@
-name: Safety & PowerShell checks
+name: Safety checks
 
 on:
   push:
@@ -13,7 +13,11 @@ permissions:
   contents: read
 
 jobs:
-  safety:
+  # ============================================================
+  # WINDOWS / POWERSHELL
+  # ============================================================
+
+  windows-safety:
     name: PowerShell safety checks
     runs-on: windows-latest
     timeout-minutes: 10
@@ -29,7 +33,28 @@ jobs:
           persist-credentials: false
 
       # ------------------------------------------------------------
-      # 1. Syntax check - Windows PowerShell 5.1
+      # 1. Verify expected files
+      # ------------------------------------------------------------
+
+      - name: Check Windows files exist
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if (-not (Test-Path $env:WINDOWS_GP)) {
+              Write-Error "Windows GPush script not found: $env:WINDOWS_GP"
+              exit 1
+          }
+
+          if (-not (Test-Path $env:WINDOWS_INSTALLER)) {
+              Write-Error "Windows installer not found: $env:WINDOWS_INSTALLER"
+              exit 1
+          }
+
+          Write-Host "Windows files found." -ForegroundColor Green
+
+      # ------------------------------------------------------------
+      # 2. Syntax check - Windows PowerShell 5.1
       # ------------------------------------------------------------
 
       - name: Check PowerShell 5.1 syntax
@@ -37,7 +62,10 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $files = Get-ChildItem -Path . -Filter *.ps1 -Recurse
+          $files = Get-ChildItem `
+              -Path ./windows `
+              -Filter *.ps1 `
+              -Recurse
 
           foreach ($file in $files) {
               Write-Host "Checking $($file.FullName)"
@@ -60,10 +88,10 @@ jobs:
               }
           }
 
-          Write-Host "PowerShell 5.1 syntax OK."
+          Write-Host "PowerShell 5.1 syntax OK." -ForegroundColor Green
 
       # ------------------------------------------------------------
-      # 2. Syntax check - PowerShell 7
+      # 3. Syntax check - PowerShell 7
       # ------------------------------------------------------------
 
       - name: Check PowerShell 7 syntax
@@ -71,7 +99,10 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $files = Get-ChildItem -Path . -Filter *.ps1 -Recurse
+          $files = Get-ChildItem `
+              -Path ./windows `
+              -Filter *.ps1 `
+              -Recurse
 
           foreach ($file in $files) {
               Write-Host "Checking $($file.FullName)"
@@ -94,16 +125,17 @@ jobs:
               }
           }
 
-          Write-Host "PowerShell 7 syntax OK."
+          Write-Host "PowerShell 7 syntax OK." -ForegroundColor Green
 
       # ------------------------------------------------------------
-      # 3. PSScriptAnalyzer
+      # 4. PSScriptAnalyzer
       # ------------------------------------------------------------
 
       - name: Install PSScriptAnalyzer
         shell: pwsh
         run: |
           Set-PSRepository PSGallery -InstallationPolicy Trusted
+
           Install-Module PSScriptAnalyzer `
               -Scope CurrentUser `
               -Force `
@@ -115,7 +147,7 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           $results = Invoke-ScriptAnalyzer `
-              -Path . `
+              -Path ./windows `
               -Recurse `
               -Severity Error,Warning
 
@@ -134,17 +166,19 @@ jobs:
               exit 1
           }
 
+          Write-Host "PSScriptAnalyzer check OK." -ForegroundColor Green
+
       # ------------------------------------------------------------
-      # 4. Dangerous PowerShell command detection
+      # 5. Dangerous PowerShell command detection
       # ------------------------------------------------------------
 
-      - name: Detect dangerous commands
+      - name: Detect dangerous PowerShell commands
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
           $files = Get-ChildItem `
-              -Path . `
+              -Path ./windows `
               -Filter *.ps1 `
               -Recurse
 
@@ -198,13 +232,10 @@ jobs:
           $failed = $false
 
           foreach ($file in $files) {
-
               $content = Get-Content $file.FullName -Raw
 
               foreach ($rule in $dangerousPatterns) {
-
                   if ($content -match $rule.Pattern) {
-
                       Write-Host ""
                       Write-Host "Potentially dangerous command detected:" `
                           -ForegroundColor Red
@@ -226,20 +257,20 @@ jobs:
               -ForegroundColor Green
 
       # ------------------------------------------------------------
-      # 5. Installer-specific safety
+      # 6. Installer-specific safety
       # ------------------------------------------------------------
 
-      - name: Check installer behavior
+      - name: Check Windows installer behavior
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
-          $installer = Get-Content $env:WINDOWS_INSTALLER -Raw
+          if (-not (Test-Path $env:WINDOWS_INSTALLER)) {
+              Write-Error "Windows installer not found: $env:WINDOWS_INSTALLER"
+              exit 1
+          }
 
-          #
-          # Installer is allowed to modify the PowerShell profile,
-          # but should not modify machine-wide configuration.
-          #
+          $installer = Get-Content $env:WINDOWS_INSTALLER -Raw
 
           $forbidden = @(
               'HKLM:',
@@ -254,7 +285,6 @@ jobs:
           )
 
           foreach ($pattern in $forbidden) {
-
               if ($installer -match $pattern) {
                   Write-Error "Forbidden installer behavior detected: $pattern"
                   exit 1
@@ -265,13 +295,18 @@ jobs:
               -ForegroundColor Green
 
       # ------------------------------------------------------------
-      # 6. Verify gp.ps1 doesn't contain system-destructive commands
+      # 7. gp.ps1 command scope
       # ------------------------------------------------------------
 
-      - name: Check GPush command scope
+      - name: Check GPush PowerShell command scope
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+
+          if (-not (Test-Path $env:WINDOWS_GP)) {
+              Write-Error "Windows GPush script not found: $env:WINDOWS_GP"
+              exit 1
+          }
 
           $script = Get-Content $env:WINDOWS_GP -Raw
 
@@ -290,7 +325,6 @@ jobs:
           )
 
           foreach ($command in $forbidden) {
-
               if ($script -match "\b$command\b") {
                   Write-Error "Forbidden command found in gp.ps1: $command"
                   exit 1
@@ -299,3 +333,132 @@ jobs:
 
           Write-Host "GPush contains no system-destructive commands." `
               -ForegroundColor Green
+
+  # ============================================================
+  # LINUX / BASH
+  # ============================================================
+
+  linux-safety:
+    name: Linux shell safety checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      LINUX_GP: ./linux/gp
+      LINUX_INSTALLER: ./linux/install.sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # ------------------------------------------------------------
+      # 1. Verify expected files
+      # ------------------------------------------------------------
+
+      - name: Check Linux files exist
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! -f "$LINUX_GP" ]]; then
+            echo "Linux GPush script not found: $LINUX_GP"
+            exit 1
+          fi
+
+          if [[ ! -f "$LINUX_INSTALLER" ]]; then
+            echo "Linux installer not found: $LINUX_INSTALLER"
+            exit 1
+          fi
+
+          echo "Linux files found."
+
+      # ------------------------------------------------------------
+      # 2. Bash syntax
+      # ------------------------------------------------------------
+
+      - name: Check Bash syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          bash -n "$LINUX_GP"
+          bash -n "$LINUX_INSTALLER"
+
+          echo "Bash syntax OK."
+
+      # ------------------------------------------------------------
+      # 3. ShellCheck
+      # ------------------------------------------------------------
+
+      - name: Run ShellCheck
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          shellcheck "$LINUX_GP"
+          shellcheck "$LINUX_INSTALLER"
+
+      # ------------------------------------------------------------
+      # 4. Verify LF line endings
+      # ------------------------------------------------------------
+
+      - name: Check Linux line endings
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          failed=false
+
+          for file in "$LINUX_GP" "$LINUX_INSTALLER"; do
+            if grep -q $'\r' "$file"; then
+              echo "CRLF detected in: $file"
+              failed=true
+            fi
+          done
+
+          if [[ "$failed" == true ]]; then
+            exit 1
+          fi
+
+          echo "Linux scripts use LF line endings."
+
+      # ------------------------------------------------------------
+      # 5. Dangerous shell command detection
+      # ------------------------------------------------------------
+
+      - name: Detect dangerous shell commands
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          failed=false
+
+          patterns=(
+            'rm[[:space:]]+-rf[[:space:]]+/'
+            'mkfs\.'
+            'dd[[:space:]].*of=/dev/'
+            'shutdown'
+            'reboot'
+            'poweroff'
+            'systemctl[[:space:]]+(reboot|poweroff)'
+            'chmod[[:space:]]+-R[[:space:]]+777[[:space:]]+/'
+          )
+
+          for file in "$LINUX_GP" "$LINUX_INSTALLER"; do
+            for pattern in "${patterns[@]}"; do
+              if grep -Eqi "$pattern" "$file"; then
+                echo "Potentially dangerous command detected:"
+                echo "  File: $file"
+                echo "  Pattern: $pattern"
+                failed=true
+              fi
+            done
+          done
+
+          if [[ "$failed" == true ]]; then
+            exit 1
+          fi
+
+          echo "No dangerous shell commands detected."
