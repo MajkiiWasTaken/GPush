@@ -84,7 +84,7 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
   else
     printf '%s~/.local/bin is not currently in PATH.%s\n' "$C_YELLOW" "$C_RESET"
     printf 'Add this to your shell config:\n'
-    printf '  export PATH="%s/.local/bin:%s"\n' '$HOME' '$PATH'
+    printf '  export PATH="%s/.local/bin:%s"\n' "\$HOME" "\$PATH"
   fi
 fi
 
