@@ -20,7 +20,7 @@ $AuthorName = "Michal " + [char]0x0160 + "vr" + [char]0x010D + "ek"
 # CONFIGURATION
 # ============================================================
 
-$ScriptVersion = "3.2.0"
+$ScriptVersion = "3.2.1"
 
 $CacheDir   = Join-Path $env:LOCALAPPDATA "GPush"
 $CacheFile  = Join-Path $CacheDir "repos.json"
@@ -950,6 +950,33 @@ Set-Location $repo.Path
 
 if ($Renormalize) {
     Write-Section "Renormalize"
+
+    # git add --renormalize expects tracked files in the index to still have
+    # a valid working-tree path. If tracked files were moved/deleted without
+    # updating the index first, Git can fail with "unable to stat".
+    $missingResult = Get-GitOutput -Arguments @("ls-files", "--deleted") -AllowFailure
+    $missingTracked = @(
+        $missingResult.Lines |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+
+    if ($missingTracked.Count -gt 0) {
+        Write-Warn "Tracked files are missing from the working tree:"
+        foreach ($path in $missingTracked) {
+            Write-Host "  $path" -ForegroundColor Yellow
+        }
+
+        Write-Host ""
+        Write-Dim "The Git index is out of sync with file moves/deletions."
+        Write-Dim "Stage those changes first, then run renormalize again:"
+        Write-Host ""
+        Write-Host "  git add -A" -ForegroundColor Green
+        Write-Host "  gp --renormalize" -ForegroundColor Green
+        Write-Host ""
+        Write-Warn "GPush did not stage anything automatically."
+        exit 1
+    }
+
     Write-Info "[ADD] git add --renormalize ."
 
     $result = Get-GitOutput -Arguments @("add", "--renormalize", ".") -AllowFailure
@@ -964,7 +991,11 @@ if ($Renormalize) {
     Write-Ok "[RENORMALIZE] OK"
 
     $statusResult = Get-GitOutput -Arguments @("status", "--short") -AllowFailure
-    $status = @($statusResult.Lines | Where-Object { $_ -ne $null })
+    $status = @(
+        $statusResult.Lines |
+            Where-Object { $_ -ne $null }
+    )
+
     Show-Changes -Status $status
 
     Write-Separator

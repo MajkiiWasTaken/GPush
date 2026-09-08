@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-SCRIPT_VERSION="3.2.0"
+SCRIPT_VERSION="3.2.1"
 
 # ============================================================
 # PATHS / XDG
@@ -585,7 +585,6 @@ if $RENORMALIZE || $FETCH_ONLY || $LOG_ONLY || $BRANCHES_ONLY || $REMOTES_ONLY; 
 fi
 
 DIRECT_REPOSITORY_PATH=""
-
 if $UTILITY_MODE && [[ -z "$PROJECT" ]]; then
   DIRECT_REPOSITORY_PATH="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 fi
@@ -689,6 +688,33 @@ cd "$SELECTED_REPO" || exit 1
 
 if $RENORMALIZE; then
   section "Renormalize"
+
+  mapfile -t MISSING_TRACKED < <(git ls-files --deleted 2>/dev/null)
+
+  if [[ ${#MISSING_TRACKED[@]} -gt 0 ]]; then
+    warn "Tracked files are missing from the working tree:"
+
+    for path in "${MISSING_TRACKED[@]}"; do
+      printf '  %s%s%s
+' "$C_YELLOW" "$path" "$C_RESET"
+    done
+
+    printf '
+'
+    dim "The Git index is out of sync with file moves/deletions."
+    dim "Stage those changes first, then run renormalize again:"
+    printf '
+'
+    printf '  %sgit add -A%s
+' "$C_GREEN" "$C_RESET"
+    printf '  %sgp --renormalize%s
+' "$C_GREEN" "$C_RESET"
+    printf '
+'
+    warn "GPush did not stage anything automatically."
+    exit 1
+  fi
+
   info "[ADD] git add --renormalize ."
 
   if ! git add --renormalize .; then
@@ -701,7 +727,8 @@ if $RENORMALIZE; then
   show_changes
   separator
   ok "Renormalize complete."
-  printf '\n'
+  printf '
+'
   exit 0
 fi
 
@@ -726,14 +753,16 @@ if $FETCH_ONLY; then
   }
 
   ok "[FETCH] OK"
-  printf '\n'
+  printf '
+'
   exit 0
 fi
 
 if $LOG_ONLY; then
   section "Recent commits"
   git log -10 --oneline --decorate --date=short
-  printf '\n'
+  printf '
+'
   exit 0
 fi
 
@@ -744,14 +773,16 @@ if $BRANCHES_ONLY; then
   section "Remote branches"
   git branch -r
 
-  printf '\n'
+  printf '
+'
   exit 0
 fi
 
 if $REMOTES_ONLY; then
   section "Remotes"
   git remote -v
-  printf '\n'
+  printf '
+'
   exit 0
 fi
 
