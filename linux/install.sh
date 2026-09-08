@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="3.2.0"
+SCRIPT_VERSION="3.2.1"
 
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
@@ -10,7 +10,6 @@ CONFIG_DIR="$CONFIG_HOME/gpush"
 CACHE_DIR="$CACHE_HOME/gpush"
 
 CONFIG_FILE="$CONFIG_DIR/config"
-CACHE_FILE="$CACHE_DIR/repos"
 
 BIN_DIR="${HOME}/.local/bin"
 TARGET="${BIN_DIR}/gp"
@@ -73,7 +72,7 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
   esac
 
   if [[ -n "$SHELL_RC" ]]; then
-    LINE='export PATH="$HOME/.local/bin:$PATH"'
+    LINE="export PATH=\"\$HOME/.local/bin:\$PATH\""
 
     if [[ ! -f "$SHELL_RC" ]] || ! grep -Fqx "$LINE" "$SHELL_RC"; then
       printf '\n%s\n' '# GPush' >> "$SHELL_RC"
@@ -85,7 +84,7 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
   else
     printf '%s~/.local/bin is not currently in PATH.%s\n' "$C_YELLOW" "$C_RESET"
     printf 'Add this to your shell config:\n'
-    printf '  export PATH="$HOME/.local/bin:$PATH"\n'
+    printf '  %s\n' 'export PATH="$HOME/.local/bin:$PATH"'
   fi
 fi
 
