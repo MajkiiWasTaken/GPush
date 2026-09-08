@@ -6,10 +6,21 @@ param(
 $RawArguments = @($Arguments)
 
 # ============================================================
+# ENCODING
+# ============================================================
+
+[Console]::InputEncoding  = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$OutputEncoding           = [System.Text.UTF8Encoding]::new($false)
+
+# Keep non-ASCII author characters independent of source-file encoding.
+$AuthorName = "Michal " + [char]0x0160 + "vr" + [char]0x010D + "ek"
+
+# ============================================================
 # CONFIGURATION
 # ============================================================
 
-$ScriptVersion = "3.0.1"
+$ScriptVersion = "3.1.2"
 
 $CacheDir   = Join-Path $env:LOCALAPPDATA "GPush"
 $CacheFile  = Join-Path $CacheDir "repos.json"
@@ -104,6 +115,8 @@ function Show-Banner {
     Write-Host ""
     Write-Host "GPush " -NoNewline -ForegroundColor Cyan
     Write-Host $ScriptVersion -ForegroundColor DarkGray
+    Write-Host "Made by " -NoNewline -ForegroundColor DarkGray
+    Write-Host $AuthorName -ForegroundColor Magenta
 }
 
 function Show-Help {

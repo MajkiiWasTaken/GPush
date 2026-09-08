@@ -3,6 +3,15 @@ param(
     [switch]$Force
 )
 
+$InstallerVersion = "3.1.2"
+
+[Console]::InputEncoding  = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$OutputEncoding           = [System.Text.UTF8Encoding]::new($false)
+
+# Keep non-ASCII author characters independent of source-file encoding.
+$AuthorName = "Michal " + [char]0x0160 + "vr" + [char]0x010D + "ek"
+
 $ErrorActionPreference = "Stop"
 
 function Write-Step([string]$Text) {
@@ -22,8 +31,10 @@ function Write-Fail([string]$Text) {
 }
 
 Write-Host ""
-Write-Host "GPush installer" -ForegroundColor Cyan
-Write-Host "===============" -ForegroundColor DarkGray
+Write-Host "GPush installer " -NoNewline -ForegroundColor Cyan
+Write-Host $InstallerVersion -ForegroundColor DarkGray
+Write-Host "Made by " -NoNewline -ForegroundColor DarkGray
+Write-Host $AuthorName -ForegroundColor Magenta
 Write-Host ""
 
 $ScriptPath = Join-Path $PSScriptRoot "gp.ps1"
