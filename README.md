@@ -1,13 +1,23 @@
 # GPush
 
 ![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?style=for-the-badge&logo=powershell&logoColor=white)
+![Bash](https://img.shields.io/badge/Bash-supported-4EAA25?style=for-the-badge&logo=gnubash&logoColor=white)
 ![Git](https://img.shields.io/badge/Git-required-F05032?style=for-the-badge&logo=git&logoColor=white)
 ![Windows](https://img.shields.io/badge/Windows-supported-0078D6?style=for-the-badge&logo=windows&logoColor=white)
+![Linux](https://img.shields.io/badge/Linux-supported-FCC624?style=for-the-badge&logo=linux&logoColor=black)
 ![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)
 
-GPush is a small PowerShell helper for finding Git repositories, committing changes and pushing them without manually navigating between project folders.
+```text
+ ###  ####            o
+#     #   #          / \
+#  ## ####      o---o   o
+#   # #          \   \ /
+ ###  #           o---o---o
+                           \
+                            o---o
+```
 
-It shows the current branch and changed files, runs `git add .`, creates the commit and pushes it. If the remote is ahead, GPush can automatically run `git pull --rebase` and retry the push.
+GPush is a small Git helper for quickly working with repositories without manually navigating between project folders. It can find repositories, show status, commit and push changes, synchronize branches, manage tags, remotes, aliases, favorites and more.
 
 <img width="699" height="785" alt="image" src="https://github.com/user-attachments/assets/bb6dd591-b5d9-4b70-94be-b58d49f1b2c8" />
 
@@ -15,85 +25,117 @@ It shows the current branch and changed files, runs `git add .`, creates the com
 
 ### Install
 
-Requirements: **Windows**, **PowerShell 5.1+** and **Git in PATH**.
+#### Windows
+
+Requirements: **PowerShell 5.1+** and **Git in PATH**.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1
+powershell -ExecutionPolicy Bypass -File .\windows\install.ps1
 ```
 
-The installer saves repository search directories to:
+GPush stores its configuration in:
 
 ```text
 %LOCALAPPDATA%\GPush\config.json
 ```
 
-and adds the `gp` command to your PowerShell profile.
+#### Linux
 
-Reload the profile after installation:
+Requirements: **Bash** and **Git in PATH**.
 
-```powershell
-. $PROFILE
+```bash
+chmod +x ./linux/install.sh
+./linux/install.sh
+```
+
+The installer places `gp` in:
+
+```text
+~/.local/bin/gp
 ```
 
 ---
 
 ### Usage
 
-```powershell
+Classic shortcut:
+
+```text
 gp MyProject "Fix packet parser"
 gp MyProject
+```
 
+Command syntax:
+
+```text
+gp repo status MyProject
+gp repo sync MyProject
+gp branch new MyProject feature/api
+gp branch prune MyProject
+gp tag release MyProject v1.0.0 "Release 1.0.0"
+gp remote add MyProject upstream <url>
+gp stash push MyProject
+gp all fetch
+gp clone <url>
+```
+
+Existing flag syntax remains supported:
+
+```text
 gp --status MyProject
 gp --diff MyProject
-gp --pull MyProject
-
-gp --dry-run MyProject "Test commit"
-gp --no-push MyProject "Local checkpoint"
-
-gp --list
-gp --refresh
-gp --refresh --list
-
-gp --add .
-gp --add C:\path\to\repository
-
+gp --sync MyProject
+gp --all --fetch
 gp --help
 ```
 
 If no commit message is supplied, GPush asks for it interactively.
 
-### Options
+---
 
-| Option | Description |
+### Main commands
+
+| Command | Purpose |
 |---|---|
-| `-h`, `--help` | Show help |
-| `-v`, `--version` | Show version |
-| `-l`, `--list` | List cached repositories |
-| `-r`, `--refresh` | Rescan repositories and rebuild the cache |
-| `--add` | Add a repository to the cache manually |
-| `-s`, `--status` | Show repository, branch, remote and sync state |
-| `--diff` | Show local diff statistics |
-| `--pull` | Run a safe `git pull --rebase` |
-| `--dry-run` | Preview actions without changing Git state |
-| `--no-push` | Commit locally without fetching or pushing |
-| `--cached` | Use the existing repository cache only |
+| `repo` | Status, diff, log, fetch, pull and sync |
+| `branch` | List, create, switch, delete and prune branches |
+| `tag` | Tags and safe release workflow |
+| `remote` | Manage Git remotes |
+| `stash` | Push, list and pop stash entries |
+| `cache` | Repository discovery and cache |
+| `config` | Configuration and diagnostics |
+| `alias` | Repository aliases |
+| `favorite` | Favorite repositories |
+| `all` | Status, fetch or sync all repositories |
+| `clone` | Clone and cache a repository |
+| `recent` | Show recently used repositories |
+
+Run:
+
+```text
+gp --help
+```
+
+for the complete command and option list.
 
 ---
 
 ### Safety
 
-GPush performs preflight checks before changing the repository and does **not** resolve merge or rebase conflicts automatically.
+GPush performs preflight checks before changing repositories and does not resolve merge or rebase conflicts automatically.
 
-If a rebase fails:
+Protected branches, risky files, unpushed commit rewrites, release creation and stale branch cleanup include additional safety checks.
 
-```powershell
+If a rebase fails, resolve it manually and continue with:
+
+```text
 git add .
 git rebase --continue
 ```
 
 or cancel it with:
 
-```powershell
+```text
 git rebase --abort
 ```
 
@@ -103,4 +145,4 @@ git rebase --abort
 
 **Michal Švrček**
 
-GPush **3.1.2** · Distributed under the MIT License.
+Distributed under the MIT License.
