@@ -230,7 +230,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $installer = Get-Content ./install.ps1 -Raw
+          $installer = Get-Content $env:WINDOWS_INSTALLER -Raw
 
           #
           # Installer is allowed to modify the PowerShell profile,
@@ -269,7 +269,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $script = Get-Content ./gp.ps1 -Raw
+          $script = Get-Content $env:WINDOWS_GP -Raw
 
           $forbidden = @(
               'Format-Volume',
