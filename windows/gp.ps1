@@ -20,7 +20,7 @@ $AuthorName = "Michal " + [char]0x0160 + "vr" + [char]0x010D + "ek"
 # CONFIGURATION
 # ============================================================
 
-$ScriptVersion = "3.1.2"
+$ScriptVersion = "3.2.0"
 
 $CacheDir   = Join-Path $env:LOCALAPPDATA "GPush"
 $CacheFile  = Join-Path $CacheDir "repos.json"
@@ -155,6 +155,16 @@ function Show-Help {
     Write-Host "Show repository, branch, remote, sync, and local status only."
     Write-Host "      --diff          " -NoNewline -ForegroundColor Cyan
     Write-Host "Show local changes and diff statistics only."
+    Write-Host "      --renormalize   " -NoNewline -ForegroundColor Cyan
+    Write-Host "Renormalize tracked files using .gitattributes and show status."
+    Write-Host "      --fetch         " -NoNewline -ForegroundColor Cyan
+    Write-Host "Fetch and prune the selected repository remote."
+    Write-Host "      --log           " -NoNewline -ForegroundColor Cyan
+    Write-Host "Show the last 10 commits."
+    Write-Host "      --branches      " -NoNewline -ForegroundColor Cyan
+    Write-Host "Show local and remote branches."
+    Write-Host "      --remotes       " -NoNewline -ForegroundColor Cyan
+    Write-Host "Show configured Git remotes."
     Write-Host "      --pull          " -NoNewline -ForegroundColor Cyan
     Write-Host "Run 'git pull --rebase' only. Do not commit or push."
     Write-Host "      --dry-run       " -NoNewline -ForegroundColor Cyan
@@ -171,6 +181,12 @@ function Show-Help {
         'gp RSUManager Fix GNSS handling',
         'gp --status RSUManager',
         'gp --diff RSUManager',
+        'gp --renormalize',
+        'gp --renormalize RSUManager',
+        'gp --fetch RSUManager',
+        'gp --log RSUManager',
+        'gp --branches RSUManager',
+        'gp --remotes RSUManager',
         'gp --pull RSUManager',
         'gp --dry-run RSUManager "Test commit"',
         'gp --no-push RSUManager "Local checkpoint"',
@@ -223,9 +239,14 @@ $ListRepos   = $false
 $Refresh     = $false
 $AddRepo     = $false
 $CachedOnly  = $false
-$StatusOnly  = $false
-$DiffOnly    = $false
-$PullOnly    = $false
+$StatusOnly   = $false
+$DiffOnly     = $false
+$Renormalize  = $false
+$FetchOnly    = $false
+$LogOnly      = $false
+$BranchesOnly = $false
+$RemotesOnly  = $false
+$PullOnly     = $false
 $DryRun      = $false
 $NoPush      = $false
 
@@ -255,8 +276,13 @@ foreach ($token in $tokens) {
             "--cached"  { $CachedOnly = $true }
             "-s"        { $StatusOnly = $true }
             "--status"  { $StatusOnly = $true }
-            "--diff"    { $DiffOnly = $true }
-            "--pull"    { $PullOnly = $true }
+            "--diff"        { $DiffOnly = $true }
+            "--renormalize" { $Renormalize = $true }
+            "--fetch"       { $FetchOnly = $true }
+            "--log"         { $LogOnly = $true }
+            "--branches"    { $BranchesOnly = $true }
+            "--remotes"     { $RemotesOnly = $true }
+            "--pull"        { $PullOnly = $true }
             "--dry-run" { $DryRun = $true }
             "--no-push" { $NoPush = $true }
             default      { $handledOption = $false }
@@ -284,9 +310,18 @@ if ($ShowVersion) {
     exit 0
 }
 
-$exclusiveModes = @($StatusOnly, $DiffOnly, $PullOnly) | Where-Object { $_ }
+$exclusiveModes = @(
+    $StatusOnly,
+    $DiffOnly,
+    $Renormalize,
+    $FetchOnly,
+    $LogOnly,
+    $BranchesOnly,
+    $RemotesOnly,
+    $PullOnly
+) | Where-Object { $_ }
 if ($exclusiveModes.Count -gt 1) {
-    Write-Err "Options '--status', '--diff', and '--pull' cannot be combined."
+    Write-Err "Only one operation mode can be used at a time."
     exit 2
 }
 
@@ -305,7 +340,11 @@ if ($Refresh -and $CachedOnly) {
     exit 2
 }
 
-if ($AddRepo -and ($Refresh -or $ListRepos -or $StatusOnly -or $DiffOnly -or $PullOnly -or $DryRun -or $NoPush -or $CachedOnly)) {
+if ($AddRepo -and (
+    $Refresh -or $ListRepos -or $StatusOnly -or $DiffOnly -or $Renormalize -or
+    $FetchOnly -or $LogOnly -or $BranchesOnly -or $RemotesOnly -or
+    $PullOnly -or $DryRun -or $NoPush -or $CachedOnly
+)) {
     Write-Err "Option '--add' cannot be combined with other operation modes."
     exit 2
 }
@@ -798,6 +837,27 @@ if ($AddRepo) {
 }
 
 # ============================================================
+# CURRENT REPOSITORY FOR UTILITY MODES
+# ============================================================
+
+$UtilityMode = (
+    $Renormalize -or
+    $FetchOnly -or
+    $LogOnly -or
+    $BranchesOnly -or
+    $RemotesOnly
+)
+
+$DirectRepositoryPath = $null
+
+if ($UtilityMode -and [string]::IsNullOrWhiteSpace($Project)) {
+    $currentRepo = & git rev-parse --show-toplevel 2>$null
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($currentRepo)) {
+        $DirectRepositoryPath = $currentRepo.Trim()
+    }
+}
+
+# ============================================================
 # LOAD REPOSITORIES
 # ============================================================
 
@@ -808,11 +868,15 @@ if (-not (Test-GitCommand)) {
     exit 1
 }
 
-$repos = @(Get-Repositories -ForceRefresh $Refresh -CacheOnly $CachedOnly)
+$repos = @()
 
-if ($repos.Count -eq 0) {
-    Write-Err "No Git repositories found."
-    exit 1
+if (-not $DirectRepositoryPath) {
+    $repos = @(Get-Repositories -ForceRefresh $Refresh -CacheOnly $CachedOnly)
+
+    if ($repos.Count -eq 0) {
+        Write-Err "No Git repositories found."
+        exit 1
+    }
 }
 
 # A standalone refresh only rebuilds the repository cache.
@@ -845,9 +909,17 @@ if ($ListRepos) {
 # SELECT PROJECT
 # ============================================================
 
-$repo = Select-Repository -Repos $repos -Search $Project -QuietNotFound
+if ($DirectRepositoryPath) {
+    $repo = [PSCustomObject]@{
+        Name = Split-Path $DirectRepositoryPath -Leaf
+        Path = $DirectRepositoryPath
+    }
+}
+else {
+    $repo = Select-Repository -Repos $repos -Search $Project -QuietNotFound
+}
 
-if ($null -eq $repo -and $script:RepositorySource -eq "cache" -and -not $CachedOnly) {
+if ($null -eq $repo -and -not $DirectRepositoryPath -and $script:RepositorySource -eq "cache" -and -not $CachedOnly) {
     Write-Host ""
     Write-Warn "Repository was not found in cache. Refreshing repository index..."
     $repos = @(Get-Repositories -ForceRefresh $true -CacheOnly $false)
@@ -871,6 +943,88 @@ Write-KeyValue "Name" $repo.Name
 Write-KeyValue "Path" $repo.Path ([ConsoleColor]::DarkGray)
 
 Set-Location $repo.Path
+
+# ============================================================
+# UTILITY MODES
+# ============================================================
+
+if ($Renormalize) {
+    Write-Section "Renormalize"
+    Write-Info "[ADD] git add --renormalize ."
+
+    $result = Get-GitOutput -Arguments @("add", "--renormalize", ".") -AllowFailure
+    if (-not $result.Success) {
+        Write-Err "[RENORMALIZE] FAILED"
+        foreach ($line in $result.Lines) {
+            Write-Dim "  $line"
+        }
+        exit 1
+    }
+
+    Write-Ok "[RENORMALIZE] OK"
+
+    $statusResult = Get-GitOutput -Arguments @("status", "--short") -AllowFailure
+    $status = @($statusResult.Lines | Where-Object { $_ -ne $null })
+    Show-Changes -Status $status
+
+    Write-Separator
+    Write-Ok "Renormalize complete."
+    Write-Host ""
+    exit 0
+}
+
+if ($FetchOnly) {
+    Write-Section "Fetch"
+
+    $remotes = @((& git remote) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($remotes.Count -eq 0) {
+        Write-Err "No Git remote is configured."
+        exit 1
+    }
+
+    $remote = if ($remotes -contains "origin") { "origin" } else { $remotes[0].Trim() }
+
+    Write-Info "[FETCH] git fetch --prune $remote"
+    $result = Get-GitOutput -Arguments @("fetch", "--prune", $remote) -AllowFailure
+
+    foreach ($line in $result.Lines) {
+        Write-Host $line
+    }
+
+    if (-not $result.Success) {
+        Write-Err "[FETCH] FAILED"
+        exit 1
+    }
+
+    Write-Ok "[FETCH] OK"
+    Write-Host ""
+    exit 0
+}
+
+if ($LogOnly) {
+    Write-Section "Recent commits"
+    & git log -10 --oneline --decorate --date=short
+    Write-Host ""
+    exit $LASTEXITCODE
+}
+
+if ($BranchesOnly) {
+    Write-Section "Local branches"
+    & git branch -vv
+
+    Write-Section "Remote branches"
+    & git branch -r
+
+    Write-Host ""
+    exit 0
+}
+
+if ($RemotesOnly) {
+    Write-Section "Remotes"
+    & git remote -v
+    Write-Host ""
+    exit $LASTEXITCODE
+}
 
 # ============================================================
 # PREFLIGHT
