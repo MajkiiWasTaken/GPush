@@ -17,32 +17,23 @@ It shows the current branch and changed files, runs `git add .`, creates the com
 
 Requirements: **Windows**, **PowerShell 5.1+** and **Git in PATH**.
 
-Clone the repository and run:
-
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-The installer:
+The installer saves repository search directories to:
 
-- detects or asks for directories containing your repositories,
-- saves them to `%LOCALAPPDATA%\GPush\config.json`,
-- adds the `gp` command to your PowerShell profile,
-- updates an existing GPush profile entry safely.
+```text
+%LOCALAPPDATA%\GPush\config.json
+```
+
+and adds the `gp` command to your PowerShell profile.
 
 Reload the profile after installation:
 
 ```powershell
 . $PROFILE
 ```
-
-You can also provide repository directories directly:
-
-```powershell
-.\install.ps1 -SearchRoot "D:\Projects","C:\Work"
-```
-
-Run the installer again whenever you want to change the configured repository directories.
 
 ---
 
@@ -51,13 +42,21 @@ Run the installer again whenever you want to change the configured repository di
 ```powershell
 gp MyProject "Fix packet parser"
 gp MyProject
+
 gp --status MyProject
+gp --diff MyProject
 gp --pull MyProject
+
 gp --dry-run MyProject "Test commit"
 gp --no-push MyProject "Local checkpoint"
+
 gp --list
+gp --refresh
 gp --refresh --list
-gp --cached MyProject "Quick commit"
+
+gp --add .
+gp --add C:\path\to\repository
+
 gp --help
 ```
 
@@ -69,27 +68,30 @@ If no commit message is supplied, GPush asks for it interactively.
 |---|---|
 | `-h`, `--help` | Show help |
 | `-v`, `--version` | Show version |
-| `--list` | List discovered repositories |
-| `--status` | Show branch and working tree status only |
-| `--pull` | Run `git pull --rebase` only |
-| `--dry-run` | Preview actions without changing anything |
-| `--no-push` | Commit locally without pushing |
-| `--cached` | Use the saved repository cache |
-| `--refresh` | Rescan repositories and refresh the cache |
+| `-l`, `--list` | List cached repositories |
+| `-r`, `--refresh` | Rescan repositories and rebuild the cache |
+| `--add` | Add a repository to the cache manually |
+| `-s`, `--status` | Show repository, branch, remote and sync state |
+| `--diff` | Show local diff statistics |
+| `--pull` | Run a safe `git pull --rebase` |
+| `--dry-run` | Preview actions without changing Git state |
+| `--no-push` | Commit locally without fetching or pushing |
+| `--cached` | Use the existing repository cache only |
 
 ---
 
 ### Safety
 
-GPush does **not** resolve merge or rebase conflicts automatically. If a rebase fails, resolve the conflict manually and continue with:
+GPush performs preflight checks before changing the repository and does **not** resolve merge or rebase conflicts automatically.
+
+If a rebase fails:
 
 ```powershell
 git add .
 git rebase --continue
-git push
 ```
 
-To cancel the rebase:
+or cancel it with:
 
 ```powershell
 git rebase --abort
@@ -97,6 +99,8 @@ git rebase --abort
 
 ---
 
-### Author: Michal Švrček
+### Author
 
-Distributed under the MIT License.
+**Michal Švrček**
+
+GPush **3.1.2** · Distributed under the MIT License.
