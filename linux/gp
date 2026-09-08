@@ -188,7 +188,7 @@ normalize_path() {
 }
 
 scan_repositories() {
-  local root dir child base
+  local root dir
   declare -A seen=()
   FOUND_REPOS=()
 
@@ -379,25 +379,16 @@ select_repository() {
 # GIT HELPERS
 # ============================================================
 
-git_out() {
-  local out rc
-  out="$(git "$@" 2>&1)"
-  rc=$?
-  GIT_OUTPUT="$out"
-  GIT_RC=$rc
-  return $rc
-}
-
 git_path() {
   git rev-parse --git-path "$1" 2>/dev/null
 }
 
 commit_hash() {
-  git rev-parse --short=8 "${1:-HEAD}" 2>/dev/null || printf '-'
+  git rev-parse --short=8 HEAD 2>/dev/null || printf '-'
 }
 
 commit_subject() {
-  git log -1 --pretty=%s "${1:-HEAD}" 2>/dev/null || printf '-'
+  git log -1 --pretty=%s HEAD 2>/dev/null || printf '-'
 }
 
 has_ref() {
@@ -885,8 +876,6 @@ status_lines
 # FETCH + SYNC
 # ============================================================
 
-FETCH_ATTEMPTED=false
-FETCH_SUCCEEDED=false
 SYNC_CHECKED=false
 AHEAD=0
 BEHIND=0
@@ -909,10 +898,8 @@ fi
 if $SHOULD_FETCH; then
   section "Remote check"
   info "[FETCH] git fetch --prune $REMOTE"
-  FETCH_ATTEMPTED=true
 
   if git fetch --prune "$REMOTE"; then
-    FETCH_SUCCEEDED=true
     ok "[FETCH] OK"
     if [[ -z "$UPSTREAM" ]]; then
       has_ref "refs/remotes/$REMOTE/$BRANCH" && REMOTE_BRANCH_EXISTS=true
@@ -999,13 +986,13 @@ if $DIFF_ONLY; then
 
   if [[ -n "$UNSTAGED" ]]; then
     printf '  %sUnstaged%s\n' "$C_YELLOW" "$C_RESET"
-    sed 's/^/    /' <<< "$UNSTAGED"
+    printf '    %s\n' "${UNSTAGED//$'\n'/$'\n    '}"
   fi
 
   if [[ -n "$STAGED" ]]; then
     [[ -n "$UNSTAGED" ]] && printf '\n'
     printf '  %sStaged%s\n' "$C_GREEN" "$C_RESET"
-    sed 's/^/    /' <<< "$STAGED"
+    printf '    %s\n' "${STAGED//$'\n'/$'\n    '}"
   fi
 
   if [[ -z "$UNSTAGED" && -z "$STAGED" ]]; then
