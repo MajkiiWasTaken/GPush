@@ -18,6 +18,10 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 10
 
+    env:
+      WINDOWS_GP: ./windows/gp.ps1
+      WINDOWS_INSTALLER: ./windows/install.ps1
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
