@@ -86,6 +86,12 @@ confirm() {
     [[ "$answer" =~ ^([yY]|[yY][eE][sS])$ ]]
 }
 
+confirm_default_yes() {
+    local answer
+    read -r -p "$1 [Y/n] " answer
+    [[ -z "$answer" || "$answer" =~ ^([yY]|[yY][eE][sS])$ ]]
+}
+
 ensure_dirs() {
     mkdir -p "$CONFIG_DIR" "$CACHE_DIR"
 }
@@ -448,13 +454,19 @@ remember_recent() {
 protected_branch() {
     local branch="$1"
     local pattern
+    local prefix
 
     for pattern in "${PROTECTED_BRANCHES[@]}"; do
-        case "$branch" in
-            $pattern)
+        # Supported protected-branch patterns are exact names or a trailing '*',
+        # e.g. "main" or "release/*". Avoid expanding a variable as a case glob.
+        if [[ "$pattern" == *"*" ]]; then
+            prefix="${pattern%\*}"
+            if [[ "$branch" == "$prefix"* ]]; then
                 return 0
-                ;;
-        esac
+            fi
+        elif [[ "$branch" == "$pattern" ]]; then
+            return 0
+        fi
     done
 
     return 1

@@ -1709,6 +1709,19 @@ function Confirm-GPushAction {
     return ($answer -match '^(?i:y|yes)$')
 }
 
+function Confirm-GPushActionDefaultYes {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Prompt
+    )
+
+    $answer = Read-Host "$Prompt [Y/n]"
+    return (
+        [string]::IsNullOrWhiteSpace($answer) -or
+        $answer -match '^(?i:y|yes)$'
+    )
+}
+
 function Get-ChangedPaths {
     $paths = @()
 
@@ -4516,7 +4529,7 @@ if ($protectedActionNeeded -and (Test-ProtectedBranch -Branch $branch) -and -not
     Write-Warn "Branch '$branch' matches the protected branch list."
     Write-Dim "Protected patterns: $($ProtectedBranches -join ', ')"
 
-    if (-not (Confirm-GPushAction -Prompt "Continue with a direct commit/push on '$branch'?")) {
+    if (-not (Confirm-GPushActionDefaultYes -Prompt "Continue with a direct commit/push on '$branch'?")) {
         Write-Warn "Operation cancelled."
 
         if ($syncAutoStashCreated) {
