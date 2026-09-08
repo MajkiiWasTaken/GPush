@@ -39,6 +39,57 @@ GPush stores its configuration in:
 %LOCALAPPDATA%\GPush\config.json
 ```
 
+The installed PowerShell launcher is located at:
+
+```text
+%LOCALAPPDATA%\GPush\bin\gp.ps1
+```
+
+##### PowerShell security warning
+
+On some Windows systems, PowerShell may display a security warning when `gp` is started:
+
+```text
+Run only scripts that you trust.
+Do you want to run ...\GPush\bin\gp.ps1?
+[D] Do not run  [R] Run once  [S] Suspend  [?] Help
+```
+
+If you installed GPush from a source you trust, unblock the installed launcher once:
+
+```powershell
+Unblock-File -Path "$env:LOCALAPPDATA\GPush\bin\gp.ps1"
+```
+
+Then verify the installation:
+
+```powershell
+gp --version
+```
+
+To unblock all PowerShell scripts installed inside the GPush directory:
+
+```powershell
+Get-ChildItem "$env:LOCALAPPDATA\GPush" -Recurse -Filter *.ps1 | Unblock-File
+```
+
+> **Note:** `%LOCALAPPDATA%` is `cmd.exe` syntax.  
+> In PowerShell commands, use `$env:LOCALAPPDATA` instead.
+
+For example:
+
+```powershell
+$env:LOCALAPPDATA
+```
+
+Do not run this in PowerShell:
+
+```powershell
+Unblock-File -Path %LOCALAPPDATA%\GPush\bin\gp.ps1
+```
+
+because PowerShell will treat `%LOCALAPPDATA%` as a literal part of the path instead of expanding the environment variable.
+
 #### Linux
 
 Requirements: **Bash** and **Git in PATH**.
