@@ -13,7 +13,7 @@ $OutputEncoding           = [System.Text.UTF8Encoding]::new($false)
 # CONFIG
 # ============================================================
 
-$ScriptVersion = "4.0.1"
+$ScriptVersion = "4.0.2"
 
 $ConfigDir  = Join-Path $env:LOCALAPPDATA "GPush"
 $ConfigFile = Join-Path $ConfigDir "config.json"
@@ -94,7 +94,7 @@ function Write-KeyValue {
         [ConsoleColor]$ValueColor = [ConsoleColor]::White
     )
 
-    Write-Host ("  {0,-12}" -f $Key) -NoNewline -ForegroundColor DarkGray
+    Write-Host ("  {0,-14}" -f $Key) -NoNewline -ForegroundColor DarkGray
     Write-Host $Value -ForegroundColor $ValueColor
 }
 
@@ -1725,17 +1725,17 @@ function Confirm-GPushActionDefaultYes {
 function Get-ChangedPaths {
     $paths = @()
 
-    $unstaged = Get-GitOutput -Arguments @("diff", "--name-only", "--diff-filter=ACMRTUXB") -AllowFailure
+    $unstaged = Get-GitOutput -Arguments @("-c", "core.quotePath=false", "diff", "--name-only", "--diff-filter=ACMRTUXB") -AllowFailure
     if ($unstaged.Success) {
         $paths += @($unstaged.Lines)
     }
 
-    $staged = Get-GitOutput -Arguments @("diff", "--cached", "--name-only", "--diff-filter=ACMRTUXB") -AllowFailure
+    $staged = Get-GitOutput -Arguments @("-c", "core.quotePath=false", "diff", "--cached", "--name-only", "--diff-filter=ACMRTUXB") -AllowFailure
     if ($staged.Success) {
         $paths += @($staged.Lines)
     }
 
-    $untracked = Get-GitOutput -Arguments @("ls-files", "--others", "--exclude-standard") -AllowFailure
+    $untracked = Get-GitOutput -Arguments @("-c", "core.quotePath=false", "ls-files", "--others", "--exclude-standard") -AllowFailure
     if ($untracked.Success) {
         $paths += @($untracked.Lines)
     }
