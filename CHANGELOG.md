@@ -2,6 +2,51 @@
 
 All notable changes to GPush are documented here.
 
+## 4.1.0
+
+### Added
+- Added project tooling with the new `project` command group:
+  - `gp project info [project]`
+  - `gp project build [project]`
+  - `gp project test [project]`
+  - `gp project run [project]`
+  - `gp project open [project]`
+  - `gp project shell [project]`
+- Added automatic project type detection for Rust, .NET, Node.js, Python and C/C++/CMake projects.
+- Added toolchain-aware project actions:
+  - Rust uses Cargo.
+  - .NET uses the `dotnet` CLI.
+  - Node.js uses npm, pnpm or Yarn based on the available lock file.
+  - Python uses the local virtual environment when available and supports common build, test and run entry points.
+  - C/C++ projects use CMake and CTest.
+- Added the new self-update command group:
+  - `gp update check`
+  - `gp update`
+  - `gp update install`
+  - `gp update rollback`
+- Added automatic latest-release checks through GitHub Releases.
+- Added local update backups and rollback support.
+- Added optional SHA-256 verification when a matching checksum asset is published.
+- Added legacy flag equivalents for the new features:
+  - `--project`
+  - `--update`
+
+### Changed
+- Bumped Windows and Linux versions to 4.1.0.
+- Extended help output with dedicated Project Tools and Self Update documentation.
+- Added `project` and `update` to the main command list and V4 command router.
+- Kept the classic `gp <project> "message"` workflow unchanged.
+- Kept the existing Git safety and synchronization logic unchanged.
+- Linux `project open` now uses `xdg-open`.
+- Linux `project shell` opens an interactive shell in the selected project directory.
+- Linux Python project handling prefers `.venv/bin/python` when available.
+- Windows and Linux updater behavior is aligned around release assets, backups, rollback and checksum verification.
+
+### Fixed
+- Fixed Linux ShellCheck SC2015 warnings by replacing `A && B || C` command chains with explicit `if`/`else` logic.
+- Fixed Linux ShellCheck SC2034 warning by removing the unused `checksum_name` variable.
+- Cleaned up Linux project command execution to avoid ambiguous failure fallbacks.
+
 ## 4.0.2
 
 ### Fixed
