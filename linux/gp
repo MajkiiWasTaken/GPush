@@ -1577,7 +1577,18 @@ handle_project() {
     if printf '%s\n' "${PROJECT_TYPES[@]}" | grep -Fxq '.NET'; then
         command -v dotnet >/dev/null 2>&1 || { err 'dotnet was not found.'; return 127; }
         local target=""; target="$(find . -maxdepth 1 -type f \( -name '*.sln' -o -name '*.csproj' \) -print -quit | sed 's#^./##')"
-        case "$action" in build) [[ -n "$target" ]] && dotnet build "$target" || dotnet build;; test) [[ -n "$target" ]] && dotnet test "$target" || dotnet test;; run) if [[ "$target" == *.csproj ]]; then dotnet run --project "$target"; else dotnet run; fi;; esac; return $?
+        case "$action" in
+            build)
+                if [[ -n "$target" ]]; then dotnet build "$target"; else dotnet build; fi
+                ;;
+            test)
+                if [[ -n "$target" ]]; then dotnet test "$target"; else dotnet test; fi
+                ;;
+            run)
+                if [[ "$target" == *.csproj ]]; then dotnet run --project "$target"; else dotnet run; fi
+                ;;
+        esac
+        return $?
     fi
     if printf '%s\n' "${PROJECT_TYPES[@]}" | grep -Fxq 'Node'; then
         local runner; runner="$(node_runner "$SELECTED")"; command -v "$runner" >/dev/null 2>&1 || { err "$runner was not found."; return 127; }
@@ -1637,10 +1648,10 @@ handle_update() {
     warn "Update available: $SCRIPT_VERSION -> $tag"; if [[ "$action" == check ]]; then dim "Run 'gp update' to install."; rm -rf "$tmp"; return 0; fi
     asset="$(release_field "$json" linux_asset)"; [[ -n "$asset" ]] || { err 'Latest release has no Linux package asset.'; rm -rf "$tmp"; return 1; }; name="${asset%%|*}"; url="${asset#*|}"; confirm_default_yes "Download and install $tag?" || { rm -rf "$tmp"; return 0; }
     info "[UPDATE] Downloading $name"; curl -fL -H "User-Agent: GPush/$SCRIPT_VERSION" "$url" -o "$tmp/$name" || { rm -rf "$tmp"; return 1; }
-    local checksum checksum_name checksum_url expected actual
+    local checksum checksum_url expected actual
     checksum="$(release_field "$json" checksum "$name" || true)"
     if [[ -n "$checksum" ]]; then
-        checksum_name="${checksum%%|*}"; checksum_url="${checksum#*|}"
+        checksum_url="${checksum#*|}"
         if curl -fsSL -H "User-Agent: GPush/$SCRIPT_VERSION" "$checksum_url" -o "$tmp/checksum.txt"; then
             expected="$(grep -F "$name" "$tmp/checksum.txt" 2>/dev/null | grep -Eo '[A-Fa-f0-9]{64}' | head -n1 || true)"
             [[ -n "$expected" ]] || expected="$(grep -Eo '[A-Fa-f0-9]{64}' "$tmp/checksum.txt" | head -n1 || true)"
