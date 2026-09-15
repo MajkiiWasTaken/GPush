@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-SCRIPT_VERSION="4.0.2"
+SCRIPT_VERSION="4.1.0"
 AUTHOR="Michal Švrček"
 GITHUB="https://github.com/MajkiiWasTaken"
 
@@ -13,6 +13,7 @@ CONFIG_FILE="$CONFIG_DIR/config"
 ALIASES_FILE="$CONFIG_DIR/aliases"
 FAVORITES_FILE="$CONFIG_DIR/favorites"
 RECENT_FILE="$CONFIG_DIR/recent"
+BACKUP_DIR="$CONFIG_DIR/backups"
 CACHE_FILE="$CACHE_DIR/repos"
 
 DEFAULT_REMOTE="origin"
@@ -172,6 +173,8 @@ EOFH
     printf '  %-11s%s\n' all 'status, fetch, sync'
     printf '  %-11s%s\n' clone '<url> [destination]'
     printf '  %-11s%s\n' recent 'show recent repositories'
+    printf '  %-11s%s\n' project 'info, build, test, run, open, shell'
+    printf '  %-11s%s\n' update 'check, install, rollback'
     printf '  %-11s%s\n' help 'show help'
     printf '  %-11s%s\n\n' version 'show version'
 
@@ -186,7 +189,23 @@ EOFH
     printf '  %-26s%s\n' '--sync' 'Safely synchronize without commit.'
     printf '  %-26s%s\n' '--pull' 'Pull with rebase.'
     printf '  %-26s%s\n' '--no-push' 'Commit locally without push.'
-    printf '  %-26s%s\n\n' '--dry-run' 'Preview commit workflow.'
+    printf '  %-26s%s\n' '--dry-run' 'Preview commit workflow.'
+    printf '  %-26s%s\n' '--project' 'Project tools: gp --project <info|build|test|run|open|shell> [project].'
+    printf '  %-26s%s\n\n' '--update' 'Self update: gp --update [check|install|rollback].'
+
+    printf '%sPROJECT TOOLS%s\n' "$C_YELLOW" "$C_RESET"
+    printf '  Detects Rust (Cargo.toml), .NET (*.sln/*.csproj), Node (package.json),\n'
+    printf '  Python (pyproject.toml/requirements.txt), and C/C++ (CMakeLists.txt).\n'
+    printf '  build/test/run selects the detected native toolchain.\n'
+    printf '  If [project] is omitted, the current Git repository is used.\n'
+    printf '  gp project shell starts an interactive shell in the project directory.\n\n'
+
+    printf '%sSELF UPDATE%s\n' "$C_YELLOW" "$C_RESET"
+    printf '  gp update check      Check the latest stable GitHub Release only.\n'
+    printf '  gp update            Download and install the latest Linux package.\n'
+    printf '  gp update rollback   Restore the newest local gp backup.\n'
+    printf '  Config, aliases, favorites, recent entries, and repository cache stay untouched.\n'
+    printf '  Backups: %s\n\n' "$BACKUP_DIR"
 }
 
 normalize_path() {
@@ -859,6 +878,18 @@ translate_legacy() {
                 shift
                 break
                 ;;
+            --project)
+                translated_args=(project)
+                shift
+                translated_args+=("$@")
+                break
+                ;;
+            --update)
+                translated_args=(update)
+                shift
+                translated_args+=("$@")
+                break
+                ;;
             --all)
                 translated_args=(all)
                 shift
@@ -1478,6 +1509,157 @@ handle_tag() {
     esac
 }
 
+
+# -----------------------------------------------------------------------------
+# Project tools
+# -----------------------------------------------------------------------------
+project_detect() {
+    local path="$1"
+    PROJECT_TYPES=()
+    PROJECT_MANIFESTS=()
+    [[ -f "$path/Cargo.toml" ]] && { PROJECT_TYPES+=("Rust"); PROJECT_MANIFESTS+=("Cargo.toml"); }
+    local first_sln="" first_csproj=""
+    first_sln="$(find "$path" -maxdepth 1 -type f -name '*.sln' -print -quit 2>/dev/null || true)"
+    first_csproj="$(find "$path" -maxdepth 1 -type f -name '*.csproj' -print -quit 2>/dev/null || true)"
+    if [[ -n "$first_sln" || -n "$first_csproj" ]]; then
+        PROJECT_TYPES+=(".NET")
+        if [[ -n "$first_sln" ]]; then PROJECT_MANIFESTS+=("$(basename "$first_sln")"); else PROJECT_MANIFESTS+=("$(basename "$first_csproj")"); fi
+    fi
+    [[ -f "$path/package.json" ]] && { PROJECT_TYPES+=("Node"); PROJECT_MANIFESTS+=("package.json"); }
+    if [[ -f "$path/pyproject.toml" ]]; then PROJECT_TYPES+=("Python"); PROJECT_MANIFESTS+=("pyproject.toml")
+    elif [[ -f "$path/requirements.txt" ]]; then PROJECT_TYPES+=("Python"); PROJECT_MANIFESTS+=("requirements.txt"); fi
+    [[ -f "$path/CMakeLists.txt" ]] && { PROJECT_TYPES+=("C/C++"); PROJECT_MANIFESTS+=("CMakeLists.txt"); }
+    [[ ${#PROJECT_TYPES[@]} -eq 0 ]] && PROJECT_TYPES+=("Generic")
+}
+node_runner() { local path="$1"; [[ -f "$path/pnpm-lock.yaml" ]] && { printf 'pnpm'; return; }; [[ -f "$path/yarn.lock" ]] && { printf 'yarn'; return; }; printf 'npm'; }
+node_has_script() {
+    local path="$1" name="$2"
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$path/package.json" "$name" <<'PY_NODE' >/dev/null 2>&1
+import json,sys
+try:
+    with open(sys.argv[1],encoding='utf-8') as f: p=json.load(f)
+    raise SystemExit(0 if sys.argv[2] in p.get('scripts',{}) else 1)
+except Exception:
+    raise SystemExit(1)
+PY_NODE
+        return $?
+    fi
+    grep -Eq '"'"$name"'"[[:space:]]*:' "$path/package.json" 2>/dev/null
+}
+project_python() {
+    local path="$1"
+    [[ -x "$path/.venv/bin/python" ]] && { printf '%s' "$path/.venv/bin/python"; return; }
+    command -v python3 >/dev/null 2>&1 && { printf 'python3'; return; }
+    command -v python >/dev/null 2>&1 && { printf 'python'; return; }
+    return 1
+}
+handle_project() {
+    local action="${1:-info}"; shift || true
+    local project="${1:-}"
+    case "$action" in info|build|test|run|open|shell) ;; *) err "Unknown project action: $action"; dim 'Use: gp project info|build|test|run|open|shell [project]'; return 2;; esac
+    [[ $# -le 1 ]] || { err 'Project command accepts at most one project.'; return 2; }
+    select_repo "$project" || return 1
+    remember_recent "$SELECTED"
+    project_detect "$SELECTED"
+    local branch="-"; branch="$(git -C "$SELECTED" branch --show-current 2>/dev/null || true)"; [[ -n "$branch" ]] || branch='-'
+    banner; section 'Project'
+    kv Name "$(repo_name "$SELECTED")"; kv Path "$SELECTED" "$C_GRAY"; kv Type "$(IFS=' + '; echo "${PROJECT_TYPES[*]}")"
+    if [[ ${#PROJECT_MANIFESTS[@]} -gt 0 ]]; then kv Manifest "$(IFS=', '; echo "${PROJECT_MANIFESTS[*]}")"; else kv Manifest '-'; fi
+    kv 'Git branch' "$branch" "$C_MAGENTA"
+    case "$action" in
+        info) section 'Available'; dim '  info    Detect project type and metadata.'; dim '  build   Build using the detected toolchain.'; dim '  test    Run project tests.'; dim '  run     Run when a safe default can be detected.'; dim '  open    Open project folder with xdg-open.'; dim '  shell   Start an interactive shell in the project.'; return 0;;
+        open) command -v xdg-open >/dev/null 2>&1 || { err 'xdg-open was not found.'; return 1; }; xdg-open "$SELECTED" >/dev/null 2>&1 & disown || true; ok 'Opened project folder.'; return 0;;
+        shell) cd "$SELECTED" || return 1; local shell_bin="${SHELL:-/bin/bash}"; [[ -x "$shell_bin" ]] || shell_bin=/bin/bash; exec "$shell_bin" -i;;
+    esac
+    cd "$SELECTED" || return 1
+    if printf '%s\n' "${PROJECT_TYPES[@]}" | grep -Fxq 'Rust'; then command -v cargo >/dev/null 2>&1 || { err 'cargo was not found.'; return 127; }; case "$action" in build) cargo build;; test) cargo test;; run) cargo run;; esac; return $?; fi
+    if printf '%s\n' "${PROJECT_TYPES[@]}" | grep -Fxq '.NET'; then
+        command -v dotnet >/dev/null 2>&1 || { err 'dotnet was not found.'; return 127; }
+        local target=""; target="$(find . -maxdepth 1 -type f \( -name '*.sln' -o -name '*.csproj' \) -print -quit | sed 's#^./##')"
+        case "$action" in build) [[ -n "$target" ]] && dotnet build "$target" || dotnet build;; test) [[ -n "$target" ]] && dotnet test "$target" || dotnet test;; run) if [[ "$target" == *.csproj ]]; then dotnet run --project "$target"; else dotnet run; fi;; esac; return $?
+    fi
+    if printf '%s\n' "${PROJECT_TYPES[@]}" | grep -Fxq 'Node'; then
+        local runner; runner="$(node_runner "$SELECTED")"; command -v "$runner" >/dev/null 2>&1 || { err "$runner was not found."; return 127; }
+        case "$action" in build) node_has_script "$SELECTED" build || { err "package.json does not define 'build'."; return 1; }; "$runner" run build;; test) node_has_script "$SELECTED" test || { err "package.json does not define 'test'."; return 1; }; "$runner" test;; run) if node_has_script "$SELECTED" dev; then "$runner" run dev; elif node_has_script "$SELECTED" start; then "$runner" start; else err "No 'dev' or 'start' script found."; return 1; fi;; esac; return $?
+    fi
+    if printf '%s\n' "${PROJECT_TYPES[@]}" | grep -Fxq 'Python'; then
+        local py; py="$(project_python "$SELECTED")" || { err 'Python was not found.'; return 127; }
+        case "$action" in build) if [[ -f pyproject.toml ]]; then "$py" -m build; else "$py" -m compileall .; fi;; test) "$py" -m pytest;; run) if [[ -f main.py ]]; then "$py" main.py; elif [[ -f app.py ]]; then "$py" app.py; else err 'No main.py or app.py found.'; return 1; fi;; esac; return $?
+    fi
+    if printf '%s\n' "${PROJECT_TYPES[@]}" | grep -Fxq 'C/C++'; then command -v cmake >/dev/null 2>&1 || { err 'cmake was not found.'; return 127; }; case "$action" in build) cmake -S . -B build && cmake --build build;; test) command -v ctest >/dev/null 2>&1 || { err 'ctest was not found.'; return 127; }; ctest --test-dir build --output-on-failure;; run) err 'A generic CMake project has no safe automatic run target.'; return 1;; esac; return $?; fi
+    err "Action '$action' is not available for this project type."; return 1
+}
+# -----------------------------------------------------------------------------
+# Self update
+# -----------------------------------------------------------------------------
+version_numeric() { local v="${1#v}"; printf '%s' "${v%%-*}"; }
+version_gt() { local a b; a="$(version_numeric "$1")"; b="$(version_numeric "$2")"; [[ "$a" == "$b" ]] && return 1; [[ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | tail -n1)" == "$a" ]]; }
+latest_release_json() { command -v curl >/dev/null 2>&1 || { err 'curl is required for GPush update.'; return 1; }; curl -fsSL -H "User-Agent: GPush/$SCRIPT_VERSION" -H 'Accept: application/vnd.github+json' 'https://api.github.com/repos/MajkiiWasTaken/GPush/releases/latest'; }
+release_field() {
+    local json_file="$1" key="$2" extra="${3:-}"
+    command -v python3 >/dev/null 2>&1 || { err 'python3 is required to parse GitHub release metadata.'; return 1; }
+    python3 - "$json_file" "$key" "$extra" <<'PY_RELEASE'
+import json,sys
+with open(sys.argv[1],encoding='utf-8') as f: d=json.load(f)
+if sys.argv[2]=='tag': print(d.get('tag_name',''))
+elif sys.argv[2]=='linux_asset':
+    assets=d.get('assets',[])
+    cand=[a for a in assets if 'linux' in a.get('name','').lower() and a.get('name','').lower().endswith(('.tar.gz','.zip'))]
+    if not cand: cand=[a for a in assets if a.get('name','').lower().endswith(('.tar.gz','.zip')) and 'source' not in a.get('name','').lower()]
+    if cand: print(cand[0].get('name','')+'|'+cand[0].get('browser_download_url',''))
+elif sys.argv[2]=='checksum':
+    assets=d.get('assets',[])
+    package=sys.argv[3] if len(sys.argv) > 3 else ''
+    wanted=[package+'.sha256', package+'.sha256.txt', 'SHA256SUMS', 'SHA256SUMS.txt', 'sha256sums.txt']
+    for wanted_name in wanted:
+        for a in assets:
+            if a.get('name','').lower()==wanted_name.lower():
+                print(a.get('name','')+'|'+a.get('browser_download_url',''))
+                raise SystemExit(0)
+PY_RELEASE
+}
+backup_current_gp() {
+    mkdir -p "$BACKUP_DIR"
+    local current_path backup_path; current_path="$(command -v gp 2>/dev/null || true)"; [[ -n "$current_path" ]] || current_path="${BASH_SOURCE[0]}"
+    backup_path="$BACKUP_DIR/v$SCRIPT_VERSION-$(date +%Y%m%d-%H%M%S)"; mkdir -p "$backup_path"; cp "$current_path" "$backup_path/gp"; chmod +x "$backup_path/gp"; printf '%s' "$backup_path"
+}
+handle_update() {
+    local action="${1:-install}"; case "$action" in check|install|rollback) ;; *) err "Unknown update action: $action"; dim 'Use: gp update [check|install|rollback]'; return 2;; esac
+    banner
+    if [[ "$action" == rollback ]]; then
+        local newest current_path; newest="$(find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -r | head -n1 || true)"; [[ -n "$newest" && -f "$newest/gp" ]] || { warn 'No GPush backup exists.'; return 0; }
+        current_path="$(command -v gp 2>/dev/null || true)"; [[ -n "$current_path" ]] || current_path="$HOME/.local/bin/gp"; section 'GPush Rollback'; kv Current "$SCRIPT_VERSION"; kv Backup "$newest" "$C_GRAY"; confirm 'Restore newest GPush backup?' || return 0; install -m 0755 "$newest/gp" "$current_path" || return 1; ok 'Rollback completed.'; dim 'Run a new gp command to use the restored version.'; return 0
+    fi
+    local tmp json tag asset name url; tmp="$(mktemp -d)" || return 1; json="$tmp/release.json"; latest_release_json > "$json" || { rm -rf "$tmp"; return 1; }; tag="$(release_field "$json" tag)"; [[ -n "$tag" ]] || { err 'Could not read latest release version.'; rm -rf "$tmp"; return 1; }
+    section 'GPush Update'; kv Installed "$SCRIPT_VERSION"; kv Latest "$tag"; kv Channel stable
+    if ! version_gt "$tag" "$SCRIPT_VERSION"; then ok 'GPush is up to date.'; rm -rf "$tmp"; return 0; fi
+    warn "Update available: $SCRIPT_VERSION -> $tag"; if [[ "$action" == check ]]; then dim "Run 'gp update' to install."; rm -rf "$tmp"; return 0; fi
+    asset="$(release_field "$json" linux_asset)"; [[ -n "$asset" ]] || { err 'Latest release has no Linux package asset.'; rm -rf "$tmp"; return 1; }; name="${asset%%|*}"; url="${asset#*|}"; confirm_default_yes "Download and install $tag?" || { rm -rf "$tmp"; return 0; }
+    info "[UPDATE] Downloading $name"; curl -fL -H "User-Agent: GPush/$SCRIPT_VERSION" "$url" -o "$tmp/$name" || { rm -rf "$tmp"; return 1; }
+    local checksum checksum_name checksum_url expected actual
+    checksum="$(release_field "$json" checksum "$name" || true)"
+    if [[ -n "$checksum" ]]; then
+        checksum_name="${checksum%%|*}"; checksum_url="${checksum#*|}"
+        if curl -fsSL -H "User-Agent: GPush/$SCRIPT_VERSION" "$checksum_url" -o "$tmp/checksum.txt"; then
+            expected="$(grep -F "$name" "$tmp/checksum.txt" 2>/dev/null | grep -Eo '[A-Fa-f0-9]{64}' | head -n1 || true)"
+            [[ -n "$expected" ]] || expected="$(grep -Eo '[A-Fa-f0-9]{64}' "$tmp/checksum.txt" | head -n1 || true)"
+            if [[ -n "$expected" ]]; then
+                if command -v sha256sum >/dev/null 2>&1; then actual="$(sha256sum "$tmp/$name" | awk '{print $1}')"; else actual="$(shasum -a 256 "$tmp/$name" | awk '{print $1}')"; fi
+                [[ "${actual,,}" == "${expected,,}" ]] || { err 'Downloaded package SHA-256 does not match published checksum.'; rm -rf "$tmp"; return 1; }
+                ok '[UPDATE] SHA-256 verified'
+            else
+                warn '[UPDATE] Checksum asset found, but no SHA-256 value could be parsed.'
+            fi
+        fi
+    else
+        dim '[UPDATE] No SHA-256 asset published; validating package structure instead.'
+    fi
+    mkdir -p "$tmp/extract"
+    case "$name" in *.tar.gz) tar -xzf "$tmp/$name" -C "$tmp/extract" || { rm -rf "$tmp"; return 1; };; *.zip) command -v unzip >/dev/null 2>&1 || { err 'unzip is required for ZIP update packages.'; rm -rf "$tmp"; return 1; }; unzip -q "$tmp/$name" -d "$tmp/extract" || { rm -rf "$tmp"; return 1; };; *) err 'Unsupported Linux update package.'; rm -rf "$tmp"; return 1;; esac
+    local new_gp package_version backup_path current_path; new_gp="$(find "$tmp/extract" -type f -name gp -print -quit)"; [[ -n "$new_gp" ]] || { err 'Release package does not contain gp.'; rm -rf "$tmp"; return 1; }; package_version="$(sed -n 's/^SCRIPT_VERSION="\([^"]*\)"/\1/p' "$new_gp" | head -n1)"; [[ "$(version_numeric "$package_version")" == "$(version_numeric "$tag")" ]] || { err "Package version '$package_version' does not match release '$tag'."; rm -rf "$tmp"; return 1; }
+    backup_path="$(backup_current_gp)" || { rm -rf "$tmp"; return 1; }; dim "Backup: $backup_path"; current_path="$(command -v gp 2>/dev/null || true)"; [[ -n "$current_path" ]] || current_path="$HOME/.local/bin/gp"; mkdir -p "$(dirname "$current_path")"; install -m 0755 "$new_gp" "$current_path" || { rm -rf "$tmp"; return 1; }; ok 'GPush updated successfully.'; kv Previous "$SCRIPT_VERSION"; kv Current "$package_version" "$C_GREEN"; rm -rf "$tmp"
+}
 main() {
     load_config
 
@@ -1509,6 +1691,12 @@ main() {
             ;;
         recent)
             handle_recent
+            ;;
+        project)
+            handle_project "$@"
+            ;;
+        update)
+            handle_update "$@"
             ;;
         clone)
             handle_clone "$@"

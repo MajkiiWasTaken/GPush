@@ -13,7 +13,7 @@ $OutputEncoding           = [System.Text.UTF8Encoding]::new($false)
 # CONFIG
 # ============================================================
 
-$ScriptVersion = "4.0.2"
+$ScriptVersion = "4.1.0"
 
 $ConfigDir  = Join-Path $env:LOCALAPPDATA "GPush"
 $ConfigFile = Join-Path $ConfigDir "config.json"
@@ -94,6 +94,8 @@ function Write-KeyValue {
         [ConsoleColor]$ValueColor = [ConsoleColor]::White
     )
 
+    # Keep key/value output aligned with at least one visible space
+    # after longer labels such as "Working tree".
     Write-Host ("  {0,-14}" -f $Key) -NoNewline -ForegroundColor DarkGray
     Write-Host $Value -ForegroundColor $ValueColor
 }
@@ -672,6 +674,8 @@ function Show-Help {
     Write-Host ("  {0,-11}{1}" -f "all", "status, fetch, sync") -ForegroundColor White
     Write-Host ("  {0,-11}{1}" -f "clone", "<url> [destination]") -ForegroundColor White
     Write-Host ("  {0,-11}{1}" -f "recent", "show recent repositories") -ForegroundColor White
+    Write-Host ("  {0,-11}{1}" -f "project", "info, build, test, run, open, shell") -ForegroundColor White
+    Write-Host ("  {0,-11}{1}" -f "update", "check, install, rollback") -ForegroundColor White
     Write-Host ("  {0,-11}{1}" -f "help", "show help") -ForegroundColor White
     Write-Host ("  {0,-11}{1}" -f "version", "show version") -ForegroundColor White
     Write-Host ""
@@ -697,6 +701,8 @@ function Show-Help {
     Write-OptionHelp "--recent" "Show recently used repositories."
     Write-OptionHelp "--open" "Open a repository folder in File Explorer."
     Write-OptionHelp "--clone" "Clone: gp --clone <url> [destination]."
+    Write-OptionHelp "--project" "Project tools: gp --project <info|build|test|run|open|shell> [project]."
+    Write-OptionHelp "--update" "Self update: gp --update [check|install|rollback]."
     Write-OptionHelp "-s, --status" "Show repository, branch, remote, sync, and local status only."
     Write-OptionHelp "--diff" "Show local changes and diff statistics only."
     Write-OptionHelp "--renormalize" "Renormalize tracked files using .gitattributes and show status."
@@ -747,6 +753,10 @@ function Show-Help {
     Write-ExampleHelp 'gp alias set manager TestProject' "Create a repository alias."
     Write-ExampleHelp 'gp all fetch' "Refresh status for all repositories."
     Write-ExampleHelp 'gp clone <url>' "Clone and cache a repository."
+    Write-ExampleHelp 'gp project info TestProject' "Detect project type and available actions."
+    Write-ExampleHelp 'gp project build TestProject' "Build using the detected toolchain."
+    Write-ExampleHelp 'gp update check' "Check GitHub Releases for a newer GPush version."
+    Write-ExampleHelp 'gp update' "Download and install the latest stable GPush release."
 
     Write-ExampleGroup "Commit & push"
     Write-ExampleHelp 'gp TestProject "Fix communication handling"' "Commit all local changes and safely push them."
@@ -827,8 +837,63 @@ function Show-Help {
     Write-ExampleHelp 'gp --open' "Open the current repository folder."
     Write-ExampleHelp 'gp --clone <url>' "Clone into the first configured search root."
     Write-ExampleHelp 'gp --clone <url> <destination>' "Clone into an explicit destination."
+    Write-ExampleHelp 'gp --project info TestProject' "Legacy flag syntax for project inspection."
+    Write-ExampleHelp 'gp --project build TestProject' "Legacy flag syntax for project build."
+    Write-ExampleHelp 'gp --update check' "Legacy flag syntax for checking GPush updates."
+    Write-ExampleHelp 'gp --update' "Legacy flag syntax for installing the latest GPush release."
+
+    Write-ExampleGroup "Project tools"
+    Write-ExampleHelp 'gp project info [project]' "Detect project type, manifest, Git branch, and available actions."
+    Write-ExampleHelp 'gp project build [project]' "Build the project using its detected toolchain."
+    Write-ExampleHelp 'gp project test [project]' "Run tests using the detected toolchain."
+    Write-ExampleHelp 'gp project run [project]' "Run the project when a safe default entry point can be detected."
+    Write-ExampleHelp 'gp project open [project]' "Open the project folder in File Explorer."
+    Write-ExampleHelp 'gp project shell [project]' "Open PowerShell in the project directory."
+
+    Write-ExampleGroup "Self update"
+    Write-ExampleHelp 'gp update check' "Check GitHub Releases without changing the installation."
+    Write-ExampleHelp 'gp update' "Download and install the latest stable Windows release."
+    Write-ExampleHelp 'gp update install' "Explicit form of 'gp update'."
+    Write-ExampleHelp 'gp update rollback' "Restore the newest local backup of gp.ps1."
 
     Write-Host ""
+    Write-Host "PROJECT TOOLS" -ForegroundColor Yellow
+    Write-Dim "  Project commands are independent from the normal Git commit/push workflow."
+    Write-Dim "  If [project] is omitted, GPush uses the Git repository in the current directory."
+    Write-Dim "  A project can also be selected by repository name, alias, cached path, or explicit directory path."
+    Write-Host ""
+    Write-Dim "  Detection:"
+    Write-Dim "    Cargo.toml                 Rust"
+    Write-Dim "    *.sln / *.csproj          .NET"
+    Write-Dim "    package.json               Node.js"
+    Write-Dim "    pyproject.toml             Python"
+    Write-Dim "    requirements.txt           Python"
+    Write-Dim "    CMakeLists.txt             C / C++"
+    Write-Host ""
+    Write-Dim "  Default actions:"
+    Write-Dim "    Rust       cargo build / cargo test / cargo run"
+    Write-Dim "    .NET       dotnet build / dotnet test / dotnet run"
+    Write-Dim "    Node.js    npm, pnpm, or yarn based on the lock file"
+    Write-Dim "    Python     python -m build/pytest and main.py or app.py for run"
+    Write-Dim "    C/C++      cmake configure/build and ctest"
+    Write-Host ""
+    Write-Dim "  Mixed repositories may report multiple detected project types."
+    Write-Dim "  Build/test/run uses a safe priority order: Rust, .NET, Node.js, Python, C/C++."
+    Write-Dim "  GPush never invents a generic run target for CMake projects."
+
+    Write-Host ""
+    Write-Host "SELF UPDATE" -ForegroundColor Yellow
+    Write-Dim "  GPush checks the latest stable GitHub Release of MajkiiWasTaken/GPush."
+    Write-Dim "  'gp update check' only compares versions and never modifies files."
+    Write-Dim "  'gp update' downloads the Windows ZIP release asset and verifies its structure."
+    Write-Dim "  If a matching SHA-256 asset is published, GPush verifies the downloaded package."
+    Write-Dim "  Before replacing gp.ps1, the current script is copied to:"
+    Write-Dim "    %LOCALAPPDATA%\GPush\backups\"
+    Write-Dim "  Config, repository cache, aliases, favorites, and recent repositories are left untouched."
+    Write-Dim "  'gp update rollback' restores the newest available gp.ps1 backup."
+    Write-Dim "  After update or rollback, start a new gp command so PowerShell loads the replaced script."
+    Write-Host ""
+
     Write-Host "DEFAULT WORKFLOW" -ForegroundColor Yellow
     Write-Dim "  1. Find the repository from the local cache."
     Write-Dim "  2. Run Git preflight checks."
@@ -860,6 +925,901 @@ function Show-Help {
 
 # Load/create config before argument parsing so every command uses the same settings.
 Initialize-GPushConfig
+
+
+# ============================================================
+# GP SELF UPDATE / PROJECT TOOLS
+# ============================================================
+
+$GPushReleaseApi = "https://api.github.com/repos/MajkiiWasTaken/GPush/releases/latest"
+$GPushBackupDir = Join-Path $ConfigDir "backups"
+
+function ConvertTo-GPushVersion {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $null
+    }
+
+    $clean = $Value.Trim()
+    if ($clean.StartsWith("v", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $clean = $clean.Substring(1)
+    }
+
+    # [version] cannot parse prerelease suffixes. Stable updater intentionally
+    # compares only the numeric part of a release tag.
+    $clean = ($clean -split '-', 2)[0]
+
+    try {
+        return [version]$clean
+    }
+    catch {
+        return $null
+    }
+}
+
+function Get-GPushLatestRelease {
+    try {
+        $headers = @{
+            "User-Agent" = "GPush/$ScriptVersion"
+            "Accept"     = "application/vnd.github+json"
+        }
+
+        return Invoke-RestMethod `
+            -Uri $GPushReleaseApi `
+            -Headers $headers `
+            -Method Get `
+            -ErrorAction Stop
+    }
+    catch {
+        Write-Err "Could not check GitHub Releases."
+        Write-Dim $_.Exception.Message
+        return $null
+    }
+}
+
+function Get-GPushWindowsReleaseAsset {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Release
+    )
+
+    $assets = @($Release.assets)
+
+    if ($assets.Count -eq 0) {
+        return $null
+    }
+
+    $preferred = @(
+        $assets |
+            Where-Object {
+                $_.name -match '(?i)windows' -and
+                $_.name -match '(?i)\.zip$' -and
+                $_.name -notmatch '(?i)\.sha256\.zip$'
+            } |
+            Sort-Object name
+    )
+
+    if ($preferred.Count -gt 0) {
+        return $preferred[0]
+    }
+
+    $fallback = @(
+        $assets |
+            Where-Object {
+                $_.name -match '(?i)\.zip$' -and
+                $_.name -notmatch '(?i)(source|src)'
+            } |
+            Sort-Object name
+    )
+
+    if ($fallback.Count -gt 0) {
+        return $fallback[0]
+    }
+
+    return $null
+}
+
+function Get-GPushChecksumAsset {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Release,
+        [Parameter(Mandatory = $true)]
+        [string]$PackageName
+    )
+
+    $assets = @($Release.assets)
+    $exactNames = @(
+        "$PackageName.sha256",
+        "$PackageName.sha256.txt",
+        "SHA256SUMS",
+        "sha256sums.txt"
+    )
+
+    foreach ($name in $exactNames) {
+        $match = @($assets | Where-Object { $_.name -ieq $name })
+        if ($match.Count -gt 0) {
+            return $match[0]
+        }
+    }
+
+    return $null
+}
+
+function Test-GPushDownloadedPackage {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PackagePath,
+        [Parameter(Mandatory = $true)]
+        $Release,
+        [Parameter(Mandatory = $true)]
+        $PackageAsset
+    )
+
+    $checksumAsset = Get-GPushChecksumAsset `
+        -Release $Release `
+        -PackageName ([string]$PackageAsset.name)
+
+    if ($null -eq $checksumAsset) {
+        Write-Dim "No SHA-256 asset published; package structure will still be validated."
+        return $true
+    }
+
+    $checksumFile = Join-Path ([System.IO.Path]::GetDirectoryName($PackagePath)) "checksum.txt"
+
+    try {
+        Invoke-WebRequest `
+            -Uri $checksumAsset.browser_download_url `
+            -OutFile $checksumFile `
+            -Headers @{ "User-Agent" = "GPush/$ScriptVersion" } `
+            -ErrorAction Stop
+
+        $checksumText = Get-Content -Path $checksumFile -Raw -ErrorAction Stop
+        $expected = $null
+
+        foreach ($line in ($checksumText -split "`r?`n")) {
+            if ($line -match '(?i)\b([A-F0-9]{64})\b') {
+                if ($checksumAsset.name -match '(?i)SHA256SUMS|sha256sums' -and
+                    $line -notmatch [regex]::Escape([string]$PackageAsset.name)) {
+                    continue
+                }
+
+                $expected = $Matches[1].ToLowerInvariant()
+                break
+            }
+        }
+
+        if ([string]::IsNullOrWhiteSpace($expected)) {
+            Write-Warn "Checksum file was found, but no usable SHA-256 value could be read."
+            return $true
+        }
+
+        $actual = (Get-FileHash -Path $PackagePath -Algorithm SHA256).Hash.ToLowerInvariant()
+
+        if ($actual -ne $expected) {
+            Write-Err "Downloaded package checksum does not match the published SHA-256."
+            Write-KeyValue "Expected" $expected ([ConsoleColor]::DarkGray)
+            Write-KeyValue "Actual" $actual ([ConsoleColor]::Red)
+            return $false
+        }
+
+        Write-Ok "SHA-256 verified."
+        return $true
+    }
+    catch {
+        Write-Warn "Checksum verification could not be completed."
+        Write-Dim $_.Exception.Message
+        return $true
+    }
+}
+
+function Show-GPushUpdateStatus {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Release
+    )
+
+    $latestText = [string]$Release.tag_name
+    $installedVersion = ConvertTo-GPushVersion -Value $ScriptVersion
+    $latestVersion = ConvertTo-GPushVersion -Value $latestText
+
+    Write-Section "GPush Update"
+    Write-KeyValue "Installed" $ScriptVersion
+    Write-KeyValue "Latest" $latestText
+    Write-KeyValue "Channel" "stable"
+
+    if ($null -eq $latestVersion -or $null -eq $installedVersion) {
+        Write-Warn "Could not compare version numbers."
+        return $false
+    }
+
+    Write-Host ""
+
+    if ($latestVersion -gt $installedVersion) {
+        Write-Warn "Update available: $ScriptVersion -> $latestText"
+        return $true
+    }
+
+    if ($latestVersion -eq $installedVersion) {
+        Write-Ok "GPush is up to date."
+        return $false
+    }
+
+    Write-Dim "Installed version is newer than the latest stable release."
+    return $false
+}
+
+function Backup-GPushInstallation {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CurrentScript
+    )
+
+    if (-not (Test-Path $GPushBackupDir)) {
+        New-Item -ItemType Directory -Path $GPushBackupDir -Force | Out-Null
+    }
+
+    $backupName = "v$ScriptVersion-" + (Get-Date -Format "yyyyMMdd-HHmmss")
+    $backupPath = Join-Path $GPushBackupDir $backupName
+    New-Item -ItemType Directory -Path $backupPath -Force | Out-Null
+
+    Copy-Item -Path $CurrentScript -Destination (Join-Path $backupPath "gp.ps1") -Force
+
+    $metadata = [ordered]@{
+        version = $ScriptVersion
+        createdAt = (Get-Date).ToString("o")
+        originalPath = $CurrentScript
+    }
+
+    $metadata |
+        ConvertTo-Json -Depth 4 |
+        Set-Content -Path (Join-Path $backupPath "backup.json") -Encoding UTF8
+
+    return $backupPath
+}
+
+function Install-GPushRelease {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Release
+    )
+
+    if ([string]::IsNullOrWhiteSpace($PSCommandPath) -or -not (Test-Path $PSCommandPath)) {
+        Write-Err "GPush cannot determine the path of the currently running script."
+        Write-Dim "Run the installed gp.ps1 directly or reinstall GPush once."
+        return 1
+    }
+
+    $asset = Get-GPushWindowsReleaseAsset -Release $Release
+    if ($null -eq $asset) {
+        Write-Err "Latest release does not contain a Windows ZIP package."
+        Write-Dim "Expected a release asset whose name contains 'windows' and ends in .zip."
+        return 1
+    }
+
+    $latestVersion = ConvertTo-GPushVersion -Value ([string]$Release.tag_name)
+    $installedVersion = ConvertTo-GPushVersion -Value $ScriptVersion
+
+    if ($null -eq $latestVersion -or $null -eq $installedVersion) {
+        Write-Err "Could not parse the installed or release version."
+        return 1
+    }
+
+    if ($latestVersion -le $installedVersion) {
+        Write-Ok "GPush is already up to date."
+        return 0
+    }
+
+    Write-Section "Install update"
+    Write-KeyValue "From" $ScriptVersion
+    Write-KeyValue "To" ([string]$Release.tag_name) ([ConsoleColor]::Green)
+    Write-KeyValue "Package" ([string]$asset.name)
+    Write-Host ""
+
+    if (-not (Confirm-GPushAction -Prompt "Download and install this update?")) {
+        Write-Warn "Update cancelled."
+        return 0
+    }
+
+    $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("gpush-update-" + [guid]::NewGuid().ToString("N"))
+    $packagePath = Join-Path $tempRoot ([string]$asset.name)
+    $extractPath = Join-Path $tempRoot "package"
+
+    try {
+        New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+        New-Item -ItemType Directory -Path $extractPath -Force | Out-Null
+
+        Write-Info "[UPDATE] Downloading $($asset.name)"
+        Invoke-WebRequest `
+            -Uri $asset.browser_download_url `
+            -OutFile $packagePath `
+            -Headers @{ "User-Agent" = "GPush/$ScriptVersion" } `
+            -ErrorAction Stop
+
+        Write-Ok "[UPDATE] Downloaded"
+
+        Write-Info "[UPDATE] Verifying package"
+        if (-not (Test-GPushDownloadedPackage -PackagePath $packagePath -Release $Release -PackageAsset $asset)) {
+            return 1
+        }
+
+        Expand-Archive -Path $packagePath -DestinationPath $extractPath -Force
+
+        $candidateScripts = @(
+            Get-ChildItem -Path $extractPath -Filter "gp.ps1" -File -Recurse -ErrorAction SilentlyContinue
+        )
+
+        if ($candidateScripts.Count -eq 0) {
+            Write-Err "The release package does not contain gp.ps1."
+            return 1
+        }
+
+        # Prefer the shallowest gp.ps1 if a package happens to contain examples/tests.
+        $newScript = $candidateScripts |
+            Sort-Object { $_.FullName.Split([IO.Path]::DirectorySeparatorChar).Count } |
+            Select-Object -First 1
+
+        $newContent = Get-Content -Path $newScript.FullName -Raw -ErrorAction Stop
+        if ($newContent -notmatch '\$ScriptVersion\s*=\s*"([^"]+)"') {
+            Write-Err "The downloaded gp.ps1 does not expose a ScriptVersion."
+            return 1
+        }
+
+        $packageVersionText = $Matches[1]
+        $packageVersion = ConvertTo-GPushVersion -Value $packageVersionText
+
+        if ($null -eq $packageVersion -or $packageVersion -ne $latestVersion) {
+            Write-Err "Release package version does not match the GitHub release."
+            Write-KeyValue "Release" ([string]$Release.tag_name)
+            Write-KeyValue "Package" $packageVersionText
+            return 1
+        }
+
+        Write-Info "[UPDATE] Creating rollback backup"
+        $backupPath = Backup-GPushInstallation -CurrentScript $PSCommandPath
+        Write-Dim "Backup: $backupPath"
+
+        Write-Info "[UPDATE] Installing gp.ps1"
+        Copy-Item -Path $newScript.FullName -Destination $PSCommandPath -Force
+
+        Write-Ok "GPush updated successfully."
+        Write-KeyValue "Previous" $ScriptVersion
+        Write-KeyValue "Current" $packageVersionText ([ConsoleColor]::Green)
+        Write-Dim "Restart the current PowerShell command before using the new version."
+        Write-Host ""
+        return 0
+    }
+    catch {
+        Write-Err "GPush update failed."
+        Write-Dim $_.Exception.Message
+        return 1
+    }
+    finally {
+        if (Test-Path $tempRoot) {
+            Remove-Item -Path $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Restore-GPushBackup {
+    if ([string]::IsNullOrWhiteSpace($PSCommandPath) -or -not (Test-Path $PSCommandPath)) {
+        Write-Err "GPush cannot determine the installed script path."
+        return 1
+    }
+
+    if (-not (Test-Path $GPushBackupDir)) {
+        Write-Warn "No GPush backup exists."
+        return 0
+    }
+
+    $backups = @(
+        Get-ChildItem -Path $GPushBackupDir -Directory -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending
+    )
+
+    if ($backups.Count -eq 0) {
+        Write-Warn "No GPush backup exists."
+        return 0
+    }
+
+    $backup = $backups[0]
+    $backupScript = Join-Path $backup.FullName "gp.ps1"
+
+    if (-not (Test-Path $backupScript)) {
+        Write-Err "Newest backup is incomplete: $($backup.FullName)"
+        return 1
+    }
+
+    $backupVersion = "unknown"
+    $backupContent = Get-Content -Path $backupScript -Raw -ErrorAction SilentlyContinue
+    if ($backupContent -match '\$ScriptVersion\s*=\s*"([^"]+)"') {
+        $backupVersion = $Matches[1]
+    }
+
+    Write-Section "GPush Rollback"
+    Write-KeyValue "Current" $ScriptVersion
+    Write-KeyValue "Restore" $backupVersion ([ConsoleColor]::Yellow)
+    Write-KeyValue "Backup" $backup.FullName ([ConsoleColor]::DarkGray)
+    Write-Host ""
+
+    if (-not (Confirm-GPushAction -Prompt "Restore this GPush backup?")) {
+        Write-Warn "Rollback cancelled."
+        return 0
+    }
+
+    try {
+        Copy-Item -Path $backupScript -Destination $PSCommandPath -Force
+        Write-Ok "Rollback completed."
+        Write-Dim "Restart the current PowerShell command before using the restored version."
+        Write-Host ""
+        return 0
+    }
+    catch {
+        Write-Err "Rollback failed."
+        Write-Dim $_.Exception.Message
+        return 1
+    }
+}
+
+function Invoke-GPushUpdateCommand {
+    param([object[]]$Arguments)
+
+    $action = if (@($Arguments).Count -gt 0) {
+        ([string]$Arguments[0]).ToLowerInvariant()
+    }
+    else {
+        "install"
+    }
+
+    if ($action -notin @("check", "install", "rollback")) {
+        Write-Err "Unknown update action: $action"
+        Write-Dim "Use: gp update [check|install|rollback]"
+        return 2
+    }
+
+    Show-Banner
+
+    if ($action -eq "rollback") {
+        return (Restore-GPushBackup)
+    }
+
+    $release = Get-GPushLatestRelease
+    if ($null -eq $release) {
+        return 1
+    }
+
+    $hasUpdate = Show-GPushUpdateStatus -Release $release
+
+    if ($action -eq "check") {
+        if ($hasUpdate) {
+            Write-Dim "Run 'gp update' to install."
+        }
+        Write-Host ""
+        return 0
+    }
+
+    if (-not $hasUpdate) {
+        Write-Host ""
+        return 0
+    }
+
+    return (Install-GPushRelease -Release $release)
+}
+
+function Get-GPushProjectRepository {
+    param([string]$Search)
+
+    # No explicit project: use the current Git repository when possible.
+    if ([string]::IsNullOrWhiteSpace($Search)) {
+        $currentRoot = (& git rev-parse --show-toplevel 2>$null) -join ""
+        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($currentRoot)) {
+            return [PSCustomObject]@{
+                Name = Split-Path $currentRoot.Trim() -Leaf
+                Path = $currentRoot.Trim()
+            }
+        }
+
+        Write-Err "No project was specified and the current directory is not a Git repository."
+        return $null
+    }
+
+    $resolvedSearch = Resolve-GPushAlias -Search $Search
+
+    # Explicit path has priority and does not require the cache.
+    $expandedPath = Expand-GPushPath -Path $resolvedSearch
+    if (Test-Path $expandedPath -PathType Container) {
+        $resolvedPath = (Resolve-Path $expandedPath).Path
+        return [PSCustomObject]@{
+            Name = Split-Path $resolvedPath -Leaf
+            Path = $resolvedPath
+        }
+    }
+
+    if (-not (Test-Path $CacheFile)) {
+        Write-Err "Repository cache is missing."
+        Write-Dim "Run 'gp --refresh' first."
+        return $null
+    }
+
+    try {
+        $cached = @(
+            Get-Content -Path $CacheFile -Raw -ErrorAction Stop |
+                ConvertFrom-Json -ErrorAction Stop
+        )
+    }
+    catch {
+        Write-Err "Repository cache is invalid."
+        Write-Dim "Run 'gp --refresh' to rebuild it."
+        return $null
+    }
+
+    $matches = @($cached | Where-Object { $_.Name -ieq $resolvedSearch })
+    if ($matches.Count -eq 0) {
+        $matches = @($cached | Where-Object { $_.Name -ilike "$resolvedSearch*" })
+    }
+    if ($matches.Count -eq 0) {
+        $matches = @($cached | Where-Object { $_.Name -ilike "*$resolvedSearch*" -or $_.Path -ilike "*$resolvedSearch*" })
+    }
+
+    if ($matches.Count -eq 0) {
+        Write-Err "Project '$Search' was not found."
+        return $null
+    }
+
+    if ($matches.Count -gt 1) {
+        Write-Warn "Multiple projects match '$Search':"
+        for ($i = 0; $i -lt $matches.Count; $i++) {
+            Write-Host ("  [{0}] {1}" -f ($i + 1), $matches[$i].Name) -ForegroundColor White
+            Write-Dim ("      " + $matches[$i].Path)
+        }
+
+        $choice = Read-Host "Choose project number"
+        $number = 0
+        if (-not [int]::TryParse($choice, [ref]$number) -or $number -lt 1 -or $number -gt $matches.Count) {
+            Write-Err "Invalid project selection."
+            return $null
+        }
+
+        return $matches[$number - 1]
+    }
+
+    return $matches[0]
+}
+
+function Get-GPushProjectInfo {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $types = New-Object System.Collections.Generic.List[string]
+    $manifest = New-Object System.Collections.Generic.List[string]
+
+    if (Test-Path (Join-Path $Path "Cargo.toml")) {
+        $types.Add("Rust")
+        $manifest.Add("Cargo.toml")
+    }
+
+    $solutions = @(Get-ChildItem -Path $Path -Filter "*.sln" -File -ErrorAction SilentlyContinue)
+    $csProjects = @(Get-ChildItem -Path $Path -Filter "*.csproj" -File -ErrorAction SilentlyContinue)
+    if ($solutions.Count -gt 0 -or $csProjects.Count -gt 0) {
+        $types.Add(".NET")
+        if ($solutions.Count -gt 0) {
+            $manifest.Add($solutions[0].Name)
+        }
+        elseif ($csProjects.Count -gt 0) {
+            $manifest.Add($csProjects[0].Name)
+        }
+    }
+
+    if (Test-Path (Join-Path $Path "package.json")) {
+        $types.Add("Node")
+        $manifest.Add("package.json")
+    }
+
+    if (Test-Path (Join-Path $Path "pyproject.toml")) {
+        $types.Add("Python")
+        $manifest.Add("pyproject.toml")
+    }
+    elseif (Test-Path (Join-Path $Path "requirements.txt")) {
+        $types.Add("Python")
+        $manifest.Add("requirements.txt")
+    }
+
+    if (Test-Path (Join-Path $Path "CMakeLists.txt")) {
+        $types.Add("C/C++")
+        $manifest.Add("CMakeLists.txt")
+    }
+
+    if ($types.Count -eq 0) {
+        $types.Add("Generic")
+    }
+
+    $branch = "-"
+    Push-Location $Path
+    try {
+        $branchResult = (& git branch --show-current 2>$null) -join ""
+        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($branchResult)) {
+            $branch = $branchResult.Trim()
+        }
+    }
+    finally {
+        Pop-Location
+    }
+
+    return [PSCustomObject]@{
+        Types = @($types)
+        Manifest = @($manifest)
+        Branch = $branch
+    }
+}
+
+function Get-GPushNodeRunner {
+    param([string]$Path)
+
+    if (Test-Path (Join-Path $Path "pnpm-lock.yaml")) {
+        return "pnpm"
+    }
+
+    if (Test-Path (Join-Path $Path "yarn.lock")) {
+        return "yarn"
+    }
+
+    return "npm"
+}
+
+function Test-GPushNodeScript {
+    param(
+        [string]$Path,
+        [string]$Name
+    )
+
+    try {
+        $package = Get-Content -Path (Join-Path $Path "package.json") -Raw | ConvertFrom-Json
+        return (
+            $null -ne $package.scripts -and
+            $null -ne $package.scripts.PSObject.Properties[$Name]
+        )
+    }
+    catch {
+        return $false
+    }
+}
+
+function Invoke-GPushExternalCommand {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Executable,
+        [string[]]$Arguments = @()
+    )
+
+    $command = Get-Command $Executable -ErrorAction SilentlyContinue
+    if ($null -eq $command) {
+        Write-Err "Required command was not found: $Executable"
+        return 127
+    }
+
+    Write-Host ""
+    Write-Info ("[PROJECT] " + $Executable + " " + ($Arguments -join " "))
+    & $Executable @Arguments
+    return $LASTEXITCODE
+}
+
+function Invoke-GPushProjectAction {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Action,
+        [Parameter(Mandatory = $true)]
+        $Repository
+    )
+
+    $path = [string]$Repository.Path
+    $info = Get-GPushProjectInfo -Path $path
+
+    Show-Banner
+    Write-Section "Project"
+    Write-KeyValue "Name" ([string]$Repository.Name)
+    Write-KeyValue "Path" $path ([ConsoleColor]::DarkGray)
+    Write-KeyValue "Type" (($info.Types -join " + "))
+    Write-KeyValue "Manifest" $(if ($info.Manifest.Count -gt 0) { $info.Manifest -join ", " } else { "-" })
+    Write-KeyValue "Git branch" $info.Branch ([ConsoleColor]::Magenta)
+
+    if ($Action -eq "info") {
+        Write-Section "Available"
+        Write-Dim "  info    Detect project type and useful metadata."
+        Write-Dim "  build   Build using the detected toolchain."
+        Write-Dim "  test    Run project tests."
+        Write-Dim "  run     Run the project when a safe default can be detected."
+        Write-Dim "  open    Open the project directory in File Explorer."
+        Write-Dim "  shell   Open a PowerShell window in the project directory."
+        Write-Host ""
+        return 0
+    }
+
+    if ($Action -eq "open") {
+        try {
+            Start-Process explorer.exe -ArgumentList @($path) -ErrorAction Stop
+            Write-Ok "Opened in File Explorer."
+            return 0
+        }
+        catch {
+            Write-Err "Could not open File Explorer."
+            Write-Dim $_.Exception.Message
+            return 1
+        }
+    }
+
+    if ($Action -eq "shell") {
+        try {
+            Start-Process powershell.exe -WorkingDirectory $path -ErrorAction Stop
+            Write-Ok "Opened PowerShell in project directory."
+            return 0
+        }
+        catch {
+            Write-Err "Could not open PowerShell."
+            Write-Dim $_.Exception.Message
+            return 1
+        }
+    }
+
+    Push-Location $path
+    try {
+        # Priority is intentional for mixed repositories. A root Cargo.toml means
+        # the repository's primary build is Rust, followed by .NET, Node, Python,
+        # and CMake. "project info" still displays every detected type.
+        if ($info.Types -contains "Rust") {
+            switch ($Action) {
+                "build" { return (Invoke-GPushExternalCommand "cargo" @("build")) }
+                "test"  { return (Invoke-GPushExternalCommand "cargo" @("test")) }
+                "run"   { return (Invoke-GPushExternalCommand "cargo" @("run")) }
+            }
+        }
+
+        if ($info.Types -contains ".NET") {
+            $target = if ($info.Manifest.Count -gt 0) { $info.Manifest[0] } else { $null }
+            $args = @($Action)
+            if ($target) {
+                $args += $target
+            }
+
+            switch ($Action) {
+                "build" { return (Invoke-GPushExternalCommand "dotnet" $args) }
+                "test"  { return (Invoke-GPushExternalCommand "dotnet" $args) }
+                "run" {
+                    $runArgs = @("run")
+                    if ($target -and $target -like "*.csproj") {
+                        $runArgs += @("--project", $target)
+                    }
+                    return (Invoke-GPushExternalCommand "dotnet" $runArgs)
+                }
+            }
+        }
+
+        if ($info.Types -contains "Node") {
+            $runner = Get-GPushNodeRunner -Path $path
+
+            switch ($Action) {
+                "build" {
+                    if (-not (Test-GPushNodeScript -Path $path -Name "build")) {
+                        Write-Err "package.json does not define a 'build' script."
+                        return 1
+                    }
+                    return (Invoke-GPushExternalCommand $runner @("run", "build"))
+                }
+                "test" {
+                    if (-not (Test-GPushNodeScript -Path $path -Name "test")) {
+                        Write-Err "package.json does not define a 'test' script."
+                        return 1
+                    }
+                    return (Invoke-GPushExternalCommand $runner @("test"))
+                }
+                "run" {
+                    if (Test-GPushNodeScript -Path $path -Name "dev") {
+                        return (Invoke-GPushExternalCommand $runner @("run", "dev"))
+                    }
+                    if (Test-GPushNodeScript -Path $path -Name "start") {
+                        return (Invoke-GPushExternalCommand $runner @("start"))
+                    }
+
+                    Write-Err "No 'dev' or 'start' script was found in package.json."
+                    return 1
+                }
+            }
+        }
+
+        if ($info.Types -contains "Python") {
+            $python = if (Get-Command python -ErrorAction SilentlyContinue) { "python" } elseif (Get-Command py -ErrorAction SilentlyContinue) { "py" } else { $null }
+
+            if (-not $python) {
+                Write-Err "Python was not found in PATH."
+                return 127
+            }
+
+            switch ($Action) {
+                "build" {
+                    if (Test-Path (Join-Path $path "pyproject.toml")) {
+                        return (Invoke-GPushExternalCommand $python @("-m", "build"))
+                    }
+                    return (Invoke-GPushExternalCommand $python @("-m", "compileall", "."))
+                }
+                "test" {
+                    return (Invoke-GPushExternalCommand $python @("-m", "pytest"))
+                }
+                "run" {
+                    foreach ($candidate in @("main.py", "app.py")) {
+                        if (Test-Path (Join-Path $path $candidate)) {
+                            return (Invoke-GPushExternalCommand $python @($candidate))
+                        }
+                    }
+
+                    Write-Err "No default Python entry point (main.py or app.py) was found."
+                    return 1
+                }
+            }
+        }
+
+        if ($info.Types -contains "C/C++") {
+            switch ($Action) {
+                "build" {
+                    $configure = Invoke-GPushExternalCommand "cmake" @("-S", ".", "-B", "build")
+                    if ($configure -ne 0) {
+                        return $configure
+                    }
+                    return (Invoke-GPushExternalCommand "cmake" @("--build", "build"))
+                }
+                "test" {
+                    return (Invoke-GPushExternalCommand "ctest" @("--test-dir", "build", "--output-on-failure"))
+                }
+                "run" {
+                    Write-Err "A generic CMake project does not have a safe automatic run target."
+                    Write-Dim "Run the built executable directly or add a project-specific launcher later."
+                    return 1
+                }
+            }
+        }
+
+        Write-Err "Action '$Action' is not available for the detected project type."
+        return 1
+    }
+    finally {
+        Pop-Location
+    }
+}
+
+function Invoke-GPushProjectCommand {
+    param([object[]]$Arguments)
+
+    $argsList = @($Arguments)
+    $action = if ($argsList.Count -gt 0) {
+        ([string]$argsList[0]).ToLowerInvariant()
+    }
+    else {
+        "info"
+    }
+
+    if ($action -notin @("info", "build", "test", "run", "open", "shell")) {
+        Write-Err "Unknown project action: $action"
+        Write-Dim "Use: gp project info|build|test|run|open|shell [project]"
+        return 2
+    }
+
+    if ($argsList.Count -gt 2) {
+        Write-Err "Project command accepts at most one project name/path."
+        Write-Dim "Use: gp project $action [project]"
+        return 2
+    }
+
+    $search = if ($argsList.Count -eq 2) { [string]$argsList[1] } else { $null }
+    $repository = Get-GPushProjectRepository -Search $search
+
+    if ($null -eq $repository) {
+        return 1
+    }
+
+    Save-GPushRecentRepository -Repository $repository
+    return (Invoke-GPushProjectAction -Action $action -Repository $repository)
+}
+
 
 # ============================================================
 # V4 COMMAND ROUTER
@@ -1115,6 +2075,16 @@ function ConvertFrom-GPushSubcommand {
             return Join-GPushArgs @("--clone") $rest
         }
 
+        "project" {
+            # First-class V4 command. Keep arguments intact for the project dispatcher.
+            return $inputArgs
+        }
+
+        "update" {
+            # First-class V4 command. Keep arguments intact for the update dispatcher.
+            return $inputArgs
+        }
+
         "recent" {
             if ($rest.Count -gt 0) {
                 Write-Err "Command 'gp recent' does not accept arguments."
@@ -1132,7 +2102,7 @@ function ConvertFrom-GPushSubcommand {
         }
 
         default {
-            # Not a v4 command. Preserve the classic shortcut:
+            # Not a recognized V4 command. Preserve the classic shortcut:
             #   gp Project "commit message"
             return $inputArgs
         }
@@ -1164,6 +2134,8 @@ $FavoritesOnly = $false
 $RecentOnly = $false
 $OpenRepo = $false
 $CloneRepo = $false
+$ProjectMode = $false
+$UpdateMode = $false
 $RemoteAddOnly = $false
 $RemoteSetUrlOnly = $false
 $RemoteRemoveOnly = $false
@@ -1233,6 +2205,8 @@ foreach ($token in $tokens) {
             "--recent"        { $RecentOnly = $true }
             "--open"          { $OpenRepo = $true }
             "--clone"         { $CloneRepo = $true }
+            "--project"       { $ProjectMode = $true }
+            "--update"        { $UpdateMode = $true }
             "-s"        { $StatusOnly = $true }
             "--status"  { $StatusOnly = $true }
             "--diff"        { $DiffOnly = $true }
@@ -1299,7 +2273,7 @@ if ($metaModes.Count -gt 1) {
 $otherModeRequested = (
     $ListRepos -or $Refresh -or $AddRepo -or $AllRepos -or
     $AliasesOnly -or $AliasSet -or $AliasRemove -or $FavoriteAdd -or $FavoriteRemove -or
-    $FavoritesOnly -or $RecentOnly -or $OpenRepo -or $CloneRepo -or
+    $FavoritesOnly -or $RecentOnly -or $OpenRepo -or $CloneRepo -or $ProjectMode -or $UpdateMode -or
     $StatusOnly -or $DiffOnly -or $Renormalize -or
     $FetchOnly -or $LogOnly -or $TagsOnly -or $TagCreateOnly -or $TagPushOnly -or $TagDeleteOnly -or $ReleaseOnly -or
     $BranchesOnly -or $RemotesOnly -or $RemoteAddOnly -or $RemoteSetUrlOnly -or $RemoteRemoveOnly -or
@@ -1327,6 +2301,35 @@ if ($ShowConfig) {
 if ($Doctor) {
     $doctorExitCode = Show-GPushDoctor
     exit $doctorExitCode
+}
+
+if ($ProjectMode -and $UpdateMode) {
+    Write-Err "Options --project and --update cannot be used together."
+    exit 2
+}
+
+if ($ProjectMode) {
+    if ($positionals.Count -lt 1 -or $positionals.Count -gt 2) {
+        Write-Err "Project mode requires an action and optionally one project."
+        Write-Dim "Use: gp --project <info|build|test|run|open|shell> [project]"
+        exit 2
+    }
+
+    $projectArgs = @($positionals)
+    $exitCode = Invoke-GPushProjectCommand -Arguments $projectArgs
+    exit $exitCode
+}
+
+if ($UpdateMode) {
+    if ($positionals.Count -gt 1) {
+        Write-Err "Update mode accepts at most one action."
+        Write-Dim "Use: gp --update [check|install|rollback]"
+        exit 2
+    }
+
+    $updateArgs = @($positionals)
+    $exitCode = Invoke-GPushUpdateCommand -Arguments $updateArgs
+    exit $exitCode
 }
 
 if ($AllRepos) {
@@ -2675,6 +3678,33 @@ function Show-GPushAllRepositories {
     Write-Host ""
 }
 
+
+# ============================================================
+# NEW TOP-LEVEL COMMAND DISPATCH
+# ============================================================
+
+# Dispatch after all shared helpers are defined, but before any legacy
+# operation starts. RawArguments are used deliberately so the old parser
+# and the classic "gp <project> <commit message>" behavior remain untouched.
+if ($RawArguments.Count -gt 0) {
+    $topLevelCommand = ([string]$RawArguments[0]).ToLowerInvariant()
+    $topLevelTail = if ($RawArguments.Count -gt 1) {
+        @($RawArguments[1..($RawArguments.Count - 1)])
+    }
+    else {
+        @()
+    }
+
+    if ($topLevelCommand -eq "update") {
+        $exitCode = Invoke-GPushUpdateCommand -Arguments $topLevelTail
+        exit $exitCode
+    }
+
+    if ($topLevelCommand -eq "project") {
+        $exitCode = Invoke-GPushProjectCommand -Arguments $topLevelTail
+        exit $exitCode
+    }
+}
 
 # ============================================================
 # ALIASES / FAVORITES / RECENT
