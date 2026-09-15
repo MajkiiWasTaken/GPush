@@ -2,6 +2,16 @@
 
 All notable changes to GPush are documented here.
 
+## 4.0.2
+
+### Fixed
+- Fixed Windows path handling for filenames containing non-ASCII characters such as Czech diacritics.
+- Disabled Git path quoting for changed-file detection so paths are passed to PowerShell as real filenames instead of escaped octal sequences.
+- Prevented `GetFileName()` and `Test-Path` errors caused by quoted Git paths.
+
+### Changed
+- Bumped both Windows and Linux package versions to 4.0.2 for release consistency.
+
 ## 4.0.1
 
 ### Fixed
