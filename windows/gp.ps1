@@ -13,7 +13,7 @@ $OutputEncoding           = [System.Text.UTF8Encoding]::new($false)
 # CONFIG
 # ============================================================
 
-$ScriptVersion = "4.2.0"
+$ScriptVersion = "4.2.1"
 
 $ConfigDir  = Join-Path $env:LOCALAPPDATA "GPush"
 $ConfigFile = Join-Path $ConfigDir "config.json"
@@ -4970,8 +4970,19 @@ if ($revertHead -and (Test-Path $revertHead)) {
 
 Write-Ok "  + No merge/rebase/cherry-pick/revert in progress"
 
-$conflictsResult = Get-GitOutput -Arguments @("diff", "--name-only", "--diff-filter=U") -AllowFailure
-$conflicts = @($conflictsResult.Lines | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+# Read only stdout here. Git can emit harmless line-ending warnings on stderr
+# (for example LF -> CRLF conversion notices on Windows). Merging stderr into
+# stdout would make those warnings look like unmerged file paths.
+$conflicts = @(& git diff --name-only --diff-filter=U 2>$null | Where-Object {
+    -not [string]::IsNullOrWhiteSpace($_)
+})
+$conflictCheckExitCode = $LASTEXITCODE
+
+if ($conflictCheckExitCode -ne 0) {
+    Write-Err "  x Could not check the repository for unresolved conflicts."
+    Write-Warn "Run 'git diff --name-only --diff-filter=U' manually and verify the repository state."
+    exit 1
+}
 
 if ($conflicts.Count -gt 0) {
     Write-Err "  x Unresolved conflicts detected:"

@@ -2,6 +2,16 @@
 
 All notable changes to GPush are documented here.
 
+## 4.2.1
+
+### Fixed
+- Fixed Windows unresolved-conflict detection incorrectly treating Git stderr warnings as conflicted file paths.
+- Git line-ending notices such as `LF will be replaced by CRLF` no longer cause GPush to stop with `Unresolved conflicts detected`.
+- Conflict detection now evaluates only actual unmerged paths from Git stdout and separately validates the Git command exit code.
+
+### Changed
+- Bumped Windows and Linux versions, including both installers, to 4.2.1 for release consistency.
+
 ## 4.2.0
 
 ### Added
