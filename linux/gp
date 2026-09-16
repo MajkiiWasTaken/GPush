@@ -1132,7 +1132,7 @@ handle_config_edit() {
         add)
             [[ -n "$value" ]] || { err "Configuration 'add' requires a value."; return 2; }
             if [[ "$key" == default-remote || "$key" == large-file-threshold ]]; then
-                action=set
+                action="set"
             fi
             ;;
         remove)
@@ -1208,7 +1208,10 @@ handle_config_edit() {
             ;;
         large-file-threshold)
             if [[ "$action" == set ]]; then
-                [[ "$value" =~ ^[0-9]+$ ]] && (( value > 0 )) || { err 'Large-file threshold must be a positive integer in MB.'; return 2; }
+                if ! [[ "$value" =~ ^[0-9]+$ ]] || (( value <= 0 )); then
+                    err 'Large-file threshold must be a positive integer in MB.'
+                    return 2
+                fi
                 LARGE_FILE_MB="$value"
             else
                 LARGE_FILE_MB="$DEFAULT_LARGE_FILE_MB"
