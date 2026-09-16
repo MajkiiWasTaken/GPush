@@ -226,5 +226,6 @@ Write-Host "  gp --version" -ForegroundColor Green
 Write-Host "  gp help" -ForegroundColor Green
 Write-Host "  gp config doctor" -ForegroundColor Green
 Write-Host ""
-Write-Host "Tab completion activates automatically after the first gp command in each PowerShell session." -ForegroundColor DarkGray
+Write-Host "Tab completion uses memory mode by default and activates automatically after the first gp command in each PowerShell session." -ForegroundColor DarkGray
+Write-Host "Change it with: gp completion mode memory|write|auto|off" -ForegroundColor DarkGray
 Write-Host ""

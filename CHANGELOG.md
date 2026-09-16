@@ -16,10 +16,19 @@ All notable changes to GPush are documented here.
 - Added the equivalent full configuration commands under `gp config add|remove|set|reset`.
 - Added editable configuration keys for search roots, protected branches, ignored directories, default remote, and large-file threshold.
 - Added command typo suggestions such as `Did you mean: gp completion install` while preserving the classic repository shortcut syntax.
+- Added configurable Windows PowerShell completion modes:
+  - `memory` — safe default; activates automatically on the first `gp` command in each PowerShell session and does not persist completion state.
+  - `write` — persists completion activation through the user PowerShell profile.
+  - `auto` — tries persistent profile activation and falls back to `memory` when profile writes are unavailable.
+  - `off` — disables the GPush Tab handler and restores normal PowerShell completion.
+- Added `gp completion mode [memory|write|auto|off]` and optional mode selection through `gp completion install [mode]` on Windows.
 
 ### Changed
 - Bumped Windows and Linux scripts and installers to 4.4.0.
-- Windows completion now runs in memory for the active PowerShell session and does not create or rewrite a separate completion file.
+- Windows completion now defaults to `memory` mode, activates automatically on first use in each session, and does not require `gp completion install memory`.
+- Windows completion status now reports selected mode, active mode, profile persistence state, runtime handler state, and the safe default.
+- Persistent Windows completion uses a small marked bootstrap block in the PowerShell profile instead of a generated completion script file.
+- `gp completion status` and read-only `gp completion mode` automatically activate the default memory completion before reporting state.
 - Windows Tab completion uses inline candidate cycling instead of printing custom candidate lists into the console.
 - Windows completion replaces the entire token around the cursor, so changing an existing project or command does not leave stale text to the right of the cursor.
 - Linux completion uses Bash's native programmable completion and is registered through `~/.bashrc`.

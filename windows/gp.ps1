@@ -14,7 +14,7 @@ $OutputEncoding           = [System.Text.UTF8Encoding]::new($false)
 # ============================================================
 
 $ScriptVersion = "4.4.0"
-$CompletionSchemaVersion = "10"
+$CompletionSchemaVersion = "11"
 
 $ConfigDir  = Join-Path $env:LOCALAPPDATA "GPush"
 $ConfigFile = Join-Path $ConfigDir "config.json"
@@ -973,7 +973,7 @@ function Show-Help {
     Write-Host ("  {0,-11}{1}" -f "clone", "<url> [destination]") -ForegroundColor White
     Write-Host ("  {0,-11}{1}" -f "recent", "show recent repositories") -ForegroundColor White
     Write-Host ("  {0,-11}{1}" -f "update", "check, install, rollback") -ForegroundColor White
-    Write-Host ("  {0,-11}{1}" -f "completion", "install, status, uninstall  (PowerShell Tab)") -ForegroundColor White
+    Write-Host ("  {0,-11}{1}" -f "completion", "install, status, mode, uninstall  (PowerShell Tab)") -ForegroundColor White
     Write-Host ("  {0,-11}{1}" -f "help", "show help") -ForegroundColor White
     Write-Host ("  {0,-11}{1}" -f "version", "show version") -ForegroundColor White
     Write-Host ""
@@ -1067,7 +1067,7 @@ function Show-Help {
     Write-ExampleHelp 'gp favorite add TestProject' "Pin a repository to Favorites."
     Write-ExampleHelp 'gp fav remove TestProject' "Remove a repository from Favorites."
     Write-ExampleHelp 'gp config doctor' "Run diagnostics."
-    Write-ExampleHelp 'gp completion install' "Enable PowerShell Tab completion."
+    Write-ExampleHelp 'gp completion mode memory|write|auto|off' "Choose completion persistence mode (memory auto-activates by default)."
     Write-ExampleHelp 'gp add protected-branch develop' "Add a protected branch."
     Write-ExampleHelp 'gp set default-remote origin' "Change the preferred remote."
     Write-ExampleHelp 'gp --dry-run TestProject "Test commit"' "Preview the normal commit workflow."
@@ -2237,7 +2237,7 @@ function global:Get-GPushCompletionContext {
         "all"        = @("status", "fetch", "sync")
         "project"    = @("info", "build", "test", "run", "open", "shell")
         "update"     = @("check", "install", "rollback")
-        "completion" = @("install", "status", "uninstall")
+        "completion" = @("install", "status", "mode", "uninstall")
     }
 
     $allConfigKeys = @(
@@ -2415,6 +2415,16 @@ function global:Get-GPushCompletionContext {
 
     if ($command -eq "reset" -and $rest.Count -eq 0) {
         return (New-Result -Values $allConfigKeys -Label "Configuration keys")
+    }
+
+    if ($command -eq "completion" -and $rest.Count -eq 1) {
+        $completionAction = ([string]$rest[0]).ToLowerInvariant()
+
+        if ($completionAction -in @("mode", "install")) {
+            return (New-Result `
+                -Values @("memory", "write", "auto", "off") `
+                -Label "Completion modes")
+        }
     }
 
     if ($command -eq "config") {
@@ -2613,7 +2623,186 @@ function global:Invoke-GPushTabCompletion {
 }
 
 
+function Get-GPushCompletionProfilePath {
+    $profilePath = $PROFILE.CurrentUserCurrentHost
+
+    if ([string]::IsNullOrWhiteSpace([string]$profilePath)) {
+        $profilePath = $PROFILE
+    }
+
+    return [string]$profilePath
+}
+
+function Get-GPushCompletionProfileMode {
+    $profilePath = Get-GPushCompletionProfilePath
+
+    if (-not (Test-Path $profilePath)) {
+        return $null
+    }
+
+    try {
+        $content = Get-Content -Path $profilePath -Raw -ErrorAction Stop
+
+        if ($content -match '(?m)^\s*# GPush-Completion-Mode:\s*(memory|write|auto|off)\s*$') {
+            return $matches[1].ToLowerInvariant()
+        }
+    }
+    catch {
+        return $null
+    }
+
+    return $null
+}
+
+function Get-GPushCompletionSelectedMode {
+    $runtimeRequested = [string]$global:GPushCompletionRequestedMode
+
+    if ($runtimeRequested -in @("memory", "write", "auto", "off")) {
+        return $runtimeRequested
+    }
+
+    $profileMode = Get-GPushCompletionProfileMode
+
+    if ($profileMode -in @("write", "auto")) {
+        return $profileMode
+    }
+
+    # Safe default: no disk/profile writes.
+    return "memory"
+}
+
+function New-GPushCompletionProfileBlock {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet("write", "auto")]
+        [string]$Mode
+    )
+
+    if ([string]::IsNullOrWhiteSpace($PSCommandPath)) {
+        throw "GPush cannot determine the current gp.ps1 path."
+    }
+
+    $escapedPath = $PSCommandPath.Replace("'", "''")
+
+    return @"
+# >>> GPush completion >>>
+# GPush-Completion-Mode: $Mode
+& '$escapedPath' completion bootstrap $Mode
+# <<< GPush completion <<<
+"@
+}
+
+function Set-GPushCompletionProfileMode {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet("write", "auto")]
+        [string]$Mode
+    )
+
+    $profilePath = Get-GPushCompletionProfilePath
+    $profileDir = Split-Path $profilePath -Parent
+
+    try {
+        if (-not (Test-Path $profileDir)) {
+            New-Item -ItemType Directory -Path $profileDir -Force -ErrorAction Stop | Out-Null
+        }
+
+        if (-not (Test-Path $profilePath)) {
+            New-Item -ItemType File -Path $profilePath -Force -ErrorAction Stop | Out-Null
+        }
+
+        $profileText = Get-Content -Path $profilePath -Raw -ErrorAction SilentlyContinue
+        if ($null -eq $profileText) {
+            $profileText = ""
+        }
+
+        $block = New-GPushCompletionProfileBlock -Mode $Mode
+        $pattern = '(?s)\r?\n?# >>> GPush completion >>>.*?# <<< GPush completion <<<\r?\n?'
+
+        if ($profileText -match '# >>> GPush completion >>>') {
+            $profileText = [regex]::Replace(
+                $profileText,
+                $pattern,
+                "`r`n$block`r`n"
+            )
+        }
+        else {
+            if ($profileText.Length -gt 0 -and -not $profileText.EndsWith("`n")) {
+                $profileText += "`r`n"
+            }
+
+            $profileText += "`r`n$block`r`n"
+        }
+
+        Set-Content `
+            -Path $profilePath `
+            -Value $profileText `
+            -Encoding UTF8 `
+            -ErrorAction Stop
+
+        return $true
+    }
+    catch {
+        $script:GPushCompletionProfileError = $_.Exception.Message
+        return $false
+    }
+}
+
+function Remove-GPushCompletionProfileBlock {
+    $profilePath = Get-GPushCompletionProfilePath
+    $script:GPushCompletionProfileError = $null
+
+    if (-not (Test-Path $profilePath)) {
+        return $true
+    }
+
+    try {
+        $profileText = Get-Content -Path $profilePath -Raw -ErrorAction Stop
+
+        if ($profileText -notmatch '# >>> GPush completion >>>') {
+            return $true
+        }
+
+        $pattern = '(?s)\r?\n?# >>> GPush completion >>>.*?# <<< GPush completion <<<\r?\n?'
+        $profileText = [regex]::Replace($profileText, $pattern, "`r`n")
+
+        Set-Content `
+            -Path $profilePath `
+            -Value $profileText.TrimEnd() `
+            -Encoding UTF8 `
+            -ErrorAction Stop
+
+        return $true
+    }
+    catch {
+        $script:GPushCompletionProfileError = $_.Exception.Message
+        return $false
+    }
+}
+
+function Disable-GPushRuntimeCompletion {
+    try {
+        Set-PSReadLineKeyHandler -Key Tab -Function TabCompleteNext
+        Set-PSReadLineKeyHandler -Key Shift+Tab -Function TabCompletePrevious
+    }
+    catch {
+        # A missing PSReadLine API must not break normal GPush commands.
+    }
+
+    $global:GPushCompletionCycle = $null
+    $global:GPushRuntimeCompletionVersion = $null
+    $global:GPushRuntimeTabHandler = $null
+    $global:GPushCompletionActiveMode = "off"
+
+    return 0
+}
+
 function Enable-GPushRuntimeCompletion {
+    param(
+        [ValidateSet("memory", "write", "auto")]
+        [string]$ActiveMode = "memory"
+    )
+
     try {
         Set-PSReadLineKeyHandler `
             -Key Tab `
@@ -2635,33 +2824,160 @@ function Enable-GPushRuntimeCompletion {
 
         $global:GPushRuntimeCompletionVersion = $ScriptVersion
         $global:GPushRuntimeTabHandler = "GPushTabComplete"
+        $global:GPushCompletionActiveMode = $ActiveMode
         return 0
     }
     catch {
-        Write-Err "GPush could not activate in-memory completion."
+        Write-Err "GPush could not activate PowerShell completion."
         Write-Dim $_.Exception.Message
         return 1
     }
 }
 
-
 function Install-GPushPowerShellCompletion {
-    $result = Enable-GPushRuntimeCompletion
-    if ($result -ne 0) {
-        return $result
+    param(
+        [ValidateSet("memory", "write", "auto", "off")]
+        [string]$Mode
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Mode)) {
+        $Mode = Get-GPushCompletionSelectedMode
     }
 
-    Show-Banner
-    Write-Section "PowerShell completion"
-    Write-Ok "GPush Tab completion is active for this PowerShell session."
-    Write-KeyValue "Mode" "Memory only"
-    Write-Dim "No profile or completion file was modified."
-    Write-Host ""
-    return 0
+    $Mode = $Mode.ToLowerInvariant()
+    $global:GPushCompletionRequestedMode = $Mode
+    $script:GPushCompletionProfileError = $null
+
+    switch ($Mode) {
+        "memory" {
+            $profileRemoved = Remove-GPushCompletionProfileBlock
+            $result = Enable-GPushRuntimeCompletion -ActiveMode "memory"
+
+            if ($result -ne 0) {
+                return $result
+            }
+
+            Show-Banner
+            Write-Section "PowerShell completion"
+            Write-Ok "GPush Tab completion is active for this PowerShell session."
+            Write-KeyValue "Selected mode" "memory"
+            Write-KeyValue "Active mode" "memory"
+            Write-KeyValue "Persistence" "None"
+            Write-KeyValue "Default" "memory"
+
+            if (-not $profileRemoved) {
+                Write-Warn "A previous persistent profile block could not be removed."
+                Write-Dim $script:GPushCompletionProfileError
+            }
+
+            Write-Host ""
+            return 0
+        }
+
+        "write" {
+            $profileWritten = Set-GPushCompletionProfileMode -Mode "write"
+            $result = Enable-GPushRuntimeCompletion -ActiveMode $(if ($profileWritten) { "write" } else { "memory" })
+
+            if ($result -ne 0) {
+                return $result
+            }
+
+            Show-Banner
+            Write-Section "PowerShell completion"
+            Write-KeyValue "Selected mode" "write"
+            Write-KeyValue "Active mode" $(if ($profileWritten) { "write" } else { "memory" })
+            Write-KeyValue "Persistence" $(if ($profileWritten) { "PowerShell profile" } else { "Unavailable" })
+            Write-KeyValue "Default" "memory"
+
+            if ($profileWritten) {
+                Write-Ok "Persistent completion was installed."
+                Write-Dim "New PowerShell sessions will activate GPush completion automatically."
+                Write-Host ""
+                return 0
+            }
+
+            Write-Warn "Persistent profile write was blocked. Runtime completion remains active in memory."
+            Write-Dim $script:GPushCompletionProfileError
+            Write-Host ""
+            return 1
+        }
+
+        "auto" {
+            $profileWritten = Set-GPushCompletionProfileMode -Mode "auto"
+            $activeMode = if ($profileWritten) { "auto" } else { "memory" }
+
+            $result = Enable-GPushRuntimeCompletion -ActiveMode $activeMode
+            if ($result -ne 0) {
+                return $result
+            }
+
+            Show-Banner
+            Write-Section "PowerShell completion"
+            Write-KeyValue "Selected mode" "auto"
+            Write-KeyValue "Active mode" $activeMode
+            Write-KeyValue "Persistence" $(if ($profileWritten) { "PowerShell profile" } else { "Memory fallback" })
+            Write-KeyValue "Default" "memory"
+
+            if ($profileWritten) {
+                Write-Ok "Auto mode selected. Persistent profile activation is available."
+            }
+            else {
+                Write-Warn "Profile write was unavailable. Auto mode fell back to memory."
+                Write-Dim $script:GPushCompletionProfileError
+            }
+
+            Write-Host ""
+            return 0
+        }
+
+        "off" {
+            $profileRemoved = Remove-GPushCompletionProfileBlock
+            $null = Disable-GPushRuntimeCompletion
+
+            Show-Banner
+            Write-Section "PowerShell completion"
+            Write-KeyValue "Selected mode" "off"
+            Write-KeyValue "Active mode" "off"
+            Write-KeyValue "Persistence" "Disabled"
+            Write-KeyValue "Default" "memory"
+
+            if ($profileRemoved) {
+                Write-Ok "GPush completion is disabled."
+            }
+            else {
+                Write-Warn "Runtime completion was disabled, but the persistent profile block could not be removed."
+                Write-Dim $script:GPushCompletionProfileError
+            }
+
+            Write-Host ""
+            return $(if ($profileRemoved) { 0 } else { 1 })
+        }
+    }
+}
+
+function Invoke-GPushCompletionBootstrap {
+    param(
+        [ValidateSet("write", "auto")]
+        [string]$Mode
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Mode)) {
+        $Mode = "write"
+    }
+
+    $global:GPushCompletionRequestedMode = $Mode
+    return (Enable-GPushRuntimeCompletion -ActiveMode $Mode)
 }
 
 function Ensure-GPushPowerShellCompletion {
     param([switch]$Quiet)
+
+    $selectedMode = Get-GPushCompletionSelectedMode
+
+    if ($selectedMode -eq "off") {
+        $null = Disable-GPushRuntimeCompletion
+        return
+    }
 
     $runtimeMatches = [string]::Equals(
         [string]$global:GPushRuntimeCompletionVersion,
@@ -2683,20 +2999,58 @@ function Ensure-GPushPowerShellCompletion {
         return
     }
 
-    $result = Enable-GPushRuntimeCompletion
+    $activeMode = if ($selectedMode -in @("write", "auto")) {
+        $selectedMode
+    }
+    else {
+        "memory"
+    }
+
+    $result = Enable-GPushRuntimeCompletion -ActiveMode $activeMode
 
     if (-not $Quiet -and $result -eq 0) {
-        Write-Dim "GPush runtime completion activated."
+        Write-Dim "GPush runtime completion activated ($activeMode)."
     }
 }
 
-
 function Remove-GPushPowerShellCompletion {
+    $global:GPushCompletionRequestedMode = "off"
+    $profileRemoved = Remove-GPushCompletionProfileBlock
+    $null = Disable-GPushRuntimeCompletion
+
     Show-Banner
     Write-Section "PowerShell completion"
-    Write-Warn "Runtime completion is active only in this PowerShell process."
-    Write-Dim "Open a new PowerShell session to clear it."
+    Write-KeyValue "Active mode" "off"
+    Write-KeyValue "Profile block" $(if ($profileRemoved) { "Removed" } else { "Could not remove" })
+
+    if (-not $profileRemoved) {
+        Write-Warn "The persistent profile block could not be removed."
+        Write-Dim $script:GPushCompletionProfileError
+    }
+    else {
+        Write-Ok "GPush completion was removed."
+    }
+
     Write-Host ""
+    return $(if ($profileRemoved) { 0 } else { 1 })
+}
+
+function Show-GPushCompletionMode {
+    $selectedMode = Get-GPushCompletionSelectedMode
+    $activeMode = [string]$global:GPushCompletionActiveMode
+
+    if ([string]::IsNullOrWhiteSpace($activeMode)) {
+        $activeMode = "not active"
+    }
+
+    Show-Banner
+    Write-Section "PowerShell completion mode"
+    Write-KeyValue "Selected" $selectedMode
+    Write-KeyValue "Active" $activeMode
+    Write-KeyValue "Default" "memory"
+    Write-KeyValue "Available" "memory | write | auto | off"
+    Write-Host ""
+
     return 0
 }
 
@@ -2705,6 +3059,15 @@ function Show-GPushCompletionStatus {
     $completionFunction = Get-Command Invoke-GPushTabCompletion `
         -CommandType Function `
         -ErrorAction SilentlyContinue
+
+    $selectedMode = Get-GPushCompletionSelectedMode
+    $activeMode = [string]$global:GPushCompletionActiveMode
+    $profileMode = Get-GPushCompletionProfileMode
+    $profilePath = Get-GPushCompletionProfilePath
+
+    if ([string]::IsNullOrWhiteSpace($activeMode)) {
+        $activeMode = "not active"
+    }
 
     $runtimeMatches = [string]::Equals(
         [string]$global:GPushRuntimeCompletionVersion,
@@ -2720,39 +3083,53 @@ function Show-GPushCompletionStatus {
 
     $functionAvailable = $null -ne $completionFunction
 
-    $healthy = (
-        $runtimeMatches -and
-        $handlerMatches -and
-        $functionAvailable
-    )
+    $healthy = if ($selectedMode -eq "off") {
+        -not $handlerMatches
+    }
+    else {
+        $runtimeMatches -and $handlerMatches -and $functionAvailable
+    }
 
     Show-Banner
     Write-Section "PowerShell completion"
     Write-KeyValue "Health" $(if ($healthy) { "OK" } else { "Needs attention" }) `
         $(if ($healthy) { [ConsoleColor]::Green } else { [ConsoleColor]::Yellow })
 
+    Write-Section "Mode"
+    Write-KeyValue "Selected" $selectedMode
+    Write-KeyValue "Active" $activeMode
+    Write-KeyValue "Default" "memory"
+    Write-KeyValue "Profile mode" $(if ($profileMode) { $profileMode } else { "-" })
+
     Write-Section "Runtime"
     Write-KeyValue "PowerShell" $PSVersionTable.PSVersion.ToString()
     Write-KeyValue "Edition" ([string]$PSVersionTable.PSEdition)
     Write-KeyValue "Process" ([string]$PID)
-    Write-KeyValue "Mode" "Memory only"
 
     Write-Section "Binding"
     Write-KeyValue "gp type" $(if ($null -ne $gpCommand) { [string]$gpCommand.CommandType } else { "Missing" })
-    Write-KeyValue "Tab" $(if ($handlerMatches) { "GPushTabComplete" } else { "Not active" })
+    Write-KeyValue "Tab" $(if ($handlerMatches) { "GPushTabComplete" } else { "Default PowerShell" })
     Write-KeyValue "Handler fn" $(if ($functionAvailable) { "Available" } else { "Missing" })
     Write-KeyValue "Behavior" "Inline cycle"
-    Write-KeyValue "Shift+Tab" "Previous candidate"
+    Write-KeyValue "Shift+Tab" $(if ($handlerMatches) { "Previous candidate" } else { "Default PowerShell" })
     Write-KeyValue "Console output" "Disabled"
     Write-KeyValue "Runtime" $(if ($runtimeMatches) { $ScriptVersion } else { "-" })
 
-    Write-Section "Storage"
-    Write-KeyValue "Profile writes" "Disabled"
+    Write-Section "Persistence"
+    Write-KeyValue "Profile" $profilePath ([ConsoleColor]::DarkGray)
+    Write-KeyValue "Profile block" $(if ($profileMode) { "Installed" } else { "Not installed" })
+    Write-KeyValue "Profile writes" $(switch ($selectedMode) {
+        "write" { "Required" }
+        "auto" { "Try + fallback" }
+        default { "Disabled" }
+    })
     Write-KeyValue "Completion file" "Not used"
+
+    Write-Section "Data"
     Write-KeyValue "Config" $ConfigFile ([ConsoleColor]::DarkGray)
     Write-KeyValue "Cache" $CacheFile ([ConsoleColor]::DarkGray)
 
-    if (-not $healthy) {
+    if (-not $healthy -and $selectedMode -ne "off") {
         Write-Host ""
         Write-Dim "Repair current session: gp completion install"
     }
@@ -2760,7 +3137,6 @@ function Show-GPushCompletionStatus {
     Write-Host ""
     return 0
 }
-
 
 function Invoke-GPushCompletionCommand {
     param([object[]]$Arguments)
@@ -2773,20 +3149,86 @@ function Invoke-GPushCompletionCommand {
         "status"
     }
 
-    if ($argsList.Count -gt 1) {
-        Write-Err "Command 'gp completion $action' does not accept additional arguments."
-        return 2
-    }
-
     switch ($action) {
-        "install"   { return (Install-GPushPowerShellCompletion) }
-        "status"    { return (Show-GPushCompletionStatus) }
-        "uninstall" { return (Remove-GPushPowerShellCompletion) }
+        "install" {
+            if ($argsList.Count -gt 2) {
+                Write-Err "Use: gp completion install [memory|write|auto|off]"
+                return 2
+            }
+
+            $mode = if ($argsList.Count -eq 2) {
+                ([string]$argsList[1]).ToLowerInvariant()
+            }
+            else {
+                Get-GPushCompletionSelectedMode
+            }
+
+            if ($mode -notin @("memory", "write", "auto", "off")) {
+                Write-Err "Unknown completion mode: $mode"
+                Write-Dim "Use: memory | write | auto | off"
+                return 2
+            }
+
+            return (Install-GPushPowerShellCompletion -Mode $mode)
+        }
+
+        "status" {
+            if ($argsList.Count -ne 1) {
+                Write-Err "Command 'gp completion status' does not accept additional arguments."
+                return 2
+            }
+
+            return (Show-GPushCompletionStatus)
+        }
+
+        "mode" {
+            if ($argsList.Count -eq 1) {
+                return (Show-GPushCompletionMode)
+            }
+
+            if ($argsList.Count -ne 2) {
+                Write-Err "Use: gp completion mode [memory|write|auto|off]"
+                return 2
+            }
+
+            $mode = ([string]$argsList[1]).ToLowerInvariant()
+
+            if ($mode -notin @("memory", "write", "auto", "off")) {
+                Write-Err "Unknown completion mode: $mode"
+                Write-Dim "Use: memory | write | auto | off"
+                return 2
+            }
+
+            return (Install-GPushPowerShellCompletion -Mode $mode)
+        }
+
+        "bootstrap" {
+            if ($argsList.Count -ne 2) {
+                return 2
+            }
+
+            $mode = ([string]$argsList[1]).ToLowerInvariant()
+
+            if ($mode -notin @("write", "auto")) {
+                return 2
+            }
+
+            return (Invoke-GPushCompletionBootstrap -Mode $mode)
+        }
+
+        "uninstall" {
+            if ($argsList.Count -ne 1) {
+                Write-Err "Command 'gp completion uninstall' does not accept additional arguments."
+                return 2
+            }
+
+            return (Remove-GPushPowerShellCompletion)
+        }
 
         default {
             Write-Err "Unknown completion command: $action"
 
-            $knownActions = @("install", "status", "uninstall")
+            $knownActions = @("install", "status", "mode", "uninstall")
             $best = $null
             $bestDistance = [int]::MaxValue
 
@@ -2803,7 +3245,7 @@ function Invoke-GPushCompletionCommand {
                 Write-Dim "Did you mean: gp completion $best"
             }
 
-            Write-Dim "Use: gp completion install|status|uninstall"
+            Write-Dim "Use: gp completion install [mode] | status | mode [mode] | uninstall"
             return 2
         }
     }
@@ -3340,11 +3782,46 @@ function ConvertFrom-GPushSubcommand {
 Initialize-GPushConfig
 
 # PowerShell completion is self-installing/self-repairing.
+# Default mode is memory-only. Persistent modes are opt-in via
+# `gp completion mode write|auto`.
 # Explicit `gp completion ...` commands manage their own completion state and
 # must not trigger the automatic bootstrap before the command is evaluated.
+# Memory completion is the safe default and activates automatically on the
+# first GPush invocation in each PowerShell session. Users do NOT need to run
+# `gp completion install memory`.
+#
+# Only completion commands that intentionally MODIFY the completion mode/state
+# skip the automatic bootstrap. Read-only commands such as
+# `gp completion status` and `gp completion mode` still activate the default
+# memory mode before reporting their state.
+$completionAction = if (
+    $RawArguments.Count -ge 2 -and
+    [string]::Equals(
+        [string]$RawArguments[0],
+        "completion",
+        [System.StringComparison]::OrdinalIgnoreCase
+    )
+) {
+    ([string]$RawArguments[1]).ToLowerInvariant()
+}
+else {
+    ""
+}
+
 $skipCompletionBootstrap = (
     $RawArguments.Count -ge 1 -and
-    [string]::Equals([string]$RawArguments[0], "completion", [System.StringComparison]::OrdinalIgnoreCase)
+    [string]::Equals(
+        [string]$RawArguments[0],
+        "completion",
+        [System.StringComparison]::OrdinalIgnoreCase
+    ) -and
+    (
+        $completionAction -in @("install", "uninstall", "bootstrap") -or
+        (
+            $completionAction -eq "mode" -and
+            $RawArguments.Count -ge 3
+        )
+    )
 )
 
 if (-not $skipCompletionBootstrap) {
