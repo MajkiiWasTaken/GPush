@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-SCRIPT_VERSION="4.1.0"
+SCRIPT_VERSION="4.2.0"
 AUTHOR="Michal Švrček"
 GITHUB="https://github.com/MajkiiWasTaken"
 
@@ -169,14 +169,16 @@ EOFH
     printf '  %-11s%s\n' cache 'list, refresh, add'
     printf '  %-11s%s\n' config 'show, path, doctor'
     printf '  %-11s%s\n' alias 'list, set, remove'
-    printf '  %-11s%s\n' favorite 'list, add, remove'
+    printf '  %-11s%s\n' favorite 'list, add, remove  (alias: fav)'
     printf '  %-11s%s\n' all 'status, fetch, sync'
     printf '  %-11s%s\n' clone '<url> [destination]'
+    printf '  %-11s%s\n' favorites 'list favorite repositories'
     printf '  %-11s%s\n' recent 'show recent repositories'
     printf '  %-11s%s\n' project 'info, build, test, run, open, shell'
     printf '  %-11s%s\n' update 'check, install, rollback'
     printf '  %-11s%s\n' help 'show help'
     printf '  %-11s%s\n\n' version 'show version'
+    printf '  Run %sgp%s without arguments for a quick picker with 5 recent repositories and Favorites.\n\n' "$C_GREEN" "$C_RESET"
 
     printf '%sOPTIONS%s\n' "$C_YELLOW" "$C_RESET"
     printf '  %-26s%s\n' '-h, --help' 'Show help.'
@@ -468,6 +470,105 @@ remember_recent() {
     } > "$temp_file"
 
     mv "$temp_file" "$RECENT_FILE"
+}
+
+quick_select_repo() {
+    get_repos
+
+    if [[ ${#REPOS[@]} -eq 0 ]]; then
+        err "No Git repositories found."
+        return 1
+    fi
+
+    local -a favorite_quick=()
+    local -a recent_quick=()
+    local -a quick_repos=()
+    local -A favorite_seen=()
+    local -A quick_seen=()
+    local repository favorite_path recent_path key
+
+    # Favorites are user-curated and remain visible as their own section.
+    if [[ -s "$FAVORITES_FILE" ]]; then
+        while IFS= read -r favorite_path; do
+            [[ -n "$favorite_path" ]] || continue
+            for repository in "${REPOS[@]}"; do
+                if [[ "$repository" == "$favorite_path" ]]; then
+                    key="${repository,,}"
+                    if [[ -z "${favorite_seen[$key]+x}" ]]; then
+                        favorite_seen[$key]=1
+                        favorite_quick+=("$repository")
+                    fi
+                    break
+                fi
+            done
+        done < "$FAVORITES_FILE"
+    fi
+
+    # Show at most five recent repositories. Favorites are excluded here to
+    # keep the menu compact and avoid duplicate entries.
+    if [[ -s "$RECENT_FILE" ]]; then
+        while IFS='|' read -r _timestamp recent_path; do
+            [[ -n "$recent_path" ]] || continue
+            key="${recent_path,,}"
+            [[ -z "${favorite_seen[$key]+x}" ]] || continue
+            [[ -z "${quick_seen[$key]+x}" ]] || continue
+
+            for repository in "${REPOS[@]}"; do
+                if [[ "$repository" == "$recent_path" ]]; then
+                    quick_seen[$key]=1
+                    recent_quick+=("$repository")
+                    break
+                fi
+            done
+
+            (( ${#recent_quick[@]} >= 5 )) && break
+        done < "$RECENT_FILE"
+    fi
+
+    quick_repos=("${recent_quick[@]}" "${favorite_quick[@]}")
+
+    banner
+    section "Quick repositories"
+    dim "  Choose a number, or type any repository name/search."
+
+    local index=1 item
+    if [[ ${#recent_quick[@]} -gt 0 ]]; then
+        printf '\n%s  Recent%s\n' "$C_MAGENTA" "$C_RESET"
+        for item in "${recent_quick[@]}"; do
+            printf '  [%d] %s\n' "$index" "$(repo_name "$item")"
+            printf '      %s%s%s\n' "$C_GRAY" "$item" "$C_RESET"
+            ((index++))
+        done
+    fi
+
+    if [[ ${#favorite_quick[@]} -gt 0 ]]; then
+        printf '\n%s  Favorites%s\n' "$C_MAGENTA" "$C_RESET"
+        for item in "${favorite_quick[@]}"; do
+            printf '  [%d] %s\n' "$index" "$(repo_name "$item")"
+            printf '      %s%s%s\n' "$C_GRAY" "$item" "$C_RESET"
+            ((index++))
+        done
+    fi
+
+    if [[ ${#quick_repos[@]} -eq 0 ]]; then
+        printf '\n'
+        dim "  No recent or favorite repositories yet."
+    fi
+
+    printf '\n'
+    dim "  Manage favorites: gp favorite add|remove|list <project>"
+
+    local selection
+    read -r -p "Project / number: " selection
+    [[ -n "$selection" ]] || return 1
+
+    if [[ "$selection" =~ ^[0-9]+$ ]] && \
+        ((selection >= 1 && selection <= ${#quick_repos[@]})); then
+        SELECTED="${quick_repos[$((selection - 1))]}"
+        return 0
+    fi
+
+    select_repo "$selection"
 }
 
 protected_branch() {
@@ -1107,13 +1208,25 @@ handle_favorite() {
     case "$action" in
         list)
             banner
-            section "Favorites"
+            section "Favorite repositories"
 
             if [[ -s "$FAVORITES_FILE" ]]; then
-                cat "$FAVORITES_FILE"
+                local favorite_path
+                while IFS= read -r favorite_path; do
+                    [[ -n "$favorite_path" ]] || continue
+                    printf '  %-28s%s%s%s\n' \
+                        "$(repo_name "$favorite_path")" \
+                        "$C_GRAY" "$favorite_path" "$C_RESET"
+                done < "$FAVORITES_FILE"
             else
-                dim "  No favorites."
+                dim "  No favorite repositories."
+                dim "  Add one with: gp favorite add <project>"
             fi
+
+            printf '\n'
+            dim "  Add:     gp favorite add <project>"
+            dim "  Remove:  gp favorite remove <project>"
+            dim "  Shortcut: gp fav ..."
             ;;
         add)
             select_repo "${1:-}" || return 1
@@ -1675,8 +1788,10 @@ main() {
     load_config
 
     if [[ $# -eq 0 ]]; then
-        show_help
-        return 0
+        quick_select_repo || return 0
+        remember_recent "$SELECTED"
+        classic_commit "$SELECTED" "" false false
+        return $?
     fi
 
     if [[ "$1" == -* ]]; then
@@ -1715,8 +1830,11 @@ main() {
         alias)
             handle_alias "$@"
             ;;
-        favorite)
+        favorite|fav)
             handle_favorite "$@"
+            ;;
+        favorites)
+            handle_favorite list
             ;;
         all)
             handle_all "$@"

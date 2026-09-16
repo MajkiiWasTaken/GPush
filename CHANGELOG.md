@@ -2,6 +2,28 @@
 
 All notable changes to GPush are documented here.
 
+## 4.2.0
+
+### Added
+- Added a quick repository picker when `gp` is run without arguments.
+- The quick picker shows up to five recently used repositories and a separate Favorites section.
+- Added `fav` as a short alias for the `favorite` command group.
+- Added `favorites` as a direct shortcut for listing favorite repositories.
+- Added matching quick-picker and favorite-management behavior on Windows and Linux.
+
+### Changed
+- Bumped Windows and Linux versions, including both installers, to 4.2.0.
+- Reworked the Windows help output into clearer option groups and reduced the examples to a compact set of common workflows.
+- Improved Favorites output so repository names and paths are easier to scan.
+- Favorite repositories are omitted from the Recent section of the quick picker to avoid duplicate entries.
+- Existing repository search remains available directly from the quick picker by typing a project name or partial match.
+
+### Fixed
+- Fixed Windows `gp` with no arguments raising a parameter-binding error when the subcommand parser received an empty argument array.
+- Fixed single-argument Windows subcommands being treated as strings instead of argument arrays, which caused commands such as `gp favorite list` to be parsed as the first character only.
+- Fixed Windows configuration initialization so existing configurations can safely gain `aliases` and `favorites` properties without property-assignment errors.
+- Made Windows config saving tolerant of older configuration files that do not yet contain the newer properties.
+
 ## 4.1.0
 
 ### Added

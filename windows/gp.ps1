@@ -1,4 +1,4 @@
-﻿$RawArguments = @($args)
+$RawArguments = @($args)
 
 # ============================================================
 # ENCODING
@@ -13,7 +13,7 @@ $OutputEncoding           = [System.Text.UTF8Encoding]::new($false)
 # CONFIG
 # ============================================================
 
-$ScriptVersion = "4.1.0"
+$ScriptVersion = "4.2.0"
 
 $ConfigDir  = Join-Path $env:LOCALAPPDATA "GPush"
 $ConfigFile = Join-Path $ConfigDir "config.json"
@@ -328,6 +328,10 @@ function Save-GPushConfig {
         New-Item -ItemType Directory -Path $ConfigDir -Force | Out-Null
     }
 
+    if ($null -eq $script:GPushConfig) {
+        $script:GPushConfig = New-DefaultGPushConfig
+    }
+
     $configToSave = [ordered]@{
         searchRoots = @($script:GPushConfig.searchRoots)
         ignoredDirectories = @($script:GPushConfig.ignoredDirectories)
@@ -342,8 +346,19 @@ function Save-GPushConfig {
         ConvertTo-Json -Depth 8 |
         Set-Content -Path $ConfigFile -Encoding UTF8
 
-    $script:GPushConfig.aliases = $script:RepositoryAliases
-    $script:GPushConfig.favorites = @($script:FavoriteRepositories)
+    if ($null -eq $script:GPushConfig.PSObject.Properties['aliases']) {
+        $script:GPushConfig | Add-Member -NotePropertyName aliases -NotePropertyValue $script:RepositoryAliases
+    }
+    else {
+        $script:GPushConfig.aliases = $script:RepositoryAliases
+    }
+
+    if ($null -eq $script:GPushConfig.PSObject.Properties['favorites']) {
+        $script:GPushConfig | Add-Member -NotePropertyName favorites -NotePropertyValue @($script:FavoriteRepositories)
+    }
+    else {
+        $script:GPushConfig.favorites = @($script:FavoriteRepositories)
+    }
 }
 
 function Get-GPushRecentRepositories {
@@ -636,7 +651,6 @@ function Show-Help {
     Show-Banner
 
     Write-Host ""
-    Write-Host ""
     Write-Host '  ###  ####            o' -ForegroundColor White
     Write-Host ' #     #   #          / \' -ForegroundColor White
     Write-Host ' #  ## ####      o---o   o' -ForegroundColor White
@@ -646,8 +660,9 @@ function Show-Help {
     Write-Host '                             o---o' -ForegroundColor White
     Write-Host ""
 
-    Write-Host "A small Git helper for finding repositories, checking sync state,"
-    Write-Host "committing local changes, and pushing the current branch safely."
+    Write-Host "A small Git helper for finding repositories, inspecting their state,"
+    Write-Host "and handling common Git workflows safely."
+    Write-Dim "Run gp without a project to pick quickly from favorites and recent repositories."
     Write-Host ""
 
     Write-Host "USAGE" -ForegroundColor Yellow
@@ -656,7 +671,7 @@ function Show-Help {
     Write-Host "  gp " -NoNewline -ForegroundColor Green
     Write-Host "<command> <action> [arguments]" -ForegroundColor White
     Write-Host "  gp " -NoNewline -ForegroundColor Green
-    Write-Host "[legacy options] <project> [arguments]" -ForegroundColor DarkGray
+    Write-Host "[options] <project> [arguments]" -ForegroundColor DarkGray
     Write-Host ""
 
     Write-Host "COMMANDS" -ForegroundColor Yellow
@@ -670,262 +685,109 @@ function Show-Help {
     Write-Host ("  {0,-11}{1}" -f "cache", "list, refresh, add") -ForegroundColor White
     Write-Host ("  {0,-11}{1}" -f "config", "show, path, doctor") -ForegroundColor White
     Write-Host ("  {0,-11}{1}" -f "alias", "list, set, remove") -ForegroundColor White
-    Write-Host ("  {0,-11}{1}" -f "favorite", "list, add, remove") -ForegroundColor White
+    Write-Host ("  {0,-11}{1}" -f "favorite", "list, add, remove  (alias: fav)") -ForegroundColor White
     Write-Host ("  {0,-11}{1}" -f "all", "status, fetch, sync") -ForegroundColor White
+    Write-Host ("  {0,-11}{1}" -f "project", "info, build, test, run, open, shell") -ForegroundColor White
     Write-Host ("  {0,-11}{1}" -f "clone", "<url> [destination]") -ForegroundColor White
     Write-Host ("  {0,-11}{1}" -f "recent", "show recent repositories") -ForegroundColor White
-    Write-Host ("  {0,-11}{1}" -f "project", "info, build, test, run, open, shell") -ForegroundColor White
     Write-Host ("  {0,-11}{1}" -f "update", "check, install, rollback") -ForegroundColor White
     Write-Host ("  {0,-11}{1}" -f "help", "show help") -ForegroundColor White
     Write-Host ("  {0,-11}{1}" -f "version", "show version") -ForegroundColor White
     Write-Host ""
 
     Write-Host "OPTIONS" -ForegroundColor Yellow
-    Write-Dim "  Classic flag syntax remains fully supported."
+    Write-Dim "  Command syntax above is preferred; flags remain available for compatibility."
+
+    Write-ExampleGroup "General"
     Write-OptionHelp "-h, --help" "Show this help and exit."
-    Write-OptionHelp "-v, --version" "Show the script version and exit."
-    Write-OptionHelp "-l, --list" "List discovered Git repositories and exit."
-    Write-OptionHelp "-r, --refresh" "Force a new repository scan and refresh the cache."
+    Write-OptionHelp "-v, --version" "Show the GPush version and exit."
+    Write-OptionHelp "--" "Stop option parsing; useful when text starts with '-'."
+
+    Write-ExampleGroup "Repository discovery & navigation"
+    Write-OptionHelp "-l, --list" "List known Git repositories."
+    Write-OptionHelp "-r, --refresh" "Rescan search roots and rebuild the repository cache."
     Write-OptionHelp "--add" "Add a Git repository to the cache manually."
-    Write-OptionHelp "--cached" "Use the repository cache only. Kept for compatibility."
-    Write-OptionHelp "--config" "Show the effective GPush configuration and exit."
-    Write-OptionHelp "--config-path" "Show the config.json path and exit."
-    Write-OptionHelp "--doctor" "Check Git, config, cache, search roots, SSH, and repository setup."
-    Write-OptionHelp "--all" "Show or safely operate on all discovered repositories."
-    Write-OptionHelp "--aliases" "List configured repository aliases."
-    Write-OptionHelp "--alias-set" "Create/update an alias: gp --alias-set <alias> <project>."
-    Write-OptionHelp "--alias-remove" "Remove a configured repository alias."
-    Write-OptionHelp "--favorite" "Add a repository to favorites."
-    Write-OptionHelp "--unfavorite" "Remove a repository from favorites."
-    Write-OptionHelp "--favorites" "List favorite repositories."
+    Write-OptionHelp "--cached" "Use the repository cache only."
     Write-OptionHelp "--recent" "Show recently used repositories."
     Write-OptionHelp "--open" "Open a repository folder in File Explorer."
-    Write-OptionHelp "--clone" "Clone: gp --clone <url> [destination]."
-    Write-OptionHelp "--project" "Project tools: gp --project <info|build|test|run|open|shell> [project]."
-    Write-OptionHelp "--update" "Self update: gp --update [check|install|rollback]."
-    Write-OptionHelp "-s, --status" "Show repository, branch, remote, sync, and local status only."
-    Write-OptionHelp "--diff" "Show local changes and diff statistics only."
-    Write-OptionHelp "--renormalize" "Renormalize tracked files using .gitattributes and show status."
-    Write-OptionHelp "--fetch" "Fetch and prune the selected repository remote."
-    Write-OptionHelp "--log" "Show a decorated Git graph for recent commits."
-    Write-OptionHelp "--tags" "List repository tags, newest first."
-    Write-OptionHelp "--tag" "Create an annotated tag at HEAD; optionally provide a message."
-    Write-OptionHelp "--tag-push" "Push one existing local tag to the selected remote."
-    Write-OptionHelp "--tag-delete" "Delete one local tag. Remote tags are never deleted automatically."
-    Write-OptionHelp "--release" "Create and push a release tag after strict sync/safety checks."
+    Write-OptionHelp "--clone" "Clone a repository and add it to the cache."
+
+    Write-ExampleGroup "Repository inspection & sync"
+    Write-OptionHelp "-s, --status" "Show branch, remote, sync, and working-tree state."
+    Write-OptionHelp "--diff" "Show local changes and diff statistics."
+    Write-OptionHelp "--log" "Show the recent decorated Git graph."
+    Write-OptionHelp "--fetch" "Fetch and prune the selected remote."
+    Write-OptionHelp "--pull" "Pull with rebase without creating a commit."
+    Write-OptionHelp "--sync" "Synchronize local and remote history without creating a commit."
+    Write-OptionHelp "--renormalize" "Renormalize tracked files using .gitattributes."
+    Write-OptionHelp "--autostash" "Temporarily stash dirty files for --pull or --sync."
+
+    Write-ExampleGroup "Commit workflow & safety"
+    Write-OptionHelp "--dry-run" "Preview add/commit/push actions without changing Git state."
+    Write-OptionHelp "--no-push" "Commit locally without fetching, pulling, or pushing."
+    Write-OptionHelp "--amend" "Amend the latest local commit."
+    Write-OptionHelp "--undo" "Undo the latest unpushed commit and keep changes staged."
+    Write-OptionHelp "--allow-protected" "Skip protected-branch confirmation."
+    Write-OptionHelp "--allow-risky-files" "Skip sensitive/large-file confirmation before staging."
+
+    Write-ExampleGroup "Branches"
     Write-OptionHelp "--branches" "Show local and remote branches."
-    Write-OptionHelp "--remotes" "Show configured Git remotes."
-    Write-OptionHelp "--remote-add" "Add a named Git remote."
-    Write-OptionHelp "--remote-set-url" "Change the URL of an existing Git remote."
-    Write-OptionHelp "--remote-remove" "Remove a named Git remote."
-    Write-OptionHelp "--prune-branches" "Safely delete merged local branches whose upstream is gone."
-    Write-OptionHelp "--pull" "Run 'git pull --rebase' only. Do not commit or push."
-    Write-OptionHelp "--sync" "Safely synchronize the branch without creating a commit."
-    Write-OptionHelp "--stash" "Stash tracked and untracked local changes."
-    Write-OptionHelp "--stash-pop" "Apply and remove the newest stash entry."
-    Write-OptionHelp "--stash-list" "Show stash entries."
-    Write-OptionHelp "--autostash" "Temporarily stash dirty files for --pull or --sync, then restore them."
-    Write-OptionHelp "--amend" "Amend the latest local commit; optionally replace its message."
-    Write-OptionHelp "--undo" "Undo the latest unpushed commit and keep its changes staged."
     Write-OptionHelp "--branch-new" "Create and switch to a new local branch."
     Write-OptionHelp "--branch-switch" "Switch to an existing local branch."
     Write-OptionHelp "--branch-delete" "Safely delete a merged local branch."
-    Write-OptionHelp "--allow-protected" "Skip confirmation when committing/pushing a protected branch."
-    Write-OptionHelp "--allow-risky-files" "Skip sensitive/large-file confirmation before staging."
-    Write-OptionHelp "--dry-run" "Preview add/commit/push actions without changing Git state."
-    Write-OptionHelp "--no-push" "Add and commit changes, but do not fetch, pull, or push."
-    Write-OptionHelp "--" "Stop option parsing. Useful if a commit message starts with '-'."
-    Write-Host ""
-
-    Write-Host "EXAMPLES" -ForegroundColor Yellow
-    Write-Dim "  Command                                             Description"
-
-    Write-ExampleGroup "V4 command syntax"
-    Write-ExampleHelp 'gp repo status TestProject' "Show repository status."
-    Write-ExampleHelp 'gp repo sync TestProject' "Synchronize one repository."
-    Write-ExampleHelp 'gp branch new TestProject feature/api' "Create and switch to a branch."
-    Write-ExampleHelp 'gp branch prune TestProject' "Safely remove stale merged branches."
-    Write-ExampleHelp 'gp tag release TestProject v1.0.0 "Release 1.0.0"' "Create and push a safe release tag."
-    Write-ExampleHelp 'gp remote add TestProject upstream <url>' "Add a Git remote."
-    Write-ExampleHelp 'gp stash push TestProject' "Stash local changes."
-    Write-ExampleHelp 'gp cache refresh' "Rebuild the repository cache."
-    Write-ExampleHelp 'gp config doctor' "Run GPush diagnostics."
-    Write-ExampleHelp 'gp alias set manager TestProject' "Create a repository alias."
-    Write-ExampleHelp 'gp all fetch' "Refresh status for all repositories."
-    Write-ExampleHelp 'gp clone <url>' "Clone and cache a repository."
-    Write-ExampleHelp 'gp project info TestProject' "Detect project type and available actions."
-    Write-ExampleHelp 'gp project build TestProject' "Build using the detected toolchain."
-    Write-ExampleHelp 'gp update check' "Check GitHub Releases for a newer GPush version."
-    Write-ExampleHelp 'gp update' "Download and install the latest stable GPush release."
-
-    Write-ExampleGroup "Commit & push"
-    Write-ExampleHelp 'gp TestProject "Fix communication handling"' "Commit all local changes and safely push them."
-    Write-ExampleHelp 'gp TestProject Fix communication handling' "Same as above; quotes are optional for a normal message."
-    Write-ExampleHelp 'gp --dry-run TestProject "Test commit"' "Preview the normal workflow without changing Git state."
-    Write-ExampleHelp 'gp --no-push TestProject "Local checkpoint"' "Create a local commit without fetching or pushing."
-    Write-ExampleHelp 'gp --amend TestProject' "Amend the latest local commit and keep its message."
-    Write-ExampleHelp 'gp --amend TestProject "Better commit message"' "Amend the latest local commit and replace its message."
-    Write-ExampleHelp 'gp --undo TestProject' "Undo the latest unpushed commit while keeping changes staged."
-
-    Write-ExampleGroup "Status & inspection"
-    Write-ExampleHelp 'gp --status TestProject' "Show branch, remote, sync state, and local changes."
-    Write-ExampleHelp 'gp --status' "Show status for the repository in the current directory."
-    Write-ExampleHelp 'gp --diff TestProject' "Show staged and unstaged diff statistics."
-    Write-ExampleHelp 'gp --diff' "Show diff statistics for the repository in the current directory."
-    Write-ExampleHelp 'gp --log TestProject' "Show a decorated Git graph for recent commits."
-    Write-ExampleHelp 'gp --log' "Show the Git graph for the repository in the current directory."
-    Write-ExampleHelp 'gp --tags TestProject' "List local tags, newest first."
-    Write-ExampleHelp 'gp --branches TestProject' "Show local and remote branches."
-    Write-ExampleHelp 'gp --remotes TestProject' "Show configured Git remotes."
-    Write-ExampleHelp 'gp --remote-add TestProject upstream <url>' "Add a second remote."
-    Write-ExampleHelp 'gp --remote-set-url TestProject origin <url>' "Change a remote URL."
-    Write-ExampleHelp 'gp --remote-remove TestProject upstream' "Remove a remote."
-    Write-ExampleHelp 'gp --fetch TestProject' "Fetch and prune the selected remote."
-
-    Write-ExampleGroup "Synchronization"
-    Write-ExampleHelp 'gp --pull TestProject' "Run a safe pull with rebase on a clean working tree."
-    Write-ExampleHelp 'gp --pull --autostash TestProject' "Temporarily stash local changes, pull, then restore them."
-    Write-ExampleHelp 'gp --sync TestProject' "Synchronize local and remote history without creating a commit."
-    Write-ExampleHelp 'gp --sync --autostash TestProject' "Synchronize a dirty working tree using temporary autostash."
-
-    Write-ExampleGroup "Stash"
-    Write-ExampleHelp 'gp --stash TestProject' "Stash tracked and untracked local changes."
-    Write-ExampleHelp 'gp --stash-list TestProject' "List available stash entries."
-    Write-ExampleHelp 'gp --stash-pop TestProject' "Restore and remove the newest stash entry."
+    Write-OptionHelp "--prune-branches" "Delete merged local branches whose upstream is gone."
 
     Write-ExampleGroup "Tags & releases"
-    Write-ExampleHelp 'gp --tag TestProject v1.0.0' "Create annotated tag v1.0.0 at HEAD."
-    Write-ExampleHelp 'gp --tag TestProject v1.0.0 "First stable release"' "Create an annotated tag with a custom message."
-    Write-ExampleHelp 'gp --tag-push TestProject v1.0.0' "Push one local tag to the selected remote."
-    Write-ExampleHelp 'gp --tag-delete TestProject v1.0.0' "Delete only the local tag."
-    Write-ExampleHelp 'gp --release TestProject v1.0.0 "Release 1.0.0"' "Create and push a tag only when the branch is clean and synced."
+    Write-OptionHelp "--tags" "List repository tags, newest first."
+    Write-OptionHelp "--tag" "Create an annotated tag at HEAD."
+    Write-OptionHelp "--tag-push" "Push one existing local tag."
+    Write-OptionHelp "--tag-delete" "Delete one local tag."
+    Write-OptionHelp "--release" "Create and push a release tag after safety checks."
 
-    Write-ExampleGroup "Branches"
-    Write-ExampleHelp 'gp --branch-new TestProject feature/communication' "Create and switch to a new branch."
-    Write-ExampleHelp 'gp --branch-switch TestProject main' "Switch to an existing local branch."
-    Write-ExampleHelp 'gp --branch-delete TestProject feature/old' "Safely delete a merged local branch."
-    Write-ExampleHelp 'gp --prune-branches TestProject' "Delete safe merged branches whose upstream was removed."
-    Write-ExampleHelp 'gp --prune-branches' "Prune branches in the repository in the current directory."
+    Write-ExampleGroup "Remotes & stash"
+    Write-OptionHelp "--remotes" "Show configured Git remotes."
+    Write-OptionHelp "--remote-add" "Add a named Git remote."
+    Write-OptionHelp "--remote-set-url" "Change an existing remote URL."
+    Write-OptionHelp "--remote-remove" "Remove a named Git remote."
+    Write-OptionHelp "--stash" "Stash tracked and untracked local changes."
+    Write-OptionHelp "--stash-list" "Show stash entries."
+    Write-OptionHelp "--stash-pop" "Apply and remove the newest stash entry."
 
-    Write-ExampleGroup "Repository cache"
-    Write-ExampleHelp 'gp --list' "List repositories currently known to GPush."
-    Write-ExampleHelp 'gp --refresh' "Rescan configured search roots and rebuild the cache."
-    Write-ExampleHelp 'gp --refresh --list' "Refresh the repository cache and print the result."
-    Write-ExampleHelp 'gp --add .' "Add the current Git repository to the cache."
-    Write-ExampleHelp 'gp --add "$HOME\Documents\Project\TestProject"' "Add a repository by explicit path."
-    Write-ExampleHelp 'gp --renormalize TestProject' "Renormalize tracked files using .gitattributes."
-    Write-ExampleHelp 'gp --config' "Show the effective GPush configuration."
-    Write-ExampleHelp 'gp --config-path' "Print the config.json location."
-    Write-ExampleHelp 'gp --doctor' "Run environment and Git setup diagnostics."
+    Write-ExampleGroup "Aliases, favorites & multi-repository"
+    Write-OptionHelp "--aliases" "List repository aliases."
+    Write-OptionHelp "--alias-set" "Create or update a repository alias."
+    Write-OptionHelp "--alias-remove" "Remove a repository alias."
+    Write-OptionHelp "--favorite" "Add a repository to favorites."
+    Write-OptionHelp "--unfavorite" "Remove a repository from favorites."
+    Write-OptionHelp "--favorites" "List favorite repositories."
+    Write-OptionHelp "--all" "Show or safely operate on all discovered repositories."
 
-    Write-ExampleGroup "Multi-repository"
-    Write-ExampleHelp 'gp --all' "Show a dashboard for all discovered repositories using cached remote refs."
-    Write-ExampleHelp 'gp --all --status' "Explicitly show the multi-repository status dashboard."
-    Write-ExampleHelp 'gp --all --fetch' "Fetch every repository, then show a fresh dashboard."
-    Write-ExampleHelp 'gp --all --sync' "Safely fast-forward/push clean repositories where possible."
-    Write-ExampleHelp 'gp --all --sync --allow-protected' "Also allow pushes to configured protected branches."
-
-    Write-ExampleGroup "Aliases & navigation"
-    Write-ExampleHelp 'gp --alias-set manager TestProject' "Create or update a short repository alias."
-    Write-ExampleHelp 'gp manager "Fix communication"' "Use an alias anywhere a project name is accepted."
-    Write-ExampleHelp 'gp --aliases' "List configured aliases."
-    Write-ExampleHelp 'gp --alias-remove manager' "Remove an alias."
-    Write-ExampleHelp 'gp --favorite TestProject' "Add a repository to favorites."
-    Write-ExampleHelp 'gp --favorites' "List favorite repositories."
-    Write-ExampleHelp 'gp --recent' "Show recently used repositories."
-    Write-ExampleHelp 'gp --open TestProject' "Open the repository folder in File Explorer."
-    Write-ExampleHelp 'gp --open' "Open the current repository folder."
-    Write-ExampleHelp 'gp --clone <url>' "Clone into the first configured search root."
-    Write-ExampleHelp 'gp --clone <url> <destination>' "Clone into an explicit destination."
-    Write-ExampleHelp 'gp --project info TestProject' "Legacy flag syntax for project inspection."
-    Write-ExampleHelp 'gp --project build TestProject' "Legacy flag syntax for project build."
-    Write-ExampleHelp 'gp --update check' "Legacy flag syntax for checking GPush updates."
-    Write-ExampleHelp 'gp --update' "Legacy flag syntax for installing the latest GPush release."
-
-    Write-ExampleGroup "Project tools"
-    Write-ExampleHelp 'gp project info [project]' "Detect project type, manifest, Git branch, and available actions."
-    Write-ExampleHelp 'gp project build [project]' "Build the project using its detected toolchain."
-    Write-ExampleHelp 'gp project test [project]' "Run tests using the detected toolchain."
-    Write-ExampleHelp 'gp project run [project]' "Run the project when a safe default entry point can be detected."
-    Write-ExampleHelp 'gp project open [project]' "Open the project folder in File Explorer."
-    Write-ExampleHelp 'gp project shell [project]' "Open PowerShell in the project directory."
-
-    Write-ExampleGroup "Self update"
-    Write-ExampleHelp 'gp update check' "Check GitHub Releases without changing the installation."
-    Write-ExampleHelp 'gp update' "Download and install the latest stable Windows release."
-    Write-ExampleHelp 'gp update install' "Explicit form of 'gp update'."
-    Write-ExampleHelp 'gp update rollback' "Restore the newest local backup of gp.ps1."
-
-    Write-Host ""
-    Write-Host "PROJECT TOOLS" -ForegroundColor Yellow
-    Write-Dim "  Project commands are independent from the normal Git commit/push workflow."
-    Write-Dim "  If [project] is omitted, GPush uses the Git repository in the current directory."
-    Write-Dim "  A project can also be selected by repository name, alias, cached path, or explicit directory path."
-    Write-Host ""
-    Write-Dim "  Detection:"
-    Write-Dim "    Cargo.toml                 Rust"
-    Write-Dim "    *.sln / *.csproj          .NET"
-    Write-Dim "    package.json               Node.js"
-    Write-Dim "    pyproject.toml             Python"
-    Write-Dim "    requirements.txt           Python"
-    Write-Dim "    CMakeLists.txt             C / C++"
-    Write-Host ""
-    Write-Dim "  Default actions:"
-    Write-Dim "    Rust       cargo build / cargo test / cargo run"
-    Write-Dim "    .NET       dotnet build / dotnet test / dotnet run"
-    Write-Dim "    Node.js    npm, pnpm, or yarn based on the lock file"
-    Write-Dim "    Python     python -m build/pytest and main.py or app.py for run"
-    Write-Dim "    C/C++      cmake configure/build and ctest"
-    Write-Host ""
-    Write-Dim "  Mixed repositories may report multiple detected project types."
-    Write-Dim "  Build/test/run uses a safe priority order: Rust, .NET, Node.js, Python, C/C++."
-    Write-Dim "  GPush never invents a generic run target for CMake projects."
-
-    Write-Host ""
-    Write-Host "SELF UPDATE" -ForegroundColor Yellow
-    Write-Dim "  GPush checks the latest stable GitHub Release of MajkiiWasTaken/GPush."
-    Write-Dim "  'gp update check' only compares versions and never modifies files."
-    Write-Dim "  'gp update' downloads the Windows ZIP release asset and verifies its structure."
-    Write-Dim "  If a matching SHA-256 asset is published, GPush verifies the downloaded package."
-    Write-Dim "  Before replacing gp.ps1, the current script is copied to:"
-    Write-Dim "    %LOCALAPPDATA%\GPush\backups\"
-    Write-Dim "  Config, repository cache, aliases, favorites, and recent repositories are left untouched."
-    Write-Dim "  'gp update rollback' restores the newest available gp.ps1 backup."
-    Write-Dim "  After update or rollback, start a new gp command so PowerShell loads the replaced script."
+    Write-ExampleGroup "Configuration & tools"
+    Write-OptionHelp "--config" "Show the effective GPush configuration."
+    Write-OptionHelp "--config-path" "Show the config.json path."
+    Write-OptionHelp "--doctor" "Check Git, config, cache, search roots, SSH, and repository setup."
+    Write-OptionHelp "--project" "Run project info/build/test/run/open/shell tools."
+    Write-OptionHelp "--update" "Check, install, or roll back a GPush release."
     Write-Host ""
 
-    Write-Host "DEFAULT WORKFLOW" -ForegroundColor Yellow
-    Write-Dim "  1. Find the repository from the local cache."
-    Write-Dim "  2. Run Git preflight checks."
-    Write-Dim "  3. Fetch the remote and compare local/remote history."
-    Write-Dim "  4. Show local changes."
-    Write-Dim "  5. Add and commit local changes when needed."
-    Write-Dim "  6. Rebase onto the upstream branch when the remote is ahead."
-    Write-Dim "  7. Push the branch and create upstream automatically if needed."
-    Write-Dim "  8. Show a final summary."
+    Write-Host "QUICK EXAMPLES" -ForegroundColor Yellow
+    Write-Dim "  Command                                             Description"
+    Write-ExampleHelp 'gp' "Pick from favorite/recent repositories or search by name."
+    Write-ExampleHelp 'gp TestProject "Fix communication handling"' "Commit and safely push local changes."
+    Write-ExampleHelp 'gp repo status TestProject' "Inspect one repository."
+    Write-ExampleHelp 'gp repo sync TestProject' "Synchronize without creating a commit."
+    Write-ExampleHelp 'gp branch new TestProject feature/api' "Create and switch to a branch."
+    Write-ExampleHelp 'gp stash push TestProject' "Stash local changes."
+    Write-ExampleHelp 'gp cache refresh' "Rebuild the repository cache."
+    Write-ExampleHelp 'gp favorite add TestProject' "Pin a repository to Favorites."
+    Write-ExampleHelp 'gp fav remove TestProject' "Remove a repository from Favorites."
+    Write-ExampleHelp 'gp config doctor' "Run diagnostics."
+    Write-ExampleHelp 'gp --dry-run TestProject "Test commit"' "Preview the normal commit workflow."
     Write-Host ""
 
-    Write-Host "SAFETY" -ForegroundColor Yellow
-    Write-Dim "  - Merge conflicts are never resolved automatically."
-    Write-Dim "  - GPush refuses to continue through an active merge or rebase."
-    Write-Dim "  - Unresolved conflicts must be fixed manually."
-    Write-Dim "  - If the remote cannot be checked, normal push mode stops before committing."
-    Write-Dim "  - Protected branches require confirmation before a direct commit/push."
-    Write-Dim "  - Sensitive names and large files are checked before 'git add'."
-    Write-Dim "  - Autostash restores local changes after pull/sync completes."
-    Write-Dim "  - Undo/amend refuse to rewrite a commit already present on upstream."
-    Write-Dim "  - Branch deletion uses 'git branch -d'; unmerged work is never force-deleted."
-    Write-Dim "  - Release creation requires a clean tree and an exactly synchronized remote branch."
-    Write-Dim "  - Remote tags are never deleted automatically."
-    Write-Dim "  - Branch pruning only deletes merged branches with a gone upstream and always uses git branch -d."
-    Write-Dim "  - Use --no-push when you intentionally want a local-only commit."
-    Write-Dim "  - V4 subcommands are translated to the same proven safety logic as legacy options."
+    Write-Dim "Run 'gp <command> <action>' for normal use; legacy flags behave the same."
     Write-Host ""
 }
-
-# Load/create config before argument parsing so every command uses the same settings.
-Initialize-GPushConfig
-
 
 # ============================================================
 # GP SELF UPDATE / PROJECT TOOLS
@@ -1828,6 +1690,7 @@ function Invoke-GPushProjectCommand {
 function ConvertFrom-GPushSubcommand {
     param(
         [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
         [object[]]$Arguments
     )
 
@@ -1846,12 +1709,10 @@ function ConvertFrom-GPushSubcommand {
     }
 
     $command = $first.ToLowerInvariant()
-    $rest = if ($inputArgs.Count -gt 1) {
-        @($inputArgs[1..($inputArgs.Count - 1)])
-    }
-    else {
-        @()
-    }
+    # Always keep the remainder as a real array. PowerShell may unwrap
+    # a single value returned from an if-expression into a scalar string;
+    # indexing that scalar would turn e.g. "list" into the character "l".
+    $rest = @($inputArgs | Select-Object -Skip 1)
 
     function Join-GPushArgs {
         param(
@@ -1869,7 +1730,7 @@ function ConvertFrom-GPushSubcommand {
             }
 
             $action = ([string]$rest[0]).ToLowerInvariant()
-            $tail = if ($rest.Count -gt 1) { @($rest[1..($rest.Count - 1)]) } else { @() }
+            $tail = @($rest | Select-Object -Skip 1)
 
             switch ($action) {
                 "status" { return Join-GPushArgs @("--status") $tail }
@@ -1893,7 +1754,7 @@ function ConvertFrom-GPushSubcommand {
             }
 
             $action = ([string]$rest[0]).ToLowerInvariant()
-            $tail = if ($rest.Count -gt 1) { @($rest[1..($rest.Count - 1)]) } else { @() }
+            $tail = @($rest | Select-Object -Skip 1)
 
             switch ($action) {
                 "list"   { return Join-GPushArgs @("--branches") $tail }
@@ -1915,7 +1776,7 @@ function ConvertFrom-GPushSubcommand {
             }
 
             $action = ([string]$rest[0]).ToLowerInvariant()
-            $tail = if ($rest.Count -gt 1) { @($rest[1..($rest.Count - 1)]) } else { @() }
+            $tail = @($rest | Select-Object -Skip 1)
 
             switch ($action) {
                 "list"    { return Join-GPushArgs @("--tags") $tail }
@@ -1937,7 +1798,7 @@ function ConvertFrom-GPushSubcommand {
             }
 
             $action = ([string]$rest[0]).ToLowerInvariant()
-            $tail = if ($rest.Count -gt 1) { @($rest[1..($rest.Count - 1)]) } else { @() }
+            $tail = @($rest | Select-Object -Skip 1)
 
             switch ($action) {
                 "list"    { return Join-GPushArgs @("--remotes") $tail }
@@ -1958,7 +1819,7 @@ function ConvertFrom-GPushSubcommand {
             }
 
             $action = ([string]$rest[0]).ToLowerInvariant()
-            $tail = if ($rest.Count -gt 1) { @($rest[1..($rest.Count - 1)]) } else { @() }
+            $tail = @($rest | Select-Object -Skip 1)
 
             switch ($action) {
                 "push" { return Join-GPushArgs @("--stash") $tail }
@@ -1978,7 +1839,7 @@ function ConvertFrom-GPushSubcommand {
             }
 
             $action = ([string]$rest[0]).ToLowerInvariant()
-            $tail = if ($rest.Count -gt 1) { @($rest[1..($rest.Count - 1)]) } else { @() }
+            $tail = @($rest | Select-Object -Skip 1)
 
             switch ($action) {
                 "list"    { return Join-GPushArgs @("--list") $tail }
@@ -2017,7 +1878,7 @@ function ConvertFrom-GPushSubcommand {
             }
 
             $action = ([string]$rest[0]).ToLowerInvariant()
-            $tail = if ($rest.Count -gt 1) { @($rest[1..($rest.Count - 1)]) } else { @() }
+            $tail = @($rest | Select-Object -Skip 1)
 
             switch ($action) {
                 "list"   { return @("--aliases") }
@@ -2031,13 +1892,13 @@ function ConvertFrom-GPushSubcommand {
             }
         }
 
-        "favorite" {
+        { $_ -in @("favorite", "favorites", "fav") } {
             if ($rest.Count -eq 0) {
                 return @("--favorites")
             }
 
             $action = ([string]$rest[0]).ToLowerInvariant()
-            $tail = if ($rest.Count -gt 1) { @($rest[1..($rest.Count - 1)]) } else { @() }
+            $tail = @($rest | Select-Object -Skip 1)
 
             switch ($action) {
                 "list"   { return @("--favorites") }
@@ -2057,7 +1918,7 @@ function ConvertFrom-GPushSubcommand {
             }
 
             $action = ([string]$rest[0]).ToLowerInvariant()
-            $tail = if ($rest.Count -gt 1) { @($rest[1..($rest.Count - 1)]) } else { @() }
+            $tail = @($rest | Select-Object -Skip 1)
 
             switch ($action) {
                 "status" { return Join-GPushArgs @("--all", "--status") $tail }
@@ -2073,16 +1934,6 @@ function ConvertFrom-GPushSubcommand {
 
         "clone" {
             return Join-GPushArgs @("--clone") $rest
-        }
-
-        "project" {
-            # First-class V4 command. Keep arguments intact for the project dispatcher.
-            return $inputArgs
-        }
-
-        "update" {
-            # First-class V4 command. Keep arguments intact for the update dispatcher.
-            return $inputArgs
         }
 
         "recent" {
@@ -2102,7 +1953,7 @@ function ConvertFrom-GPushSubcommand {
         }
 
         default {
-            # Not a recognized V4 command. Preserve the classic shortcut:
+            # Not a v4 command. Preserve the classic shortcut:
             #   gp Project "commit message"
             return $inputArgs
         }
@@ -2113,7 +1964,17 @@ function ConvertFrom-GPushSubcommand {
 # ARGUMENT PARSING
 # ============================================================
 
-$tokens = @(ConvertFrom-GPushSubcommand -Arguments $RawArguments)
+# Load and normalize config before any command is evaluated. This also
+# upgrades older config.json files in memory with newly introduced fields
+# such as aliases and favorites while preserving existing user settings.
+Initialize-GPushConfig
+
+$tokens = if ($RawArguments.Count -eq 0) {
+    @()
+}
+else {
+    @(ConvertFrom-GPushSubcommand -Arguments $RawArguments)
+}
 
 $ShowHelp    = $false
 $ShowVersion = $false
@@ -3211,7 +3072,105 @@ function Select-Repository {
     )
 
     if ([string]::IsNullOrWhiteSpace($Search)) {
-        $Search = Read-Host "Project"
+        $repoList = @(ConvertTo-RepositoryList -InputObject $Repos)
+        $favoriteQuick = @()
+        $recentQuick = @()
+        $favoritePaths = @{}
+
+        # Favorites are persistent and user-curated. Keep them in their own
+        # section so the quick picker stays predictable between runs.
+        foreach ($favoritePath in @($FavoriteRepositories)) {
+            if ([string]::IsNullOrWhiteSpace([string]$favoritePath)) { continue }
+
+            $match = $repoList | Where-Object {
+                [string]::Equals([string]$_.Path, [string]$favoritePath, [System.StringComparison]::OrdinalIgnoreCase)
+            } | Select-Object -First 1
+
+            if ($null -ne $match) {
+                $key = ([System.IO.Path]::GetFullPath([string]$match.Path)).ToLowerInvariant()
+                $favoritePaths[$key] = $true
+                $favoriteQuick += $match
+            }
+        }
+
+        # Recent is intentionally limited to five entries. Repositories already
+        # pinned as favorites are omitted here to avoid duplicate menu entries.
+        foreach ($recent in @(Get-GPushRecentRepositories)) {
+            if ($recentQuick.Count -ge 5) { break }
+
+            $match = $repoList | Where-Object {
+                [string]::Equals([string]$_.Path, [string]$recent.Path, [System.StringComparison]::OrdinalIgnoreCase)
+            } | Select-Object -First 1
+
+            if ($null -ne $match) {
+                $key = ([System.IO.Path]::GetFullPath([string]$match.Path)).ToLowerInvariant()
+                if (-not $favoritePaths.ContainsKey($key)) {
+                    $recentQuick += $match
+                }
+            }
+        }
+
+        $quickRepos = @()
+        foreach ($item in $recentQuick) {
+            $quickRepos += [PSCustomObject]@{ Repository = $item; Source = "recent" }
+        }
+        foreach ($item in $favoriteQuick) {
+            $quickRepos += [PSCustomObject]@{ Repository = $item; Source = "favorite" }
+        }
+
+        if ($quickRepos.Count -gt 0) {
+            Write-Host ""
+            Write-Host "Quick repositories" -ForegroundColor Cyan
+            Write-Dim "  Choose a number, or type any repository name/search."
+
+            $number = 1
+
+            if ($recentQuick.Count -gt 0) {
+                Write-Host ""
+                Write-Host "  Recent" -ForegroundColor Yellow
+                foreach ($item in $recentQuick) {
+                    Write-Host ("  [{0}] " -f $number) -NoNewline -ForegroundColor DarkGray
+                    Write-Host $item.Name -ForegroundColor White
+                    Write-Dim ("      " + $item.Path)
+                    $number++
+                }
+            }
+
+            if ($favoriteQuick.Count -gt 0) {
+                Write-Host ""
+                Write-Host "  Favorites" -ForegroundColor Magenta
+                foreach ($item in $favoriteQuick) {
+                    Write-Host ("  [{0}] " -f $number) -NoNewline -ForegroundColor DarkGray
+                    Write-Host $item.Name -ForegroundColor White
+                    Write-Dim ("      " + $item.Path)
+                    $number++
+                }
+            }
+
+            Write-Host ""
+            Write-Dim "  Manage favorites: gp favorite add|remove|list <project>"
+            $selection = Read-Host "Project / number"
+            $selectedNumber = 0
+
+            if ([int]::TryParse($selection, [ref]$selectedNumber) -and
+                $selectedNumber -ge 1 -and $selectedNumber -le $quickRepos.Count) {
+                return $quickRepos[$selectedNumber - 1].Repository
+            }
+
+            if ([string]::IsNullOrWhiteSpace($selection)) {
+                Write-Err "No project selected."
+                return $null
+            }
+
+            $Search = $selection.Trim()
+        }
+        else {
+            $Search = Read-Host "Project"
+            if ([string]::IsNullOrWhiteSpace($Search)) {
+                Write-Err "No project selected."
+                return $null
+            }
+        }
     }
 
     $script:LastRepositorySearch = $Search
@@ -3759,13 +3718,32 @@ if ($FavoritesOnly) {
 
     if ($FavoriteRepositories.Count -eq 0) {
         Write-Dim "  No favorite repositories."
+        Write-Dim "  Add one with: gp favorite add <project>"
     }
     else {
+        $cachedFavorites = @(Get-GPushCache)
+
         foreach ($favorite in $FavoriteRepositories) {
-            Write-Host "  $favorite" -ForegroundColor Green
+            $matchedFavorite = $cachedFavorites | Where-Object {
+                [string]::Equals([string]$_.Path, [string]$favorite, [System.StringComparison]::OrdinalIgnoreCase)
+            } | Select-Object -First 1
+
+            $favoriteName = if ($null -ne $matchedFavorite) {
+                [string]$matchedFavorite.Name
+            }
+            else {
+                Split-Path ([string]$favorite) -Leaf
+            }
+
+            Write-Host ("  {0,-28}" -f $favoriteName) -NoNewline -ForegroundColor White
+            Write-Host $favorite -ForegroundColor DarkGray
         }
     }
 
+    Write-Host ""
+    Write-Dim "  Add:     gp favorite add <project>"
+    Write-Dim "  Remove:  gp favorite remove <project>"
+    Write-Dim "  Shortcut: gp fav ..."
     Write-Host ""
     exit 0
 }
