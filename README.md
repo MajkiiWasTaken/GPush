@@ -109,6 +109,14 @@ The installer places `gp` in:
 
 ### Usage
 
+Quick repository picker:
+
+```text
+gp
+```
+
+Shows up to 5 recent repositories and your favorites.
+
 Classic shortcut:
 
 ```text
@@ -126,6 +134,8 @@ gp branch prune MyProject
 gp tag release MyProject v1.0.0 "Release 1.0.0"
 gp remote add MyProject upstream <url>
 gp stash push MyProject
+gp favorite add MyProject
+gp fav list
 gp all fetch
 gp clone <url>
 ```
@@ -156,10 +166,12 @@ If no commit message is supplied, GPush asks for it interactively.
 | `cache` | Repository discovery and cache |
 | `config` | Configuration and diagnostics |
 | `alias` | Repository aliases |
-| `favorite` | Favorite repositories |
+| `favorite` / `fav` | Favorite repositories |
 | `all` | Status, fetch or sync all repositories |
+| `project` | Project info, build, test, run, open and shell |
 | `clone` | Clone and cache a repository |
 | `recent` | Show recently used repositories |
+| `update` | Check, install or roll back GPush updates |
 
 Run:
 
