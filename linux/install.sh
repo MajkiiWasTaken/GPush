@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALLER_VERSION="4.2.1"
+INSTALLER_VERSION="4.4.0"
 AUTHOR="Michal Švrček"
 GITHUB="https://github.com/MajkiiWasTaken"
 
@@ -174,6 +174,19 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # Add more search_root= lines when needed.
 
 search_root=$search_root
+protected_branch=main
+protected_branch=master
+protected_branch=release/*
+ignored_directory=node_modules
+ignored_directory=bin
+ignored_directory=obj
+ignored_directory=.venv
+ignored_directory=venv
+ignored_directory=target
+ignored_directory=packages
+ignored_directory=.idea
+ignored_directory=.vscode
+ignored_directory=.vs
 default_remote=origin
 large_file_mb=25
 CFG
@@ -245,6 +258,17 @@ fi
 
 
 # ------------------------------------------------------------
+# Bash completion
+# ------------------------------------------------------------
+
+printf '\nInstalling Bash completion...\n'
+
+"$TARGET" completion install || \
+  printf '%sCould not install Bash completion automatically.%s\n' \
+    "$C_YELLOW" "$C_RESET"
+
+
+# ------------------------------------------------------------
 # Cache refresh
 # ------------------------------------------------------------
 
@@ -269,4 +293,5 @@ printf '\n%sGPush installation complete.%s\n' \
 printf 'Try:\n'
 printf '  gp version\n'
 printf '  gp help\n'
-printf '  gp config doctor\n\n'
+printf '  gp config doctor\n'
+printf '  gp completion status\n\n'

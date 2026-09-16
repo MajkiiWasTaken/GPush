@@ -13,7 +13,8 @@ $OutputEncoding           = [System.Text.UTF8Encoding]::new($false)
 # CONFIG
 # ============================================================
 
-$ScriptVersion = "4.2.1"
+$ScriptVersion = "4.4.0"
+$CompletionSchemaVersion = "10"
 
 $ConfigDir  = Join-Path $env:LOCALAPPDATA "GPush"
 $ConfigFile = Join-Path $ConfigDir "config.json"
@@ -96,7 +97,7 @@ function Write-KeyValue {
 
     # Keep key/value output aligned with at least one visible space
     # after longer labels such as "Working tree".
-    Write-Host ("  {0,-14}" -f $Key) -NoNewline -ForegroundColor DarkGray
+    Write-Host ("  {0,-18}" -f $Key) -NoNewline -ForegroundColor DarkGray
     Write-Host $Value -ForegroundColor $ValueColor
 }
 
@@ -361,6 +362,275 @@ function Save-GPushConfig {
     }
 }
 
+
+function Resolve-GPushConfigKey {
+    param([string]$Key)
+
+    if ([string]::IsNullOrWhiteSpace($Key)) {
+        return $null
+    }
+
+    switch ($Key.Trim().ToLowerInvariant()) {
+        { $_ -in @("search-root", "search-roots") } {
+            return "search-root"
+        }
+        { $_ -in @("protected-branch", "protected-branches") } {
+            return "protected-branch"
+        }
+        { $_ -in @("ignored-directory", "ignored-directories", "ignore-directory", "ignore") } {
+            return "ignored-directory"
+        }
+        { $_ -in @("default-remote", "remote") } {
+            return "default-remote"
+        }
+        { $_ -in @("large-file-threshold", "large-file-mb", "large-file") } {
+            return "large-file-threshold"
+        }
+        default {
+            return $null
+        }
+    }
+}
+
+function Write-GPushConfigEditUsage {
+    Write-Dim "Use:"
+    Write-Dim "  gp add <key> <value>"
+    Write-Dim "  gp remove <search-root|protected-branch|ignored-directory> <value>"
+    Write-Dim "  gp set <default-remote|large-file-threshold> <value>"
+    Write-Dim "  gp reset <key>"
+    Write-Dim "  Keys: search-root, protected-branch, ignored-directory, default-remote, large-file-threshold"
+    Write-Dim "  Full form: gp config add|remove|set|reset ..."
+}
+
+function Test-GPushConfigPathEqual {
+    param(
+        [string]$Left,
+        [string]$Right
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Left) -or [string]::IsNullOrWhiteSpace($Right)) {
+        return $false
+    }
+
+    $leftExpanded = Expand-GPushPath -Path $Left
+    $rightExpanded = Expand-GPushPath -Path $Right
+
+    try {
+        $leftFull = [System.IO.Path]::GetFullPath($leftExpanded).TrimEnd('\', '/')
+        $rightFull = [System.IO.Path]::GetFullPath($rightExpanded).TrimEnd('\', '/')
+        return [string]::Equals($leftFull, $rightFull, [System.StringComparison]::OrdinalIgnoreCase)
+    }
+    catch {
+        return [string]::Equals($Left.Trim(), $Right.Trim(), [System.StringComparison]::OrdinalIgnoreCase)
+    }
+}
+
+function Invoke-GPushConfigEdit {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Action,
+        [Parameter(Mandatory = $true)]
+        [string]$Key,
+        [string]$Value
+    )
+
+    $actionName = $Action.Trim().ToLowerInvariant()
+    $configKey = Resolve-GPushConfigKey -Key $Key
+
+    if ($null -eq $configKey) {
+        Write-Err "Unknown configuration key: $Key"
+        Write-GPushConfigEditUsage
+        return 2
+    }
+
+    $listKeys = @("search-root", "protected-branch", "ignored-directory")
+    $scalarKeys = @("default-remote", "large-file-threshold")
+
+    if ($actionName -eq "add") {
+        if ([string]::IsNullOrWhiteSpace($Value)) {
+            Write-Err "Configuration 'add' requires a value."
+            Write-Dim "Example: gp add $configKey <value>"
+            return 2
+        }
+
+        # `add` is intentionally convenient: for list settings it appends,
+        # while scalar settings behave like `set`.
+        if ($configKey -in $scalarKeys) {
+            $actionName = "set"
+        }
+    }
+    elseif ($actionName -eq "remove") {
+        if ($configKey -notin $listKeys) {
+            Write-Err "Configuration key '$configKey' cannot remove an individual value."
+            Write-Dim "Use: gp reset $configKey"
+            return 2
+        }
+
+        if ([string]::IsNullOrWhiteSpace($Value)) {
+            Write-Err "Configuration 'remove' requires a value."
+            Write-Dim "Example: gp remove $configKey <value>"
+            return 2
+        }
+    }
+    elseif ($actionName -eq "set") {
+        if ($configKey -notin $scalarKeys) {
+            Write-Err "Configuration key '$configKey' does not support 'set'."
+            Write-Dim "Use 'gp config add/remove $configKey <value>' for list settings."
+            return 2
+        }
+
+        if ([string]::IsNullOrWhiteSpace($Value)) {
+            Write-Err "Configuration 'set' requires a value."
+            Write-Dim "Example: gp config set $configKey <value>"
+            return 2
+        }
+    }
+    elseif ($actionName -eq "reset") {
+        if (-not [string]::IsNullOrWhiteSpace($Value)) {
+            Write-Err "Configuration 'reset' accepts only a key."
+            Write-Dim "Example: gp config reset $configKey"
+            return 2
+        }
+    }
+    else {
+        Write-Err "Unknown config action: $Action"
+        Write-GPushConfigEditUsage
+        return 2
+    }
+
+    switch ($configKey) {
+        "search-root" {
+            $items = @($script:GPushConfig.searchRoots | ForEach-Object { [string]$_ })
+
+            if ($actionName -eq "add") {
+                $exists = @($items | Where-Object { Test-GPushConfigPathEqual -Left $_ -Right $Value }).Count -gt 0
+                if ($exists) {
+                    Write-Warn "Search root is already configured: $Value"
+                    return 0
+                }
+
+                $script:GPushConfig.searchRoots = @($items) + @($Value.Trim())
+            }
+            elseif ($actionName -eq "remove") {
+                $remaining = @($items | Where-Object { -not (Test-GPushConfigPathEqual -Left $_ -Right $Value) })
+                if ($remaining.Count -eq $items.Count) {
+                    Write-Err "Search root was not found: $Value"
+                    return 1
+                }
+
+                if ($remaining.Count -eq 0) {
+                    Write-Err "Cannot remove the last search root."
+                    Write-Dim "Add another search root first."
+                    return 2
+                }
+
+                $script:GPushConfig.searchRoots = $remaining
+            }
+            else {
+                $script:GPushConfig.searchRoots = @($DefaultSearchRoots)
+            }
+        }
+
+        "protected-branch" {
+            $items = @($script:GPushConfig.protectedBranches | ForEach-Object { [string]$_ })
+
+            if ($actionName -eq "add") {
+                if ($items -icontains $Value.Trim()) {
+                    Write-Warn "Protected branch is already configured: $Value"
+                    return 0
+                }
+                $script:GPushConfig.protectedBranches = @($items) + @($Value.Trim())
+            }
+            elseif ($actionName -eq "remove") {
+                if ($items -inotcontains $Value.Trim()) {
+                    Write-Err "Protected branch was not found: $Value"
+                    return 1
+                }
+                $script:GPushConfig.protectedBranches = @(
+                    $items | Where-Object { -not [string]::Equals($_, $Value.Trim(), [System.StringComparison]::OrdinalIgnoreCase) }
+                )
+            }
+            else {
+                $script:GPushConfig.protectedBranches = @($DefaultProtectedBranches)
+            }
+        }
+
+        "ignored-directory" {
+            $items = @($script:GPushConfig.ignoredDirectories | ForEach-Object { [string]$_ })
+
+            if ($actionName -eq "add") {
+                if ($items -icontains $Value.Trim()) {
+                    Write-Warn "Ignored directory is already configured: $Value"
+                    return 0
+                }
+                $script:GPushConfig.ignoredDirectories = @($items) + @($Value.Trim())
+            }
+            elseif ($actionName -eq "remove") {
+                if ($items -inotcontains $Value.Trim()) {
+                    Write-Err "Ignored directory was not found: $Value"
+                    return 1
+                }
+                $script:GPushConfig.ignoredDirectories = @(
+                    $items | Where-Object { -not [string]::Equals($_, $Value.Trim(), [System.StringComparison]::OrdinalIgnoreCase) }
+                )
+            }
+            else {
+                $script:GPushConfig.ignoredDirectories = @($DefaultIgnoredDirectories)
+            }
+        }
+
+        "default-remote" {
+            if ($actionName -eq "set") {
+                $remoteName = $Value.Trim()
+                if ($remoteName -notmatch '^[^\s]+$') {
+                    Write-Err "Remote name cannot contain whitespace."
+                    return 2
+                }
+
+                $script:PreferredRemote = $remoteName
+                $script:GPushConfig.defaultRemote = $remoteName
+            }
+            else {
+                $script:PreferredRemote = $DefaultRemote
+                $script:GPushConfig.defaultRemote = $DefaultRemote
+            }
+        }
+
+        "large-file-threshold" {
+            if ($actionName -eq "set") {
+                $threshold = 0
+                if (-not [int]::TryParse($Value.Trim(), [ref]$threshold) -or $threshold -le 0) {
+                    Write-Err "Large-file threshold must be a positive integer in MB."
+                    Write-Dim "Example: gp config set large-file-threshold 50"
+                    return 2
+                }
+
+                $script:LargeFileThresholdMB = $threshold
+                $script:GPushConfig.largeFileThresholdMB = $threshold
+            }
+            else {
+                $script:LargeFileThresholdMB = $DefaultLargeFileThresholdMB
+                $script:GPushConfig.largeFileThresholdMB = $DefaultLargeFileThresholdMB
+            }
+        }
+    }
+
+    Save-GPushConfig
+    Initialize-GPushConfig
+
+    Show-Banner
+    Write-Section "Configuration updated"
+    Write-KeyValue "Action" $actionName
+    Write-KeyValue "Key" $configKey
+    if (-not [string]::IsNullOrWhiteSpace($Value)) {
+        Write-KeyValue "Value" $Value
+    }
+    Write-KeyValue "Config" $ConfigFile ([ConsoleColor]::DarkGray)
+    Write-Host ""
+
+    return 0
+}
+
 function Get-GPushRecentRepositories {
     if (-not (Test-Path $RecentFile)) {
         return @()
@@ -409,10 +679,21 @@ function Save-GPushRecentRepository {
         LastUsed = (Get-Date).ToString("o")
     }
 
-    @($entry) + @($remaining) |
-        Select-Object -First 15 |
-        ConvertTo-Json -Depth 4 |
-        Set-Content -Path $RecentFile -Encoding UTF8
+    try {
+        @($entry) + @($remaining) |
+            Select-Object -First 15 |
+            ConvertTo-Json -Depth 4 |
+            Set-Content -Path $RecentFile -Encoding UTF8 -ErrorAction Stop
+    }
+    catch [System.UnauthorizedAccessException] {
+        # Corporate security may intentionally block PowerShell file writes.
+        # Recent history is optional, so continue without failing the command.
+        return
+    }
+    catch {
+        # Recent history must never break the primary Git/project command.
+        return
+    }
 }
 
 function Resolve-GPushAlias {
@@ -683,7 +964,8 @@ function Show-Help {
     Write-Host ("  {0,-11}{1}" -f "remote", "list, add, set-url, remove") -ForegroundColor White
     Write-Host ("  {0,-11}{1}" -f "stash", "push, list, pop") -ForegroundColor White
     Write-Host ("  {0,-11}{1}" -f "cache", "list, refresh, add") -ForegroundColor White
-    Write-Host ("  {0,-11}{1}" -f "config", "show, path, doctor") -ForegroundColor White
+    Write-Host ("  {0,-11}{1}" -f "config", "show, path, doctor, add, remove, set, reset") -ForegroundColor White
+    Write-Host ("  {0,-11}{1}" -f "add/set", "short config editing commands") -ForegroundColor White
     Write-Host ("  {0,-11}{1}" -f "alias", "list, set, remove") -ForegroundColor White
     Write-Host ("  {0,-11}{1}" -f "favorite", "list, add, remove  (alias: fav)") -ForegroundColor White
     Write-Host ("  {0,-11}{1}" -f "all", "status, fetch, sync") -ForegroundColor White
@@ -691,6 +973,7 @@ function Show-Help {
     Write-Host ("  {0,-11}{1}" -f "clone", "<url> [destination]") -ForegroundColor White
     Write-Host ("  {0,-11}{1}" -f "recent", "show recent repositories") -ForegroundColor White
     Write-Host ("  {0,-11}{1}" -f "update", "check, install, rollback") -ForegroundColor White
+    Write-Host ("  {0,-11}{1}" -f "completion", "install, status, uninstall  (PowerShell Tab)") -ForegroundColor White
     Write-Host ("  {0,-11}{1}" -f "help", "show help") -ForegroundColor White
     Write-Host ("  {0,-11}{1}" -f "version", "show version") -ForegroundColor White
     Write-Host ""
@@ -766,6 +1049,8 @@ function Show-Help {
     Write-OptionHelp "--config" "Show the effective GPush configuration."
     Write-OptionHelp "--config-path" "Show the config.json path."
     Write-OptionHelp "--doctor" "Check Git, config, cache, search roots, SSH, and repository setup."
+    Write-Dim "  Config editor: gp config add|remove|set|reset <key> [value]"
+    Write-Dim "  Keys: search-root, protected-branch, ignored-directory, default-remote, large-file-threshold"
     Write-OptionHelp "--project" "Run project info/build/test/run/open/shell tools."
     Write-OptionHelp "--update" "Check, install, or roll back a GPush release."
     Write-Host ""
@@ -782,6 +1067,9 @@ function Show-Help {
     Write-ExampleHelp 'gp favorite add TestProject' "Pin a repository to Favorites."
     Write-ExampleHelp 'gp fav remove TestProject' "Remove a repository from Favorites."
     Write-ExampleHelp 'gp config doctor' "Run diagnostics."
+    Write-ExampleHelp 'gp completion install' "Enable PowerShell Tab completion."
+    Write-ExampleHelp 'gp add protected-branch develop' "Add a protected branch."
+    Write-ExampleHelp 'gp set default-remote origin' "Change the preferred remote."
     Write-ExampleHelp 'gp --dry-run TestProject "Test commit"' "Preview the normal commit workflow."
     Write-Host ""
 
@@ -1268,6 +1556,79 @@ function Invoke-GPushUpdateCommand {
     return (Install-GPushRelease -Release $release)
 }
 
+function Read-GPushRepositoryCacheEarly {
+    if (-not (Test-Path $CacheFile)) {
+        return @()
+    }
+
+    try {
+        $raw = Get-Content -Path $CacheFile -Raw -ErrorAction Stop |
+            ConvertFrom-Json -ErrorAction Stop
+
+        $result = @()
+
+        foreach ($entry in @($raw)) {
+            if ($null -eq $entry) {
+                continue
+            }
+
+            # Normal cache shape:
+            #   { Name: "...", Path: "..." }
+            if ($entry.Name -isnot [System.Array] -and
+                $entry.Path -isnot [System.Array]) {
+
+                $name = [string]$entry.Name
+                $path = [string]$entry.Path
+
+                if (-not [string]::IsNullOrWhiteSpace($name) -and
+                    -not [string]::IsNullOrWhiteSpace($path) -and
+                    (Test-Path $path) -and
+                    (Test-Path (Join-Path $path ".git"))) {
+
+                    $result += [PSCustomObject]@{
+                        Name = $name
+                        Path = $path
+                    }
+                }
+
+                continue
+            }
+
+            # Compatibility with an older/broken projected cache shape where
+            # Name[] and Path[] ended up on one object.
+            $names = @($entry.Name)
+            $paths = @($entry.Path)
+            $count = [Math]::Min($names.Count, $paths.Count)
+
+            for ($i = 0; $i -lt $count; $i++) {
+                $name = [string]$names[$i]
+                $path = [string]$paths[$i]
+
+                if (-not [string]::IsNullOrWhiteSpace($name) -and
+                    -not [string]::IsNullOrWhiteSpace($path) -and
+                    (Test-Path $path) -and
+                    (Test-Path (Join-Path $path ".git"))) {
+
+                    $result += [PSCustomObject]@{
+                        Name = $name
+                        Path = $path
+                    }
+                }
+            }
+        }
+
+        return @(
+            $result |
+                Sort-Object Path -Unique |
+                Sort-Object Name, Path
+        )
+    }
+    catch {
+        return @()
+    }
+}
+
+
 function Get-GPushProjectRepository {
     param([string]$Search)
 
@@ -1303,15 +1664,12 @@ function Get-GPushProjectRepository {
         return $null
     }
 
-    try {
-        $cached = @(
-            Get-Content -Path $CacheFile -Raw -ErrorAction Stop |
-                ConvertFrom-Json -ErrorAction Stop
-        )
-    }
-    catch {
-        Write-Err "Repository cache is invalid."
-        Write-Dim "Run 'gp --refresh' to rebuild it."
+    $cached = @(Read-GPushRepositoryCacheEarly)
+
+    if ($cached.Count -eq 0) {
+        Write-Err "Repository cache is empty or contains no usable Git repositories."
+        Write-Dim "Cache: $CacheFile"
+        Write-Dim "Run 'gp --refresh' only if the configured search roots are accessible."
         return $null
     }
 
@@ -1683,6 +2041,893 @@ function Invoke-GPushProjectCommand {
 }
 
 
+
+# ============================================================
+# POWERSHELL TAB COMPLETION
+# ============================================================
+
+function global:Get-GPushCompletionRepositoryNames {
+    $items = New-Object System.Collections.Generic.List[string]
+
+    $configDir = Join-Path $env:LOCALAPPDATA "GPush"
+    $cacheFile = Join-Path $configDir "repos.json"
+    $configFile = Join-Path $configDir "config.json"
+
+    if (Test-Path $cacheFile) {
+        try {
+            $raw = Get-Content -Path $cacheFile -Raw -ErrorAction Stop |
+                ConvertFrom-Json -ErrorAction Stop
+
+            foreach ($entry in @($raw)) {
+                if ($null -eq $entry) {
+                    continue
+                }
+
+                # Normal cache shape: one object per repository.
+                if ($entry.Name -isnot [System.Array]) {
+                    $name = [string]$entry.Name
+
+                    if (-not [string]::IsNullOrWhiteSpace($name)) {
+                        $items.Add($name)
+                    }
+
+                    continue
+                }
+
+                # PowerShell 5.1 can occasionally surface a projected object
+                # whose Name property itself contains the repository array.
+                foreach ($name in @($entry.Name)) {
+                    if (-not [string]::IsNullOrWhiteSpace([string]$name)) {
+                        $items.Add([string]$name)
+                    }
+                }
+            }
+        }
+        catch {
+            # Completion must never break the shell.
+        }
+    }
+
+    if (Test-Path $configFile) {
+        try {
+            $config = Get-Content -Path $configFile -Raw -ErrorAction Stop |
+                ConvertFrom-Json -ErrorAction Stop
+
+            if ($null -ne $config.aliases) {
+                foreach ($property in $config.aliases.PSObject.Properties) {
+                    if (-not [string]::IsNullOrWhiteSpace([string]$property.Name)) {
+                        $items.Add([string]$property.Name)
+                    }
+                }
+            }
+        }
+        catch {
+            # Aliases are optional for completion.
+        }
+    }
+
+    return @($items | Sort-Object -Unique)
+}
+
+
+function global:Get-GPushCompletionCommonPrefix {
+    param([string[]]$Values)
+
+    $items = @($Values)
+    if ($items.Count -eq 0) {
+        return ""
+    }
+
+    $prefix = [string]$items[0]
+
+    foreach ($item in @($items | Select-Object -Skip 1)) {
+        $value = [string]$item
+        $limit = [Math]::Min($prefix.Length, $value.Length)
+        $i = 0
+
+        while (
+            $i -lt $limit -and
+            [char]::ToLowerInvariant($prefix[$i]) -eq
+            [char]::ToLowerInvariant($value[$i])
+        ) {
+            $i++
+        }
+
+        $prefix = $prefix.Substring(0, $i)
+
+        if ($prefix.Length -eq 0) {
+            break
+        }
+    }
+
+    return $prefix
+}
+
+function global:Get-GPushCompletionContext {
+    param(
+        [AllowEmptyString()]
+        [string]$Line = "",
+        [int]$Cursor = 0
+    )
+
+    $emptyResult = [PSCustomObject]@{
+        Handle = $false
+        Values = @()
+        Label = ""
+        Prefix = ""
+        TokenStart = $Cursor
+        TokenLength = 0
+        InsertLeadingSpace = $false
+    }
+
+    if ([string]::IsNullOrEmpty($Line)) {
+        return $emptyResult
+    }
+
+    $beforeCursor = $Line.Substring(0, [Math]::Min($Cursor, $Line.Length))
+
+    if ($beforeCursor -notmatch '^\s*gp(?:\s|$)') {
+        return $emptyResult
+    }
+
+    $body = $beforeCursor -replace '^\s*gp\s*', ''
+    $endsWithSpace = $body -match '\s$'
+
+    $tokens = @()
+    if (-not [string]::IsNullOrWhiteSpace($body)) {
+        $tokens = @($body.Trim() -split '\s+')
+    }
+
+    $completed = @($tokens)
+    $prefix = ""
+    $insertLeadingSpace = $false
+
+    if (-not $endsWithSpace -and $tokens.Count -gt 0) {
+        $prefix = [string]$tokens[$tokens.Count - 1]
+
+        if ($tokens.Count -eq 1) {
+            $completed = @()
+        }
+        else {
+            $completed = @($tokens | Select-Object -First ($tokens.Count - 1))
+        }
+    }
+
+    # Completion must replace the WHOLE token around the cursor, not
+    # only the prefix to the left of the cursor.
+    #
+    # Example:
+    #   gp project info TestovaniModemu
+    #                   ^ cursor here
+    #
+    # Pressing Tab must replace TestovaniModemu, not insert a new project
+    # before it.
+    $tokenStart = $Cursor - $prefix.Length
+    $tokenEnd = $Cursor
+
+    # If the cursor is inside / at the beginning of an existing token,
+    # include the token suffix to the right of the cursor as well.
+    while (
+        $tokenEnd -lt $Line.Length -and
+        -not [char]::IsWhiteSpace($Line[$tokenEnd])
+    ) {
+        $tokenEnd++
+    }
+
+    $tokenLength = [Math]::Max(0, $tokenEnd - $tokenStart)
+
+    $topLevel = @(
+        "repo", "branch", "tag", "remote", "stash", "cache", "config",
+        "alias", "favorite", "fav", "favorites", "all", "project",
+        "clone", "recent", "update", "completion", "help", "version",
+        "add", "remove", "set", "reset"
+    )
+
+    $actions = @{
+        "repo"       = @("status", "diff", "log", "open", "fetch", "pull", "sync")
+        "branch"     = @("list", "new", "switch", "delete", "prune")
+        "tag"        = @("list", "create", "push", "delete", "release")
+        "remote"     = @("list", "add", "set-url", "remove")
+        "stash"      = @("push", "list", "pop")
+        "cache"      = @("list", "refresh", "add")
+        "config"     = @("show", "path", "doctor", "add", "remove", "set", "reset")
+        "alias"      = @("list", "set", "remove")
+        "favorite"   = @("list", "add", "remove")
+        "fav"        = @("list", "add", "remove")
+        "all"        = @("status", "fetch", "sync")
+        "project"    = @("info", "build", "test", "run", "open", "shell")
+        "update"     = @("check", "install", "rollback")
+        "completion" = @("install", "status", "uninstall")
+    }
+
+    $allConfigKeys = @(
+        "search-root", "protected-branch", "ignored-directory",
+        "default-remote", "large-file-threshold"
+    )
+
+    $listConfigKeys = @(
+        "search-root", "protected-branch", "ignored-directory"
+    )
+
+    $scalarConfigKeys = @(
+        "default-remote", "large-file-threshold"
+    )
+
+    $repositories = @(Get-GPushCompletionRepositoryNames)
+
+    function New-Result {
+        param(
+            [string[]]$Values,
+            [string]$Label
+        )
+
+        $matches = @(
+            $Values |
+                Where-Object {
+                    -not [string]::IsNullOrWhiteSpace([string]$_) -and
+                    (
+                        [string]::IsNullOrWhiteSpace($prefix) -or
+                        ([string]$_).StartsWith(
+                            $prefix,
+                            [System.StringComparison]::OrdinalIgnoreCase
+                        )
+                    )
+                } |
+                Sort-Object -Unique
+        )
+
+        return [PSCustomObject]@{
+            Handle = $true
+            Values = $matches
+            Label = $Label
+            Prefix = $prefix
+            TokenStart = $tokenStart
+            TokenLength = $tokenLength
+            InsertLeadingSpace = $insertLeadingSpace
+        }
+    }
+
+    if ($completed.Count -eq 0 -and
+        -not [string]::IsNullOrWhiteSpace($prefix) -and
+        $topLevel -contains $prefix.ToLowerInvariant()) {
+
+        $completed = @($prefix.ToLowerInvariant())
+        $prefix = ""
+        $tokenStart = $Cursor
+        $tokenEnd = $Cursor
+
+        # Skip whitespace between the exact command and the next argument.
+        while (
+            $tokenEnd -lt $Line.Length -and
+            [char]::IsWhiteSpace($Line[$tokenEnd])
+        ) {
+            $tokenEnd++
+        }
+
+        if ($tokenEnd -lt $Line.Length) {
+            $tokenStart = $tokenEnd
+
+            while (
+                $tokenEnd -lt $Line.Length -and
+                -not [char]::IsWhiteSpace($Line[$tokenEnd])
+            ) {
+                $tokenEnd++
+            }
+
+            $tokenLength = $tokenEnd - $tokenStart
+            $insertLeadingSpace = $true
+        }
+        else {
+            $tokenStart = $Cursor
+            $tokenLength = 0
+            $insertLeadingSpace = $true
+        }
+    }
+
+    if ($completed.Count -eq 0) {
+        return (New-Result -Values (@($topLevel) + @($repositories)) -Label "Commands / repositories")
+    }
+
+    $command = ([string]$completed[0]).ToLowerInvariant()
+    $rest = @($completed | Select-Object -Skip 1)
+
+    if (
+        -not [string]::IsNullOrWhiteSpace($prefix) -and
+        $actions.ContainsKey($command) -and
+        @($actions[$command] | Where-Object {
+            [string]::Equals(
+                [string]$_,
+                [string]$prefix,
+                [System.StringComparison]::OrdinalIgnoreCase
+            )
+        }).Count -gt 0
+    ) {
+        $rest = @($rest) + @($prefix.ToLowerInvariant())
+        $prefix = ""
+        $tokenStart = $Cursor
+        $tokenEnd = $Cursor
+
+        # Move to the actual next token if one already exists to the right.
+        while (
+            $tokenEnd -lt $Line.Length -and
+            [char]::IsWhiteSpace($Line[$tokenEnd])
+        ) {
+            $tokenEnd++
+        }
+
+        if ($tokenEnd -lt $Line.Length) {
+            $tokenStart = $tokenEnd
+
+            while (
+                $tokenEnd -lt $Line.Length -and
+                -not [char]::IsWhiteSpace($Line[$tokenEnd])
+            ) {
+                $tokenEnd++
+            }
+
+            $tokenLength = $tokenEnd - $tokenStart
+            $insertLeadingSpace = $true
+        }
+        else {
+            $tokenStart = $Cursor
+            $tokenLength = 0
+            $insertLeadingSpace = $true
+        }
+    }
+
+    if ($command -eq "project") {
+        if ($rest.Count -eq 0) {
+            return (New-Result -Values $actions["project"] -Label "Actions")
+        }
+
+        if ($rest.Count -eq 1 -and
+            ([string]$rest[0]).ToLowerInvariant() -in @(
+                "info", "build", "test", "run", "open", "shell"
+            )) {
+            return (New-Result -Values $repositories -Label "Projects")
+        }
+
+        return (New-Result -Values @() -Label "Projects")
+    }
+
+    if ($actions.ContainsKey($command)) {
+        if ($rest.Count -eq 0) {
+            return (New-Result -Values $actions[$command] -Label "Actions")
+        }
+
+        if ($rest.Count -eq 1 -and
+            $command -in @("repo", "branch", "tag", "remote", "stash")) {
+            return (New-Result -Values $repositories -Label "Projects")
+        }
+    }
+
+    if ($command -eq "add" -and $rest.Count -eq 0) {
+        return (New-Result -Values $allConfigKeys -Label "Configuration keys")
+    }
+
+    if ($command -eq "remove" -and $rest.Count -eq 0) {
+        return (New-Result -Values $listConfigKeys -Label "Configuration keys")
+    }
+
+    if ($command -eq "set" -and $rest.Count -eq 0) {
+        return (New-Result -Values $scalarConfigKeys -Label "Configuration keys")
+    }
+
+    if ($command -eq "reset" -and $rest.Count -eq 0) {
+        return (New-Result -Values $allConfigKeys -Label "Configuration keys")
+    }
+
+    if ($command -eq "config") {
+        if ($rest.Count -eq 0) {
+            return (New-Result -Values $actions["config"] -Label "Config actions")
+        }
+
+        if ($rest.Count -eq 1) {
+            switch (([string]$rest[0]).ToLowerInvariant()) {
+                "add"    { return (New-Result -Values $allConfigKeys -Label "Configuration keys") }
+                "remove" { return (New-Result -Values $listConfigKeys -Label "Configuration keys") }
+                "set"    { return (New-Result -Values $scalarConfigKeys -Label "Configuration keys") }
+                "reset"  { return (New-Result -Values $allConfigKeys -Label "Configuration keys") }
+            }
+        }
+    }
+
+    return (New-Result -Values @() -Label "")
+}
+
+$global:GPushCompletionCycle = $null
+
+function global:Reset-GPushCompletionCycle {
+    $global:GPushCompletionCycle = $null
+}
+
+function global:Try-GPushCompletionCycle {
+    param(
+        [string]$Line,
+        [int]$Direction
+    )
+
+    $state = $global:GPushCompletionCycle
+    if ($null -eq $state) {
+        return $false
+    }
+
+    if (-not [string]::Equals(
+        [string]$state.ExpectedLine,
+        [string]$Line,
+        [System.StringComparison]::Ordinal
+    )) {
+        Reset-GPushCompletionCycle
+        return $false
+    }
+
+    $values = @($state.Values)
+    if ($values.Count -eq 0) {
+        Reset-GPushCompletionCycle
+        return $false
+    }
+
+    $index = [int]$state.Index + $Direction
+    if ($index -ge $values.Count) { $index = 0 }
+    elseif ($index -lt 0) { $index = $values.Count - 1 }
+
+    $replacement = [string]$values[$index]
+
+    [Microsoft.PowerShell.PSConsoleReadLine]::Replace(
+        [int]$state.TokenStart,
+        [int]$state.CurrentLength,
+        $replacement
+    )
+
+    $newLine = $Line.Remove(
+        [int]$state.TokenStart,
+        [int]$state.CurrentLength
+    ).Insert(
+        [int]$state.TokenStart,
+        $replacement
+    )
+
+    $global:GPushCompletionCycle = [PSCustomObject]@{
+        ExpectedLine = $newLine
+        Values = $values
+        Index = $index
+        TokenStart = [int]$state.TokenStart
+        CurrentLength = $replacement.Length
+    }
+
+    return $true
+}
+
+function global:Invoke-GPushTabCompletion {
+    param(
+        $Key,
+        $Arg,
+        [int]$Direction = 1
+    )
+
+    $line = ""
+    $cursor = 0
+
+    try {
+        [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState(
+            [ref]$line,
+            [ref]$cursor
+        )
+
+        if ([string]::IsNullOrEmpty($line) -or
+            $line -notmatch '^\s*gp(?:\s|$)') {
+            Reset-GPushCompletionCycle
+            if ($Direction -lt 0) {
+                [Microsoft.PowerShell.PSConsoleReadLine]::TabCompletePrevious($Key, $Arg)
+            }
+            else {
+                [Microsoft.PowerShell.PSConsoleReadLine]::TabCompleteNext($Key, $Arg)
+            }
+            return
+        }
+
+        if (Try-GPushCompletionCycle -Line $line -Direction $Direction) {
+            return
+        }
+
+        $context = Get-GPushCompletionContext -Line $line -Cursor $cursor
+    }
+    catch {
+        Reset-GPushCompletionCycle
+        return
+    }
+
+    if (-not $context.Handle) {
+        Reset-GPushCompletionCycle
+        return
+    }
+
+    $values = @($context.Values)
+    if ($values.Count -eq 0) {
+        Reset-GPushCompletionCycle
+        return
+    }
+
+    $leading = if (
+        $context.InsertLeadingSpace -and
+        [int]$context.TokenLength -eq 0
+    ) {
+        " "
+    }
+    else {
+        ""
+    }
+
+    if ($values.Count -eq 1) {
+        Reset-GPushCompletionCycle
+        $replacement = $leading + [string]$values[0]
+        [Microsoft.PowerShell.PSConsoleReadLine]::Replace(
+            [int]$context.TokenStart,
+            [int]$context.TokenLength,
+            $replacement
+        )
+        return
+    }
+
+    $common = Get-GPushCompletionCommonPrefix -Values $values
+    if ($common.Length -gt ([string]$context.Prefix).Length) {
+        Reset-GPushCompletionCycle
+        $replacement = $leading + $common
+        [Microsoft.PowerShell.PSConsoleReadLine]::Replace(
+            [int]$context.TokenStart,
+            [int]$context.TokenLength,
+            $replacement
+        )
+        return
+    }
+
+    # Multiple candidates with no longer common prefix:
+    # cycle them directly in the current command line. Never print anything.
+    $ordered = @($values | Sort-Object -Unique)
+    $index = if ($Direction -lt 0) { $ordered.Count - 1 } else { 0 }
+    $replacement = $leading + [string]$ordered[$index]
+
+    [Microsoft.PowerShell.PSConsoleReadLine]::Replace(
+        [int]$context.TokenStart,
+        [int]$context.TokenLength,
+        $replacement
+    )
+
+    $expectedLine = $line.Remove(
+        [int]$context.TokenStart,
+        [int]$context.TokenLength
+    ).Insert(
+        [int]$context.TokenStart,
+        $replacement
+    )
+
+    $cycleValues = @($ordered | ForEach-Object { $leading + [string]$_ })
+
+    $global:GPushCompletionCycle = [PSCustomObject]@{
+        ExpectedLine = $expectedLine
+        Values = $cycleValues
+        Index = $index
+        TokenStart = [int]$context.TokenStart
+        CurrentLength = $replacement.Length
+    }
+}
+
+
+function Enable-GPushRuntimeCompletion {
+    try {
+        Set-PSReadLineKeyHandler `
+            -Key Tab `
+            -BriefDescription "GPushTabComplete" `
+            -LongDescription "GPush in-line completion" `
+            -ScriptBlock {
+                param($key, $arg)
+                Invoke-GPushTabCompletion $key $arg 1
+            }
+
+        Set-PSReadLineKeyHandler `
+            -Key Shift+Tab `
+            -BriefDescription "GPushTabCompletePrevious" `
+            -LongDescription "GPush previous in-line completion" `
+            -ScriptBlock {
+                param($key, $arg)
+                Invoke-GPushTabCompletion $key $arg -1
+            }
+
+        $global:GPushRuntimeCompletionVersion = $ScriptVersion
+        $global:GPushRuntimeTabHandler = "GPushTabComplete"
+        return 0
+    }
+    catch {
+        Write-Err "GPush could not activate in-memory completion."
+        Write-Dim $_.Exception.Message
+        return 1
+    }
+}
+
+
+function Install-GPushPowerShellCompletion {
+    $result = Enable-GPushRuntimeCompletion
+    if ($result -ne 0) {
+        return $result
+    }
+
+    Show-Banner
+    Write-Section "PowerShell completion"
+    Write-Ok "GPush Tab completion is active for this PowerShell session."
+    Write-KeyValue "Mode" "Memory only"
+    Write-Dim "No profile or completion file was modified."
+    Write-Host ""
+    return 0
+}
+
+function Ensure-GPushPowerShellCompletion {
+    param([switch]$Quiet)
+
+    $runtimeMatches = [string]::Equals(
+        [string]$global:GPushRuntimeCompletionVersion,
+        [string]$ScriptVersion,
+        [System.StringComparison]::Ordinal
+    )
+
+    $handlerMatches = [string]::Equals(
+        [string]$global:GPushRuntimeTabHandler,
+        "GPushTabComplete",
+        [System.StringComparison]::Ordinal
+    )
+
+    $functionAvailable = (
+        $null -ne (Get-Command Invoke-GPushTabCompletion -CommandType Function -ErrorAction SilentlyContinue)
+    )
+
+    if ($runtimeMatches -and $handlerMatches -and $functionAvailable) {
+        return
+    }
+
+    $result = Enable-GPushRuntimeCompletion
+
+    if (-not $Quiet -and $result -eq 0) {
+        Write-Dim "GPush runtime completion activated."
+    }
+}
+
+
+function Remove-GPushPowerShellCompletion {
+    Show-Banner
+    Write-Section "PowerShell completion"
+    Write-Warn "Runtime completion is active only in this PowerShell process."
+    Write-Dim "Open a new PowerShell session to clear it."
+    Write-Host ""
+    return 0
+}
+
+function Show-GPushCompletionStatus {
+    $gpCommand = Get-Command gp -ErrorAction SilentlyContinue
+    $completionFunction = Get-Command Invoke-GPushTabCompletion `
+        -CommandType Function `
+        -ErrorAction SilentlyContinue
+
+    $runtimeMatches = [string]::Equals(
+        [string]$global:GPushRuntimeCompletionVersion,
+        [string]$ScriptVersion,
+        [System.StringComparison]::Ordinal
+    )
+
+    $handlerMatches = [string]::Equals(
+        [string]$global:GPushRuntimeTabHandler,
+        "GPushTabComplete",
+        [System.StringComparison]::Ordinal
+    )
+
+    $functionAvailable = $null -ne $completionFunction
+
+    $healthy = (
+        $runtimeMatches -and
+        $handlerMatches -and
+        $functionAvailable
+    )
+
+    Show-Banner
+    Write-Section "PowerShell completion"
+    Write-KeyValue "Health" $(if ($healthy) { "OK" } else { "Needs attention" }) `
+        $(if ($healthy) { [ConsoleColor]::Green } else { [ConsoleColor]::Yellow })
+
+    Write-Section "Runtime"
+    Write-KeyValue "PowerShell" $PSVersionTable.PSVersion.ToString()
+    Write-KeyValue "Edition" ([string]$PSVersionTable.PSEdition)
+    Write-KeyValue "Process" ([string]$PID)
+    Write-KeyValue "Mode" "Memory only"
+
+    Write-Section "Binding"
+    Write-KeyValue "gp type" $(if ($null -ne $gpCommand) { [string]$gpCommand.CommandType } else { "Missing" })
+    Write-KeyValue "Tab" $(if ($handlerMatches) { "GPushTabComplete" } else { "Not active" })
+    Write-KeyValue "Handler fn" $(if ($functionAvailable) { "Available" } else { "Missing" })
+    Write-KeyValue "Behavior" "Inline cycle"
+    Write-KeyValue "Shift+Tab" "Previous candidate"
+    Write-KeyValue "Console output" "Disabled"
+    Write-KeyValue "Runtime" $(if ($runtimeMatches) { $ScriptVersion } else { "-" })
+
+    Write-Section "Storage"
+    Write-KeyValue "Profile writes" "Disabled"
+    Write-KeyValue "Completion file" "Not used"
+    Write-KeyValue "Config" $ConfigFile ([ConsoleColor]::DarkGray)
+    Write-KeyValue "Cache" $CacheFile ([ConsoleColor]::DarkGray)
+
+    if (-not $healthy) {
+        Write-Host ""
+        Write-Dim "Repair current session: gp completion install"
+    }
+
+    Write-Host ""
+    return 0
+}
+
+
+function Invoke-GPushCompletionCommand {
+    param([object[]]$Arguments)
+
+    $argsList = @($Arguments)
+    $action = if ($argsList.Count -gt 0) {
+        ([string]$argsList[0]).ToLowerInvariant()
+    }
+    else {
+        "status"
+    }
+
+    if ($argsList.Count -gt 1) {
+        Write-Err "Command 'gp completion $action' does not accept additional arguments."
+        return 2
+    }
+
+    switch ($action) {
+        "install"   { return (Install-GPushPowerShellCompletion) }
+        "status"    { return (Show-GPushCompletionStatus) }
+        "uninstall" { return (Remove-GPushPowerShellCompletion) }
+
+        default {
+            Write-Err "Unknown completion command: $action"
+
+            $knownActions = @("install", "status", "uninstall")
+            $best = $null
+            $bestDistance = [int]::MaxValue
+
+            foreach ($candidate in $knownActions) {
+                $distance = Get-GPushEditDistance -Left $action -Right $candidate
+
+                if ($distance -lt $bestDistance) {
+                    $bestDistance = $distance
+                    $best = $candidate
+                }
+            }
+
+            if ($bestDistance -le 2) {
+                Write-Dim "Did you mean: gp completion $best"
+            }
+
+            Write-Dim "Use: gp completion install|status|uninstall"
+            return 2
+        }
+    }
+}
+
+
+function Get-GPushEditDistance {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Left,
+        [Parameter(Mandatory = $true)]
+        [string]$Right
+    )
+
+    $a = $Left.ToLowerInvariant()
+    $b = $Right.ToLowerInvariant()
+
+    $previous = New-Object 'int[]' ($b.Length + 1)
+    $current = New-Object 'int[]' ($b.Length + 1)
+
+    for ($j = 0; $j -le $b.Length; $j++) {
+        $previous[$j] = $j
+    }
+
+    for ($i = 1; $i -le $a.Length; $i++) {
+        $current[0] = $i
+
+        for ($j = 1; $j -le $b.Length; $j++) {
+            $cost = if ($a[$i - 1] -eq $b[$j - 1]) { 0 } else { 1 }
+            $delete = $previous[$j] + 1
+            $insert = $current[$j - 1] + 1
+            $replace = $previous[$j - 1] + $cost
+            $current[$j] = [Math]::Min([Math]::Min($delete, $insert), $replace)
+        }
+
+        $tmp = $previous
+        $previous = $current
+        $current = $tmp
+    }
+
+    return $previous[$b.Length]
+}
+
+function Get-GPushCommandSuggestion {
+    param([Parameter(Mandatory = $true)][string]$Value)
+
+    $normalized = $Value.Trim().ToLowerInvariant()
+
+    $special = @{
+        "tags" = "gp tag list [project]"
+        "branches" = "gp branch list [project]"
+        "remotes" = "gp remote list [project]"
+        "aliases" = "gp alias list"
+        "completition" = "gp completion install"
+        "competion" = "gp completion install"
+    }
+
+    if ($special.ContainsKey($normalized)) {
+        return $special[$normalized]
+    }
+
+    $commands = @(
+        "repo", "branch", "tag", "remote", "stash", "cache", "config",
+        "alias", "favorite", "favorites", "fav", "all", "project",
+        "clone", "recent", "update", "completion", "help", "version",
+        "add", "remove", "set", "reset"
+    )
+
+    $best = $null
+    $bestDistance = [int]::MaxValue
+
+    foreach ($candidate in $commands) {
+        $distance = Get-GPushEditDistance -Left $normalized -Right $candidate
+
+        if ($distance -lt $bestDistance) {
+            $bestDistance = $distance
+            $best = $candidate
+        }
+    }
+
+    $maxDistance = if ($normalized.Length -le 4) { 1 } else { 2 }
+
+    if ($bestDistance -gt $maxDistance) {
+        return $null
+    }
+
+    if ($best -eq "completion") {
+        return "gp completion install"
+    }
+
+    return "gp $best ..."
+}
+
+function Test-GPushKnownRepositoryToken {
+    param([Parameter(Mandatory = $true)][string]$Value)
+
+    $resolved = Resolve-GPushAlias -Search $Value
+
+    if (Test-Path $resolved -PathType Container) {
+        return $true
+    }
+
+    if (-not (Test-Path $CacheFile)) {
+        return $false
+    }
+
+    try {
+        $repos = @(Read-GPushRepositoryCacheEarly)
+
+        return @(
+            $repos |
+                Where-Object {
+                    $_.Name -ieq $resolved -or
+                    $_.Name -ilike "$resolved*" -or
+                    $_.Path -ilike "*$resolved*"
+                }
+        ).Count -gt 0
+    }
+    catch {
+        return $false
+    }
+}
+
+
 # ============================================================
 # V4 COMMAND ROUTER
 # ============================================================
@@ -1859,14 +3104,58 @@ function ConvertFrom-GPushSubcommand {
             }
 
             $action = ([string]$rest[0]).ToLowerInvariant()
+            $tail = @($rest | Select-Object -Skip 1)
 
             switch ($action) {
-                "show"   { return @("--config") }
-                "path"   { return @("--config-path") }
-                "doctor" { return @("--doctor") }
+                "show" {
+                    if ($tail.Count -gt 0) {
+                        Write-Err "Command 'gp config show' does not accept arguments."
+                        exit 2
+                    }
+                    return @("--config")
+                }
+                "path" {
+                    if ($tail.Count -gt 0) {
+                        Write-Err "Command 'gp config path' does not accept arguments."
+                        exit 2
+                    }
+                    return @("--config-path")
+                }
+                "doctor" {
+                    if ($tail.Count -gt 0) {
+                        Write-Err "Command 'gp config doctor' does not accept arguments."
+                        exit 2
+                    }
+                    return @("--doctor")
+                }
+                { $_ -in @("add", "remove", "set") } {
+                    if ($tail.Count -ne 2) {
+                        Write-Err "Command 'gp config $action' requires a key and a value."
+                        Write-GPushConfigEditUsage
+                        exit 2
+                    }
+
+                    $exitCode = Invoke-GPushConfigEdit `
+                        -Action $action `
+                        -Key ([string]$tail[0]) `
+                        -Value ([string]$tail[1])
+                    exit $exitCode
+                }
+                "reset" {
+                    if ($tail.Count -ne 1) {
+                        Write-Err "Command 'gp config reset' requires exactly one key."
+                        Write-GPushConfigEditUsage
+                        exit 2
+                    }
+
+                    $exitCode = Invoke-GPushConfigEdit `
+                        -Action $action `
+                        -Key ([string]$tail[0])
+                    exit $exitCode
+                }
                 default {
                     Write-Err "Unknown config command: $action"
-                    Write-Dim "Use: gp config show|path|doctor"
+                    Write-Dim "Use: gp config show|path|doctor|add|remove|set|reset ..."
                     exit 2
                 }
             }
@@ -1912,6 +3201,29 @@ function ConvertFrom-GPushSubcommand {
             }
         }
 
+        "project" {
+            if ($rest.Count -eq 0) {
+                return @("--project", "info")
+            }
+
+            $action = ([string]$rest[0]).ToLowerInvariant()
+            $tail = @($rest | Select-Object -Skip 1)
+
+            if ($action -notin @("info", "build", "test", "run", "open", "shell")) {
+                Write-Err "Unknown project action: $action"
+                Write-Dim "Use: gp project info|build|test|run|open|shell [project]"
+                exit 2
+            }
+
+            if ($tail.Count -gt 1) {
+                Write-Err "Project command accepts at most one project name/path."
+                Write-Dim "Use: gp project $action [project]"
+                exit 2
+            }
+
+            return Join-GPushArgs @("--project", $action) $tail
+        }
+
         "all" {
             if ($rest.Count -eq 0) {
                 return @("--all")
@@ -1932,6 +3244,33 @@ function ConvertFrom-GPushSubcommand {
             }
         }
 
+        { $_ -in @("add", "remove", "set") } {
+            if ($rest.Count -ne 2) {
+                Write-Err "Command 'gp $command' requires a configuration key and a value."
+                Write-GPushConfigEditUsage
+                exit 2
+            }
+
+            $exitCode = Invoke-GPushConfigEdit `
+                -Action $command `
+                -Key ([string]$rest[0]) `
+                -Value ([string]$rest[1])
+            exit $exitCode
+        }
+
+        "reset" {
+            if ($rest.Count -ne 1) {
+                Write-Err "Command 'gp reset' requires exactly one configuration key."
+                Write-GPushConfigEditUsage
+                exit 2
+            }
+
+            $exitCode = Invoke-GPushConfigEdit `
+                -Action "reset" `
+                -Key ([string]$rest[0])
+            exit $exitCode
+        }
+
         "clone" {
             return Join-GPushArgs @("--clone") $rest
         }
@@ -1944,17 +3283,48 @@ function ConvertFrom-GPushSubcommand {
             return @("--recent")
         }
 
+        "completion" {
+            $exitCode = Invoke-GPushCompletionCommand -Arguments $rest
+            exit $exitCode
+        }
+
         "help" {
+            if ($rest.Count -gt 0) {
+                Write-Err "Command 'gp help' does not accept arguments."
+                exit 2
+            }
             return @("--help")
         }
 
         "version" {
+            if ($rest.Count -gt 0) {
+                Write-Err "Command 'gp version' does not accept arguments."
+                exit 2
+            }
             return @("--version")
         }
 
         default {
-            # Not a v4 command. Preserve the classic shortcut:
+            # Keep the classic shortcut:
             #   gp Project "commit message"
+            #
+            # But if the first token looks like a typo of a known GPush command
+            # and does not resolve to a known repository, fail early with a useful hint.
+            if (-not (Test-GPushKnownRepositoryToken -Value $first)) {
+                $suggestion = Get-GPushCommandSuggestion -Value $first
+
+                if (-not [string]::IsNullOrWhiteSpace($suggestion)) {
+                    Write-Err "Unknown command: $first"
+                    Write-Dim "Did you mean: $suggestion"
+
+                    if ($command -in @("tags", "branches", "remotes", "aliases")) {
+                        Write-Dim "Legacy flags must start with '--'."
+                    }
+
+                    exit 2
+                }
+            }
+
             return $inputArgs
         }
     }
@@ -1968,6 +3338,18 @@ function ConvertFrom-GPushSubcommand {
 # upgrades older config.json files in memory with newly introduced fields
 # such as aliases and favorites while preserving existing user settings.
 Initialize-GPushConfig
+
+# PowerShell completion is self-installing/self-repairing.
+# Explicit `gp completion ...` commands manage their own completion state and
+# must not trigger the automatic bootstrap before the command is evaluated.
+$skipCompletionBootstrap = (
+    $RawArguments.Count -ge 1 -and
+    [string]::Equals([string]$RawArguments[0], "completion", [System.StringComparison]::OrdinalIgnoreCase)
+)
+
+if (-not $skipCompletionBootstrap) {
+    $null = Ensure-GPushPowerShellCompletion -Quiet
+}
 
 $tokens = if ($RawArguments.Count -eq 0) {
     @()
@@ -2883,23 +4265,52 @@ function ConvertTo-RepositoryList {
             continue
         }
 
-        # Flatten accidentally nested arrays from older cache versions.
+        # Flatten nested arrays from older/broken cache versions.
         if ($entry -is [System.Array]) {
-            foreach ($nested in @($entry)) {
-                if ($nested -and $nested.Name -and $nested.Path) {
-                    $normalized += [PSCustomObject]@{
-                        Name = [string]$nested.Name
-                        Path = [string]$nested.Path
-                    }
-                }
-            }
+            $normalized += @(ConvertTo-RepositoryList -InputObject $entry)
             continue
         }
 
-        if ($entry.Name -and $entry.Path) {
+        if ($null -eq $entry.PSObject.Properties['Name'] -or
+            $null -eq $entry.PSObject.Properties['Path']) {
+            continue
+        }
+
+        $names = @($entry.Name)
+        $paths = @($entry.Path)
+
+        # Windows PowerShell 5.1 can sometimes surface JSON/cache data as one
+        # object whose Name and Path properties are arrays. Normalize that
+        # shape back into one repository object per Name/Path pair.
+        if ($names.Count -gt 1 -or $paths.Count -gt 1) {
+            if ($names.Count -ne $paths.Count) {
+                continue
+            }
+
+            for ($i = 0; $i -lt $names.Count; $i++) {
+                $name = [string]$names[$i]
+                $path = [string]$paths[$i]
+
+                if (-not [string]::IsNullOrWhiteSpace($name) -and
+                    -not [string]::IsNullOrWhiteSpace($path)) {
+                    $normalized += [PSCustomObject]@{
+                        Name = $name
+                        Path = $path
+                    }
+                }
+            }
+
+            continue
+        }
+
+        $name = [string]$entry.Name
+        $path = [string]$entry.Path
+
+        if (-not [string]::IsNullOrWhiteSpace($name) -and
+            -not [string]::IsNullOrWhiteSpace($path)) {
             $normalized += [PSCustomObject]@{
-                Name = [string]$entry.Name
-                Path = [string]$entry.Path
+                Name = $name
+                Path = $path
             }
         }
     }
@@ -4970,19 +6381,22 @@ if ($revertHead -and (Test-Path $revertHead)) {
 
 Write-Ok "  + No merge/rebase/cherry-pick/revert in progress"
 
-# Read only stdout here. Git can emit harmless line-ending warnings on stderr
-# (for example LF -> CRLF conversion notices on Windows). Merging stderr into
-# stdout would make those warnings look like unmerged file paths.
-$conflicts = @(& git diff --name-only --diff-filter=U 2>$null | Where-Object {
-    -not [string]::IsNullOrWhiteSpace($_)
-})
-$conflictCheckExitCode = $LASTEXITCODE
+# Conflict detection must use stdout only. Git may emit harmless warnings
+# (for example LF/CRLF conversion notices) on stderr; those are not conflicts.
+$conflictOutput = @(& git diff --name-only --diff-filter=U 2>$null)
+$conflictExitCode = $LASTEXITCODE
 
-if ($conflictCheckExitCode -ne 0) {
-    Write-Err "  x Could not check the repository for unresolved conflicts."
-    Write-Warn "Run 'git diff --name-only --diff-filter=U' manually and verify the repository state."
+if ($conflictExitCode -ne 0) {
+    Write-Err "  x Could not verify unresolved conflicts."
+    Write-Warn "Run 'git status' and resolve any repository problems before using GPush."
     exit 1
 }
+
+$conflicts = @(
+    $conflictOutput |
+        ForEach-Object { [string]$_ } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+)
 
 if ($conflicts.Count -gt 0) {
     Write-Err "  x Unresolved conflicts detected:"

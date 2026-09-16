@@ -2,6 +2,43 @@
 
 All notable changes to GPush are documented here.
 
+## 4.4.0
+
+### Added
+- Added command-aware Tab completion on Windows and Linux.
+- Windows PowerShell completion now supports commands, actions, configuration keys, repository names, project names, and reverse cycling with `Shift+Tab`.
+- Linux now ships Bash completion with `gp completion install`, `gp completion status`, and `gp completion uninstall`.
+- Added direct configuration editing shortcuts on both platforms:
+  - `gp add <key> <value>`
+  - `gp remove <key> <value>`
+  - `gp set <key> <value>`
+  - `gp reset <key>`
+- Added the equivalent full configuration commands under `gp config add|remove|set|reset`.
+- Added editable configuration keys for search roots, protected branches, ignored directories, default remote, and large-file threshold.
+- Added command typo suggestions such as `Did you mean: gp completion install` while preserving the classic repository shortcut syntax.
+
+### Changed
+- Bumped Windows and Linux scripts and installers to 4.4.0.
+- Windows completion now runs in memory for the active PowerShell session and does not create or rewrite a separate completion file.
+- Windows Tab completion uses inline candidate cycling instead of printing custom candidate lists into the console.
+- Windows completion replaces the entire token around the cursor, so changing an existing project or command does not leave stale text to the right of the cursor.
+- Linux completion uses Bash's native programmable completion and is registered through `~/.bashrc`.
+- Linux configuration files now persist protected branches and ignored directories in addition to search roots, default remote, and large-file threshold.
+- Configuration output on both platforms exposes the expanded editable settings.
+- Completion and status output use wider key/value alignment for readability.
+
+### Fixed
+- Fixed Windows `gp project ...` routing incorrectly falling through to `Unknown command: project`.
+- Fixed Windows project lookup calling repository-cache helpers before they were available in the running script.
+- Fixed Windows repository-cache normalization for older malformed cache shapes containing projected name/path arrays.
+- Fixed Windows completion helpers disappearing after the `gp.ps1` invocation finished by keeping the required runtime functions in the PowerShell session.
+- Fixed Windows completion corrupting later command output by removing manual console redraw and candidate echo logic.
+- Fixed Tab completion inserting a new value beside an existing token instead of replacing that token.
+- Fixed empty-line and non-GPush Tab behavior so normal PowerShell completion remains available outside GPush commands.
+- Fixed optional recent-history writes from breaking normal GPush commands when PowerShell file writes are denied by endpoint security.
+- Fixed missing typo-detection helpers that could raise `CommandNotFoundException` during command routing.
+- Kept Linux project, cache, classic commit, favorites, aliases, update, and safety workflows compatible with the existing 4.x behavior while adding the new completion and configuration features.
+
 ## 4.2.1
 
 ### Fixed

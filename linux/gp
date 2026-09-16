@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-SCRIPT_VERSION="4.2.1"
+SCRIPT_VERSION="4.4.0"
 AUTHOR="Michal Švrček"
 GITHUB="https://github.com/MajkiiWasTaken"
 
@@ -17,10 +17,15 @@ BACKUP_DIR="$CONFIG_DIR/backups"
 CACHE_FILE="$CACHE_DIR/repos"
 
 DEFAULT_REMOTE="origin"
-LARGE_FILE_MB=25
-SEARCH_ROOTS=("$HOME/Projects" "$HOME/Documents")
-PROTECTED_BRANCHES=("main" "master" "release/*")
-IGNORED_DIRS=(node_modules bin obj .venv venv target packages .idea .vscode .vs)
+DEFAULT_LARGE_FILE_MB=25
+DEFAULT_SEARCH_ROOTS=("$HOME/Projects" "$HOME/Documents")
+DEFAULT_PROTECTED_BRANCHES=("main" "master" "release/*")
+DEFAULT_IGNORED_DIRS=(node_modules bin obj .venv venv target packages .idea .vscode .vs)
+
+LARGE_FILE_MB="$DEFAULT_LARGE_FILE_MB"
+SEARCH_ROOTS=("${DEFAULT_SEARCH_ROOTS[@]}")
+PROTECTED_BRANCHES=("${DEFAULT_PROTECTED_BRANCHES[@]}")
+IGNORED_DIRS=("${DEFAULT_IGNORED_DIRS[@]}")
 
 if [[ -t 1 ]]; then
     C_RESET=$'\033[0m'
@@ -71,7 +76,7 @@ separator() {
 }
 
 kv() {
-    printf '%s  %-14s%s%s%s%s\n' \
+    printf '%s  %-18s%s%s%s%s\n' \
         "$C_GRAY" "$1" "$C_RESET" "${3:-$C_WHITE}" "$2" "$C_RESET"
 }
 
@@ -100,42 +105,57 @@ ensure_dirs() {
 load_config() {
     ensure_dirs
 
-    if [[ ! -f "$CONFIG_FILE" ]]; then
-        return 0
-    fi
-
+    DEFAULT_REMOTE="origin"
+    LARGE_FILE_MB="$DEFAULT_LARGE_FILE_MB"
     SEARCH_ROOTS=()
+    PROTECTED_BRANCHES=()
+    IGNORED_DIRS=()
 
-    local key=""
-    local value=""
+    if [[ -f "$CONFIG_FILE" ]]; then
+        local key=""
+        local value=""
 
-    while IFS='=' read -r key value || [[ -n "${key:-}" ]]; do
-        if [[ -z "${key:-}" || "$key" =~ ^[[:space:]]*# ]]; then
-            continue
-        fi
+        while IFS='=' read -r key value || [[ -n "${key:-}" ]]; do
+            if [[ -z "${key:-}" || "$key" =~ ^[[:space:]]*# ]]; then
+                continue
+            fi
 
-        case "$key" in
-            search_root)
-                value="${value/#\~/$HOME}"
-                SEARCH_ROOTS+=("$value")
-                ;;
-            default_remote)
-                if [[ -n "$value" ]]; then
-                    DEFAULT_REMOTE="$value"
-                fi
-                ;;
-            large_file_mb)
-                if [[ "$value" =~ ^[0-9]+$ ]]; then
-                    LARGE_FILE_MB="$value"
-                fi
-                ;;
-        esac
-    done < "$CONFIG_FILE"
+            case "$key" in
+                search_root)
+                    value="${value/#\~/$HOME}"
+                    SEARCH_ROOTS+=("$value")
+                    ;;
+                protected_branch)
+                    [[ -n "$value" ]] && PROTECTED_BRANCHES+=("$value")
+                    ;;
+                ignored_directory)
+                    [[ -n "$value" ]] && IGNORED_DIRS+=("$value")
+                    ;;
+                default_remote)
+                    [[ -n "$value" ]] && DEFAULT_REMOTE="$value"
+                    ;;
+                large_file_mb)
+                    if [[ "$value" =~ ^[0-9]+$ ]] && (( value > 0 )); then
+                        LARGE_FILE_MB="$value"
+                    fi
+                    ;;
+            esac
+        done < "$CONFIG_FILE"
+    fi
 
     if [[ ${#SEARCH_ROOTS[@]} -eq 0 ]]; then
-        SEARCH_ROOTS=("$HOME/Projects" "$HOME/Documents")
+        SEARCH_ROOTS=("${DEFAULT_SEARCH_ROOTS[@]}")
+    fi
+
+    if [[ ${#PROTECTED_BRANCHES[@]} -eq 0 ]]; then
+        PROTECTED_BRANCHES=("${DEFAULT_PROTECTED_BRANCHES[@]}")
+    fi
+
+    if [[ ${#IGNORED_DIRS[@]} -eq 0 ]]; then
+        IGNORED_DIRS=("${DEFAULT_IGNORED_DIRS[@]}")
     fi
 }
+
 
 show_help() {
     banner
@@ -167,7 +187,7 @@ EOFH
     printf '  %-11s%s\n' remote 'list, add, set-url, remove'
     printf '  %-11s%s\n' stash 'push, list, pop'
     printf '  %-11s%s\n' cache 'list, refresh, add'
-    printf '  %-11s%s\n' config 'show, path, doctor'
+    printf '  %-11s%s\n' config 'show, path, doctor, add, remove, set, reset'
     printf '  %-11s%s\n' alias 'list, set, remove'
     printf '  %-11s%s\n' favorite 'list, add, remove  (alias: fav)'
     printf '  %-11s%s\n' all 'status, fetch, sync'
@@ -176,6 +196,11 @@ EOFH
     printf '  %-11s%s\n' recent 'show recent repositories'
     printf '  %-11s%s\n' project 'info, build, test, run, open, shell'
     printf '  %-11s%s\n' update 'check, install, rollback'
+    printf '  %-11s%s\n' completion 'install, status, uninstall  (Bash Tab)'
+    printf '  %-11s%s\n' add '<key> <value>  (config shortcut)'
+    printf '  %-11s%s\n' remove '<key> <value>  (config shortcut)'
+    printf '  %-11s%s\n' set '<key> <value>  (config shortcut)'
+    printf '  %-11s%s\n' reset '<key>  (config shortcut)'
     printf '  %-11s%s\n' help 'show help'
     printf '  %-11s%s\n\n' version 'show version'
     printf '  Run %sgp%s without arguments for a quick picker with 5 recent repositories and Favorites.\n\n' "$C_GREEN" "$C_RESET"
@@ -201,6 +226,18 @@ EOFH
     printf '  build/test/run selects the detected native toolchain.\n'
     printf '  If [project] is omitted, the current Git repository is used.\n'
     printf '  gp project shell starts an interactive shell in the project directory.\n\n'
+
+    printf '%sCONFIGURATION EDITING%s\n' "$C_YELLOW" "$C_RESET"
+    printf '  gp add <key> <value>\n'
+    printf '  gp remove <search-root|protected-branch|ignored-directory> <value>\n'
+    printf '  gp set <default-remote|large-file-threshold> <value>\n'
+    printf '  gp reset <key>\n'
+    printf '  Full form: gp config add|remove|set|reset ...\n\n'
+
+    printf '%sTAB COMPLETION%s\n' "$C_YELLOW" "$C_RESET"
+    printf '  gp completion install    Install Bash completion.\n'
+    printf '  gp completion status     Show completion status.\n'
+    printf '  gp completion uninstall  Remove Bash completion.\n\n'
 
     printf '%sSELF UPDATE%s\n' "$C_YELLOW" "$C_RESET"
     printf '  gp update check      Check the latest stable GitHub Release only.\n'
@@ -1015,6 +1052,181 @@ translate_legacy() {
     TRANSLATED=("${translated_args[@]}")
 }
 
+normalize_config_key() {
+    case "${1,,}" in
+        search-root|search-roots) printf '%s' 'search-root' ;;
+        protected-branch|protected-branches) printf '%s' 'protected-branch' ;;
+        ignored-directory|ignored-directories|ignore-directory|ignore) printf '%s' 'ignored-directory' ;;
+        default-remote|remote) printf '%s' 'default-remote' ;;
+        large-file-threshold|large-file-mb|large-file) printf '%s' 'large-file-threshold' ;;
+        *) return 1 ;;
+    esac
+}
+
+config_edit_usage() {
+    dim 'Use:'
+    dim '  gp add <key> <value>'
+    dim '  gp remove <search-root|protected-branch|ignored-directory> <value>'
+    dim '  gp set <default-remote|large-file-threshold> <value>'
+    dim '  gp reset <key>'
+    dim '  Keys: search-root, protected-branch, ignored-directory, default-remote, large-file-threshold'
+    dim '  Full form: gp config add|remove|set|reset ...'
+}
+
+config_path_equal() {
+    local left="${1/#\~/$HOME}"
+    local right="${2/#\~/$HOME}"
+    left="${left%/}"
+    right="${right%/}"
+    [[ "${left,,}" == "${right,,}" ]]
+}
+
+array_contains_ci() {
+    local wanted="${1,,}"
+    shift || true
+    local item
+    for item in "$@"; do
+        [[ "${item,,}" == "$wanted" ]] && return 0
+    done
+    return 1
+}
+
+save_config_settings() {
+    ensure_dirs
+    local tmp="$CONFIG_FILE.tmp"
+    : > "$tmp" || return 1
+
+    printf '# GPush 4.x Linux configuration\n' >> "$tmp"
+    printf '# This file is managed by gp config add/remove/set/reset.\n\n' >> "$tmp"
+
+    local item
+    for item in "${SEARCH_ROOTS[@]}"; do
+        printf 'search_root=%s\n' "$item" >> "$tmp"
+    done
+    for item in "${PROTECTED_BRANCHES[@]}"; do
+        printf 'protected_branch=%s\n' "$item" >> "$tmp"
+    done
+    for item in "${IGNORED_DIRS[@]}"; do
+        printf 'ignored_directory=%s\n' "$item" >> "$tmp"
+    done
+
+    printf 'default_remote=%s\n' "$DEFAULT_REMOTE" >> "$tmp"
+    printf 'large_file_mb=%s\n' "$LARGE_FILE_MB" >> "$tmp"
+    mv "$tmp" "$CONFIG_FILE"
+}
+
+handle_config_edit() {
+    local action="${1,,}"
+    local raw_key="${2:-}"
+    local value="${3:-}"
+    local key
+
+    key="$(normalize_config_key "$raw_key" 2>/dev/null || true)"
+    if [[ -z "$key" ]]; then
+        err "Unknown configuration key: $raw_key"
+        config_edit_usage
+        return 2
+    fi
+
+    case "$action" in
+        add)
+            [[ -n "$value" ]] || { err "Configuration 'add' requires a value."; return 2; }
+            if [[ "$key" == default-remote || "$key" == large-file-threshold ]]; then
+                action=set
+            fi
+            ;;
+        remove)
+            case "$key" in search-root|protected-branch|ignored-directory) ;; *) err "Configuration key '$key' cannot remove an individual value."; dim "Use: gp reset $key"; return 2;; esac
+            [[ -n "$value" ]] || { err "Configuration 'remove' requires a value."; return 2; }
+            ;;
+        set)
+            case "$key" in default-remote|large-file-threshold) ;; *) err "Configuration key '$key' does not support 'set'."; dim "Use add/remove for list settings."; return 2;; esac
+            [[ -n "$value" ]] || { err "Configuration 'set' requires a value."; return 2; }
+            ;;
+        reset) ;;
+        *) err "Unknown config action: $action"; config_edit_usage; return 2 ;;
+    esac
+
+    local -a next=()
+    local item found=false
+
+    case "$key" in
+        search-root)
+            case "$action" in
+                add)
+                    for item in "${SEARCH_ROOTS[@]}"; do config_path_equal "$item" "$value" && { warn "Search root is already configured: $value"; return 0; }; done
+                    SEARCH_ROOTS+=("${value/#\~/$HOME}")
+                    ;;
+                remove)
+                    for item in "${SEARCH_ROOTS[@]}"; do
+                        if config_path_equal "$item" "$value"; then found=true; else next+=("$item"); fi
+                    done
+                    [[ "$found" == true ]] || { err "Search root was not found: $value"; return 1; }
+                    (( ${#next[@]} > 0 )) || { err 'Cannot remove the last search root.'; dim 'Add another search root first.'; return 2; }
+                    SEARCH_ROOTS=("${next[@]}")
+                    ;;
+                reset) SEARCH_ROOTS=("${DEFAULT_SEARCH_ROOTS[@]}") ;;
+            esac
+            ;;
+        protected-branch)
+            case "$action" in
+                add)
+                    array_contains_ci "$value" "${PROTECTED_BRANCHES[@]}" && { warn "Protected branch is already configured: $value"; return 0; }
+                    PROTECTED_BRANCHES+=("$value")
+                    ;;
+                remove)
+                    next=(); found=false
+                    for item in "${PROTECTED_BRANCHES[@]}"; do if [[ "${item,,}" == "${value,,}" ]]; then found=true; else next+=("$item"); fi; done
+                    [[ "$found" == true ]] || { err "Protected branch was not found: $value"; return 1; }
+                    PROTECTED_BRANCHES=("${next[@]}")
+                    ;;
+                reset) PROTECTED_BRANCHES=("${DEFAULT_PROTECTED_BRANCHES[@]}") ;;
+            esac
+            ;;
+        ignored-directory)
+            case "$action" in
+                add)
+                    array_contains_ci "$value" "${IGNORED_DIRS[@]}" && { warn "Ignored directory is already configured: $value"; return 0; }
+                    IGNORED_DIRS+=("$value")
+                    ;;
+                remove)
+                    next=(); found=false
+                    for item in "${IGNORED_DIRS[@]}"; do if [[ "${item,,}" == "${value,,}" ]]; then found=true; else next+=("$item"); fi; done
+                    [[ "$found" == true ]] || { err "Ignored directory was not found: $value"; return 1; }
+                    IGNORED_DIRS=("${next[@]}")
+                    ;;
+                reset) IGNORED_DIRS=("${DEFAULT_IGNORED_DIRS[@]}") ;;
+            esac
+            ;;
+        default-remote)
+            if [[ "$action" == set ]]; then
+                [[ "$value" != *[[:space:]]* ]] || { err 'Remote name cannot contain whitespace.'; return 2; }
+                DEFAULT_REMOTE="$value"
+            else
+                DEFAULT_REMOTE='origin'
+            fi
+            ;;
+        large-file-threshold)
+            if [[ "$action" == set ]]; then
+                [[ "$value" =~ ^[0-9]+$ ]] && (( value > 0 )) || { err 'Large-file threshold must be a positive integer in MB.'; return 2; }
+                LARGE_FILE_MB="$value"
+            else
+                LARGE_FILE_MB="$DEFAULT_LARGE_FILE_MB"
+            fi
+            ;;
+    esac
+
+    save_config_settings || return 1
+    load_config
+
+    banner
+    section 'Configuration updated'
+    kv Action "$action"
+    kv Key "$key"
+    [[ -n "$value" && "$action" != reset ]] && kv Value "$value"
+    kv Config "$CONFIG_FILE" "$C_GRAY"
+}
+
 show_config() {
     banner
     section "Configuration"
@@ -1023,6 +1235,10 @@ show_config() {
     kv "Large files" "$LARGE_FILE_MB MB"
     section "Search roots"
     printf '  %s\n' "${SEARCH_ROOTS[@]}"
+    section "Protected branches"
+    printf '  %s\n' "${PROTECTED_BRANCHES[@]}"
+    section "Ignored directories"
+    printf '  %s\n' "${IGNORED_DIRS[@]}"
 }
 
 run_doctor() {
@@ -1059,23 +1275,37 @@ run_doctor() {
 
 handle_config() {
     local action="${1:-show}"
+    shift || true
 
     case "$action" in
         show)
+            [[ $# -eq 0 ]] || { err "Command 'gp config show' does not accept arguments."; return 2; }
             show_config
             ;;
         path)
+            [[ $# -eq 0 ]] || { err "Command 'gp config path' does not accept arguments."; return 2; }
             printf '%s\n' "$CONFIG_FILE"
             ;;
         doctor)
+            [[ $# -eq 0 ]] || { err "Command 'gp config doctor' does not accept arguments."; return 2; }
             run_doctor
+            ;;
+        add|remove|set)
+            [[ $# -eq 2 ]] || { err "Command 'gp config $action' requires a key and a value."; config_edit_usage; return 2; }
+            handle_config_edit "$action" "$1" "$2"
+            ;;
+        reset)
+            [[ $# -eq 1 ]] || { err "Command 'gp config reset' requires exactly one key."; config_edit_usage; return 2; }
+            handle_config_edit reset "$1"
             ;;
         *)
             err "Unknown config command: $action"
+            dim 'Use: gp config show|path|doctor|add|remove|set|reset ...'
             return 2
             ;;
     esac
 }
+
 
 handle_cache() {
     local action="${1:-list}"
@@ -1784,6 +2014,292 @@ handle_update() {
     local new_gp package_version backup_path current_path; new_gp="$(find "$tmp/extract" -type f -name gp -print -quit)"; [[ -n "$new_gp" ]] || { err 'Release package does not contain gp.'; rm -rf "$tmp"; return 1; }; package_version="$(sed -n 's/^SCRIPT_VERSION="\([^"]*\)"/\1/p' "$new_gp" | head -n1)"; [[ "$(version_numeric "$package_version")" == "$(version_numeric "$tag")" ]] || { err "Package version '$package_version' does not match release '$tag'."; rm -rf "$tmp"; return 1; }
     backup_path="$(backup_current_gp)" || { rm -rf "$tmp"; return 1; }; dim "Backup: $backup_path"; current_path="$(command -v gp 2>/dev/null || true)"; [[ -n "$current_path" ]] || current_path="$HOME/.local/bin/gp"; mkdir -p "$(dirname "$current_path")"; install -m 0755 "$new_gp" "$current_path" || { rm -rf "$tmp"; return 1; }; ok 'GPush updated successfully.'; kv Previous "$SCRIPT_VERSION"; kv Current "$package_version" "$C_GREEN"; rm -rf "$tmp"
 }
+levenshtein() {
+    local a="${1,,}" b="${2,,}"
+    local alen=${#a} blen=${#b}
+    local -a prev=() curr=()
+    local i j cost del ins rep
+
+    for ((j=0; j<=blen; j++)); do prev[j]=$j; done
+
+    for ((i=1; i<=alen; i++)); do
+        curr[0]=$i
+        for ((j=1; j<=blen; j++)); do
+            if [[ "${a:i-1:1}" == "${b:j-1:1}" ]]; then cost=0; else cost=1; fi
+            del=$(( prev[j] + 1 ))
+            ins=$(( curr[j-1] + 1 ))
+            rep=$(( prev[j-1] + cost ))
+            (( del < ins )) && curr[j]=$del || curr[j]=$ins
+            (( rep < curr[j] )) && curr[j]=$rep
+        done
+        prev=("${curr[@]}")
+    done
+
+    printf '%s' "${prev[blen]}"
+}
+
+command_suggestion() {
+    local value="${1,,}"
+    case "$value" in
+        tags) printf '%s' 'gp tag list [project]'; return 0 ;;
+        branches) printf '%s' 'gp branch list [project]'; return 0 ;;
+        remotes) printf '%s' 'gp remote list [project]'; return 0 ;;
+        aliases) printf '%s' 'gp alias list'; return 0 ;;
+        completition|competion) printf '%s' 'gp completion install'; return 0 ;;
+    esac
+
+    local -a commands=(repo branch tag remote stash cache config alias favorite favorites fav all project clone recent update completion help version add remove set reset)
+    local best='' best_distance=999 distance candidate max_distance
+    for candidate in "${commands[@]}"; do
+        distance="$(levenshtein "$value" "$candidate")"
+        if (( distance < best_distance )); then best_distance=$distance; best="$candidate"; fi
+    done
+
+    if (( ${#value} <= 4 )); then max_distance=1; else max_distance=2; fi
+    (( best_distance <= max_distance )) || return 1
+
+    if [[ "$best" == completion ]]; then printf '%s' 'gp completion install'; else printf 'gp %s ...' "$best"; fi
+}
+
+known_repository_token() {
+    local query resolved repository name alias_name alias_path
+    query="$1"
+    resolved="$(alias_resolve "$query")"
+
+    if [[ -d "$resolved" && -e "$resolved/.git" ]]; then return 0; fi
+
+    if [[ -f "$ALIASES_FILE" ]]; then
+        while IFS='|' read -r alias_name alias_path; do
+            [[ "${alias_name,,}" == "${query,,}" ]] && return 0
+        done < "$ALIASES_FILE"
+    fi
+
+    load_cache
+    if [[ ${#CACHED_REPOS[@]} -eq 0 ]]; then
+        scan_repos
+        CACHED_REPOS=("${FOUND_REPOS[@]}")
+    fi
+
+    for repository in "${CACHED_REPOS[@]}"; do
+        name="$(repo_name "$repository")"
+        if [[ "${name,,}" == "${query,,}" || "${name,,}" == "${query,,}"* || "${name,,}" == *"${query,,}"* || "${repository,,}" == *"${query,,}"* ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+completion_file_path() {
+    printf '%s' "$CONFIG_DIR/completion.bash"
+}
+
+completion_profile_path() {
+    printf '%s' "$HOME/.bashrc"
+}
+
+write_completion_file() {
+    ensure_dirs
+    local target
+    target="$(completion_file_path)"
+
+    cat > "$target" <<'EOF_COMPLETION'
+# GPush Bash completion
+# Generated by: gp completion install
+
+_gpush_completion_repo_names() {
+    local cache="${XDG_CACHE_HOME:-$HOME/.cache}/gpush/repos"
+    local aliases="${XDG_CONFIG_HOME:-$HOME/.config}/gpush/aliases"
+    local path name alias_name alias_path
+    local -A seen=()
+
+    if [[ -f "$cache" ]]; then
+        while IFS= read -r path || [[ -n "$path" ]]; do
+            [[ -n "$path" ]] || continue
+            name="${path##*/}"
+            if [[ -n "$name" && -z "${seen[$name]+x}" ]]; then
+                seen[$name]=1
+                printf '%s\n' "$name"
+            fi
+        done < "$cache"
+    fi
+
+    if [[ -f "$aliases" ]]; then
+        while IFS='|' read -r alias_name alias_path; do
+            [[ -n "$alias_name" ]] || continue
+            if [[ -z "${seen[$alias_name]+x}" ]]; then
+                seen[$alias_name]=1
+                printf '%s\n' "$alias_name"
+            fi
+        done < "$aliases"
+    fi
+}
+
+_gpush_completion_add_matches() {
+    local cur="$1"
+    shift || true
+    local value
+    for value in "$@"; do
+        if [[ "${value,,}" == "${cur,,}"* ]]; then
+            COMPREPLY+=("$value")
+        fi
+    done
+}
+
+_gpush_complete() {
+    COMPREPLY=()
+    local cur="${COMP_WORDS[COMP_CWORD]}"
+    local command="${COMP_WORDS[1]:-}"
+    local action="${COMP_WORDS[2]:-}"
+    local -a repos=()
+    mapfile -t repos < <(_gpush_completion_repo_names)
+
+    local -a top=(repo branch tag remote stash cache config alias favorite fav favorites all project clone recent update completion help version add remove set reset)
+    local -a config_all=(search-root protected-branch ignored-directory default-remote large-file-threshold)
+    local -a config_lists=(search-root protected-branch ignored-directory)
+    local -a config_scalars=(default-remote large-file-threshold)
+
+    if (( COMP_CWORD == 1 )); then
+        _gpush_completion_add_matches "$cur" "${top[@]}" "${repos[@]}"
+        return 0
+    fi
+
+    case "$command" in
+        project)
+            if (( COMP_CWORD == 2 )); then _gpush_completion_add_matches "$cur" info build test run open shell
+            elif (( COMP_CWORD == 3 )); then _gpush_completion_add_matches "$cur" "${repos[@]}"; fi
+            ;;
+        repo)
+            if (( COMP_CWORD == 2 )); then _gpush_completion_add_matches "$cur" status diff log open fetch pull sync
+            elif (( COMP_CWORD == 3 )); then _gpush_completion_add_matches "$cur" "${repos[@]}"; fi
+            ;;
+        branch)
+            if (( COMP_CWORD == 2 )); then _gpush_completion_add_matches "$cur" list new switch delete prune
+            elif (( COMP_CWORD >= 3 )); then _gpush_completion_add_matches "$cur" "${repos[@]}"; fi
+            ;;
+        tag)
+            if (( COMP_CWORD == 2 )); then _gpush_completion_add_matches "$cur" list create push delete release
+            elif (( COMP_CWORD >= 3 )); then _gpush_completion_add_matches "$cur" "${repos[@]}"; fi
+            ;;
+        remote)
+            if (( COMP_CWORD == 2 )); then _gpush_completion_add_matches "$cur" list add set-url remove
+            elif (( COMP_CWORD >= 3 )); then _gpush_completion_add_matches "$cur" "${repos[@]}"; fi
+            ;;
+        stash)
+            if (( COMP_CWORD == 2 )); then _gpush_completion_add_matches "$cur" push list pop
+            elif (( COMP_CWORD >= 3 )); then _gpush_completion_add_matches "$cur" "${repos[@]}"; fi
+            ;;
+        cache)
+            if (( COMP_CWORD == 2 )); then _gpush_completion_add_matches "$cur" list refresh add
+            elif [[ "$action" == add && $COMP_CWORD -eq 3 ]]; then mapfile -t COMPREPLY < <(compgen -d -- "$cur"); fi
+            ;;
+        config)
+            if (( COMP_CWORD == 2 )); then _gpush_completion_add_matches "$cur" show path doctor add remove set reset
+            elif (( COMP_CWORD == 3 )); then
+                case "$action" in
+                    add) _gpush_completion_add_matches "$cur" "${config_all[@]}" ;;
+                    remove) _gpush_completion_add_matches "$cur" "${config_lists[@]}" ;;
+                    set) _gpush_completion_add_matches "$cur" "${config_scalars[@]}" ;;
+                    reset) _gpush_completion_add_matches "$cur" "${config_all[@]}" ;;
+                esac
+            fi
+            ;;
+        add) (( COMP_CWORD == 2 )) && _gpush_completion_add_matches "$cur" "${config_all[@]}" ;;
+        remove) (( COMP_CWORD == 2 )) && _gpush_completion_add_matches "$cur" "${config_lists[@]}" ;;
+        set) (( COMP_CWORD == 2 )) && _gpush_completion_add_matches "$cur" "${config_scalars[@]}" ;;
+        reset) (( COMP_CWORD == 2 )) && _gpush_completion_add_matches "$cur" "${config_all[@]}" ;;
+        alias)
+            if (( COMP_CWORD == 2 )); then _gpush_completion_add_matches "$cur" list set remove
+            elif (( COMP_CWORD >= 3 )); then _gpush_completion_add_matches "$cur" "${repos[@]}"; fi
+            ;;
+        favorite|fav)
+            if (( COMP_CWORD == 2 )); then _gpush_completion_add_matches "$cur" list add remove
+            elif (( COMP_CWORD == 3 )); then _gpush_completion_add_matches "$cur" "${repos[@]}"; fi
+            ;;
+        all) (( COMP_CWORD == 2 )) && _gpush_completion_add_matches "$cur" status fetch sync ;;
+        update) (( COMP_CWORD == 2 )) && _gpush_completion_add_matches "$cur" check install rollback ;;
+        completion) (( COMP_CWORD == 2 )) && _gpush_completion_add_matches "$cur" install status uninstall ;;
+        clone)
+            if (( COMP_CWORD >= 3 )); then mapfile -t COMPREPLY < <(compgen -d -- "$cur"); fi
+            ;;
+    esac
+}
+
+complete -F _gpush_complete gp
+EOF_COMPLETION
+}
+
+remove_completion_profile_block() {
+    local profile="$1"
+    [[ -f "$profile" ]] || return 0
+    local tmp="$profile.gpush.tmp"
+    awk '
+        $0 == "# >>> GPush completion >>>" { skip=1; next }
+        $0 == "# <<< GPush completion <<<" { skip=0; next }
+        !skip { print }
+    ' "$profile" > "$tmp" && mv "$tmp" "$profile"
+}
+
+handle_completion() {
+    local action="${1:-status}"
+    local file profile
+    file="$(completion_file_path)"
+    profile="$(completion_profile_path)"
+
+    case "$action" in
+        install)
+            [[ $# -le 1 ]] || { err "Command 'gp completion install' does not accept additional arguments."; return 2; }
+            write_completion_file || return 1
+            touch "$profile" || return 1
+            remove_completion_profile_block "$profile"
+            {
+                printf '\n# >>> GPush completion >>>\n'
+                printf '[[ -f %q ]] && source %q\n' "$file" "$file"
+                printf '# <<< GPush completion <<<\n'
+            } >> "$profile"
+            banner
+            section 'Bash completion'
+            ok 'GPush Bash completion installed.'
+            kv Completion "$file" "$C_GRAY"
+            kv Profile "$profile" "$C_GRAY"
+            dim "Reload Bash or run: source '$file'"
+            ;;
+        status)
+            [[ $# -le 1 ]] || { err "Command 'gp completion status' does not accept additional arguments."; return 2; }
+            banner
+            section 'Bash completion'
+            if [[ -f "$file" ]] && [[ -f "$profile" ]] && grep -Fq '# >>> GPush completion >>>' "$profile"; then
+                kv Health OK "$C_GREEN"
+            else
+                kv Health 'Needs attention' "$C_YELLOW"
+            fi
+            kv Completion "$file" "$C_GRAY"
+            kv Profile "$profile" "$C_GRAY"
+            kv Registered "$(if [[ -f "$profile" ]] && grep -Fq '# >>> GPush completion >>>' "$profile"; then printf Yes; else printf No; fi)"
+            ;;
+        uninstall)
+            [[ $# -le 1 ]] || { err "Command 'gp completion uninstall' does not accept additional arguments."; return 2; }
+            rm -f "$file"
+            remove_completion_profile_block "$profile"
+            banner
+            section 'Bash completion'
+            ok 'GPush Bash completion removed.'
+            dim 'Open a new Bash session to clear the currently loaded completion function.'
+            ;;
+        *)
+            local -a options=(install status uninstall)
+            local best='' best_distance=999 candidate distance
+            for candidate in "${options[@]}"; do
+                distance="$(levenshtein "$action" "$candidate")"
+                if (( distance < best_distance )); then best_distance=$distance; best="$candidate"; fi
+            done
+            err "Unknown completion command: $action"
+            (( best_distance <= 2 )) && dim "Did you mean: gp completion $best"
+            dim 'Use: gp completion install|status|uninstall'
+            return 2
+            ;;
+    esac
+}
+
 main() {
     load_config
 
@@ -1824,6 +2340,17 @@ main() {
         update)
             handle_update "$@"
             ;;
+        completion)
+            handle_completion "$@"
+            ;;
+        add|remove|set)
+            [[ $# -eq 2 ]] || { err "Command 'gp $command_name' requires a configuration key and a value."; config_edit_usage; return 2; }
+            handle_config_edit "$command_name" "$1" "$2"
+            ;;
+        reset)
+            [[ $# -eq 1 ]] || { err "Command 'gp reset' requires exactly one configuration key."; config_edit_usage; return 2; }
+            handle_config_edit reset "$1"
+            ;;
         clone)
             handle_clone "$@"
             ;;
@@ -1855,7 +2382,19 @@ main() {
             handle_tag "$@"
             ;;
         *)
-            # Classic shortcut: gp Project "message"
+            # Keep the classic shortcut: gp Project "message".
+            # If the first token is not a known repository and looks like a
+            # command typo, fail early with a useful suggestion.
+            if ! known_repository_token "$command_name"; then
+                local suggestion
+                suggestion="$(command_suggestion "$command_name" 2>/dev/null || true)"
+                if [[ -n "$suggestion" ]]; then
+                    err "Unknown command: $command_name"
+                    dim "Did you mean: $suggestion"
+                    return 2
+                fi
+            fi
+
             select_repo "$command_name" || return 1
             remember_recent "$SELECTED"
 

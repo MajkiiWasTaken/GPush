@@ -3,7 +3,7 @@ param(
     [switch]$Force
 )
 
-$InstallerVersion = "4.2.1"
+$InstallerVersion = "4.4.0"
 
 [Console]::InputEncoding  = [System.Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
@@ -225,4 +225,6 @@ Write-Host "Then try:" -ForegroundColor White
 Write-Host "  gp --version" -ForegroundColor Green
 Write-Host "  gp help" -ForegroundColor Green
 Write-Host "  gp config doctor" -ForegroundColor Green
+Write-Host ""
+Write-Host "Tab completion activates automatically after the first gp command in each PowerShell session." -ForegroundColor DarkGray
 Write-Host ""
