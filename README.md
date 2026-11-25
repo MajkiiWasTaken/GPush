@@ -249,3 +249,18 @@ The updater prefers `curl.exe`, falls back to `Invoke-WebRequest`, bypasses HTTP
 ### Overview navigation (4.5.2)
 
 Overview loads local Git state once. Arrow keys only redraw cached rows. `R` refreshes local state, `F` fetches the selected repository, `A` fetches all after confirmation, and `S` synchronizes the selected repository after confirmation. Remote counts are based on the last fetch.
+
+### Interactive workspace (4.6.0)
+
+| Command | Description |
+|---|---|
+| `gp menu` | Numbered command palette |
+| `gp detail Project` | Local status and recent commits, repository actions |
+| `gp commit Project` | Select file numbers, commit locally, optionally synchronize |
+| `gp diff Project` | Colored diff against HEAD, list untracked files |
+| `gp branches Project` | List, create, switch and safely delete merged branches |
+| `gp activity` | Recent recorded operations |
+| `gp settings` | Edit default remote and large-file threshold |
+| `gp github Project` | Issues, PRs, releases and workflow runs via authenticated `gh` |
+
+Enter in overview opens repository detail. No remote fetch is performed on opening detail or navigating overview. The commit manager requires an empty staging area and skips risky files; optional synchronization retains protected-branch safeguards. The new menus use numbered/letter prompts. Untracked file contents are not included in the diff. GitHub commands require network access and `gh auth login`.

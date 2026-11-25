@@ -176,6 +176,10 @@ jobs:
           if ($rows.Count -ne 1 -or $rows[0].repository -ne 'TestProj' -or $rows[0].ahead -ne 0) { throw "Unexpected JSON: $json" }
           $preview = & pwsh -NoProfile -NonInteractive -File $env:WINDOWS_GP all dry-run | Out-String
           if ($LASTEXITCODE -ne 0 -or $preview -notmatch 'No action') { throw "Dry-run failed: $preview" }
+          foreach ($screen in @('detail','diff','branches')) {
+              $screenOutput = & pwsh -NoProfile -NonInteractive -File $env:WINDOWS_GP $screen TestProj 2>&1 | Out-String
+              if ($LASTEXITCODE -ne 0) { throw "Workspace screen $screen failed: $screenOutput" }
+          }
           exit 0
 
       - name: Install PSScriptAnalyzer

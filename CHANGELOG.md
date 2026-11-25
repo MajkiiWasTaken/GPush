@@ -2,6 +2,15 @@
 
 All notable changes to GPush are documented here.
 
+## 4.6.0
+
+- Workspace detail, numbered command palette, selected-file commit manager, colored working-tree diff, local branch manager, activity log and configuration menu.
+- Optional GitHub CLI integration for repository information, issues, pull requests, releases and workflow runs.
+- Overview Enter opens repository detail; arrow navigation retains cached snapshots.
+- Commit manager refuses pre-staged changes and risky files; branch deletion is merged-only and respects protected branches.
+- Fix ShellCheck SC2015 and SC1007 in visual filters and no-color mode.
+- Workspace menus use numbered or letter prompts; full-screen file-by-file navigation is not implemented in this release.
+
 ## 4.5.2
 
 - Overview caches local repository snapshots in memory; arrow navigation never runs Git.

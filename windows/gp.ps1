@@ -24,8 +24,8 @@ $OutputEncoding           = [System.Text.UTF8Encoding]::new($false)
 # CONFIG
 # ============================================================
 
-$ScriptVersion = "4.5.2"
-$CompletionSchemaVersion = "13"
+$ScriptVersion = "4.6.0"
+$CompletionSchemaVersion = "14"
 
 $ConfigDir  = Join-Path $env:LOCALAPPDATA "GPush"
 $ConfigFile = Join-Path $ConfigDir "config.json"
@@ -1092,6 +1092,14 @@ function Show-Help {
     Write-ExampleHelp 'gp all' "Synchronize cached repositories."
     Write-ExampleHelp 'gp all push "Update projects"' "Commit and synchronize cached repositories."
     Write-ExampleHelp 'gp repo sync TestProject' "Synchronize without creating a commit."
+    Write-ExampleHelp 'gp menu' 'Open the workspace command menu.'
+    Write-ExampleHelp 'gp detail Project' 'Inspect and manage a repository.'
+    Write-ExampleHelp 'gp commit Project' 'Select files and commit.'
+    Write-ExampleHelp 'gp diff Project' 'Show working tree diff.'
+    Write-ExampleHelp 'gp branches Project' 'Manage local branches.'
+    Write-ExampleHelp 'gp github Project' 'GitHub information via gh.'
+    Write-ExampleHelp 'gp settings' 'Edit workspace configuration.'
+    Write-ExampleHelp 'gp activity' 'Show recorded activity.'
     Write-ExampleHelp 'gp overview' "Workspace health and repository summary."
     Write-ExampleHelp 'gp stats' "30-day commit activity and daily heatmap."
     Write-ExampleHelp 'gp changes <project>' "Working tree and line statistics."
@@ -2286,7 +2294,7 @@ function global:Get-GPushCompletionContext {
     $tokenLength = [Math]::Max(0, $tokenEnd - $tokenStart)
 
     $topLevel = @(
-        "overview", "health", "stats", "history", "watch", "changes", "repo", "branch", "tag", "remote", "stash", "cache", "config",
+        "overview", "health", "stats", "history", "watch", "changes", "detail", "commit", "diff", "branches", "menu", "activity", "settings", "github", "repo", "branch", "tag", "remote", "stash", "cache", "config",
         "alias", "favorite", "fav", "favorites", "all", "project",
         "clone", "recent", "update", "completion", "help", "version",
         "add", "remove", "set", "reset"
@@ -3383,7 +3391,7 @@ function Get-GPushCommandSuggestion {
     }
 
     $commands = @(
-        "overview", "health", "stats", "history", "watch", "changes", "repo", "branch", "tag", "remote", "stash", "cache", "config",
+        "overview", "health", "stats", "history", "watch", "changes", "detail", "commit", "diff", "branches", "menu", "activity", "settings", "github", "repo", "branch", "tag", "remote", "stash", "cache", "config",
         "alias", "favorite", "favorites", "fav", "all", "project",
         "clone", "recent", "update", "completion", "help", "version",
         "add", "remove", "set", "reset"
@@ -3909,7 +3917,7 @@ if (-not $skipCompletionBootstrap -and [Environment]::UserInteractive -and -not 
 $VisualMode = ''
 $VisualTail = @()
 if ($RawArguments.Count -gt 0) {
-    if ($RawArguments[0] -in @('overview','health','stats','history','watch','changes')) {
+    if ($RawArguments[0] -in @('overview','health','stats','history','watch','changes','detail','commit','diff','branches','menu','activity','settings','github')) {
         $VisualMode = [string]$RawArguments[0]; $VisualTail = @($RawArguments | Select-Object -Skip 1)
     } elseif ($RawArguments.Count -ge 2 -and $RawArguments[0] -eq 'branch' -and $RawArguments[1] -eq 'graph') {
         $VisualMode = 'graph'; $VisualTail = @($RawArguments | Select-Object -Skip 2)
@@ -6115,13 +6123,178 @@ function Show-GPushOverviewFrame {
         else { Write-Host $line -ForegroundColor Yellow }
     }
     Write-Dim ("{0}/{1} | {2}" -f ($Selected+1), $States.Count, $States[$Selected].Sync)
-    Write-Dim '[Up/Down] Select  [Enter] Changes  [F] Fetch  [A] Fetch all'
+    Write-Dim '[Up/Down] Select  [Enter] Detail  [F] Fetch  [A] Fetch all'
     Write-Dim '[R] Refresh local  [S] Sync  [Q] Quit'
+}
+
+# Workspace screens share the existing Git safety and configuration helpers.
+function Write-GPushWorkspaceHistory {
+    param([string]$Action,[string]$Path)
+    try { Add-Content -LiteralPath (Join-Path $ConfigDir 'history.log') -Value ('{0} {1} {2}' -f (Get-Date -Format o),$Action,$Path) -Encoding UTF8 -ErrorAction Stop } catch { Write-Dim 'History unavailable.' }
+}
+function Wait-GPushWorkspace {
+    if (-not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected) { $null = Read-Host 'Press Enter to return' }
+}
+function Show-GPushWorkspaceDiff {
+    param($Repository)
+    $color = if ($script:GPushNoColor -or $env:NO_COLOR -or [Console]::IsOutputRedirected) {'never'} else {'always'}
+    & git -C $Repository.Path --no-pager diff "--color=$color" HEAD -- | ForEach-Object { Write-Host $_ }
+    & git -C $Repository.Path ls-files --others --exclude-standard | ForEach-Object { Write-Host "Untracked: $_" }
+}
+function Invoke-GPushWorkspaceCommit {
+    param($Repository)
+    if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) { Write-Err 'Interactive terminal required.'; return }
+    Push-Location -LiteralPath $Repository.Path
+    try {
+        foreach ($marker in @('MERGE_HEAD','CHERRY_PICK_HEAD','REVERT_HEAD','rebase-merge','rebase-apply','sequencer','BISECT_START')) {
+            $markerPath = (& git rev-parse --git-path $marker) -join ''
+            if ($LASTEXITCODE -ne 0 -or (Test-Path -LiteralPath $markerPath)) { Write-Err 'Git operation in progress or inspection failed.'; return }
+        }
+        & git symbolic-ref --quiet HEAD | Out-Null
+        if ($LASTEXITCODE -ne 0) { Write-Err 'Detached HEAD.'; return }
+        & git diff --cached --quiet
+        if ($LASTEXITCODE -ne 0) { Write-Err 'Commit manager requires an empty staging area. Commit or unstage existing changes first.'; return }
+        $tracked = @(& git -c core.quotePath=false diff --no-renames --name-only --)
+        if ($LASTEXITCODE -ne 0) { Write-Err 'Cannot inspect tracked changes.'; return }
+        $untracked = @(& git -c core.quotePath=false ls-files --others --exclude-standard)
+        if ($LASTEXITCODE -ne 0) { Write-Err 'Cannot inspect untracked changes.'; return }
+        $files = @($tracked + $untracked | Sort-Object -Unique)
+        if ($files.Count -eq 0) { Write-Ok 'No changes.'; return }
+        Write-Section "Commit manager / $($Repository.Name)"
+        for ($i=0; $i -lt $files.Count; $i++) { Write-Host ('{0,3}  {1}' -f ($i+1),$files[$i]) }
+        $answer = Read-Host 'File numbers (space separated, or all; empty cancels)'
+        if (-not $answer) { return }
+        $chosen = @()
+        if ($answer -eq 'all') { $chosen = $files } else {
+            foreach ($token in ($answer.Trim() -split '\s+')) {
+                $index=0
+                if (-not [int]::TryParse($token,[ref]$index) -or $index -lt 1 -or $index -gt $files.Count) { Write-Err 'Invalid file number.'; return }
+                $chosen += $files[$index-1]
+            }
+        }
+        foreach ($file in $chosen) {
+            if (Test-SensitivePath -Path $file) { Write-Err "Risky file: $file"; return }
+            if (Test-Path -LiteralPath $file -PathType Leaf) {
+                if ((Get-Item -LiteralPath $file).Length -ge ([long]$LargeFileThresholdMB * 1MB)) { Write-Err "Large file: $file"; return }
+            }
+        }
+        $message = Read-Host 'Commit message'
+        if ([string]::IsNullOrWhiteSpace($message)) { return }
+        if (-not (Confirm-GPushAction -Prompt 'Stage selected files and commit locally?')) { return }
+        & git --literal-pathspecs add -A -- @chosen | ForEach-Object { Write-Host $_ }
+        if ($LASTEXITCODE -ne 0) { return }
+        & git commit -m $message | ForEach-Object { Write-Host $_ }
+        if ($LASTEXITCODE -ne 0) { return }
+        Write-GPushWorkspaceHistory commit $Repository.Path
+        if (Confirm-GPushAction -Prompt 'Synchronize and push (protected branches remain protected)?') {
+            $result = Invoke-GPushAllSync -Repository $Repository
+            Write-GPushAllRow -Snapshot $result.Snapshot -Result $result.Result
+            Write-GPushWorkspaceHistory "sync $($result.Result)" $Repository.Path
+        }
+    } finally { Pop-Location }
+}
+function Show-GPushWorkspaceBranches {
+    param($Repository)
+    while ($true) {
+        Write-Section "Branches / $($Repository.Name)"
+        & git -C $Repository.Path branch -vv | ForEach-Object { Write-Host $_ }
+        if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) { return }
+        $action = Read-Host '[N] New  [S] Switch  [D] Delete merged  [G] Graph  [Q] Back'
+        if ($action -in @('q','')) { return }
+        if ($action -eq 'g') { & git -C $Repository.Path --no-pager log --graph --all --decorate --oneline -n 40 | ForEach-Object { Write-Host $_ }; Wait-GPushWorkspace; continue }
+        if ($action -notin @('n','s','d')) { continue }
+        $branch = Read-Host 'Branch name'
+        if (-not $branch -or $branch.StartsWith('-')) { continue }
+        & git check-ref-format --branch $branch | Out-Null
+        if ($LASTEXITCODE -ne 0) { Write-Err 'Invalid branch name.'; continue }
+        if ($action -eq 'd' -and (Test-ProtectedBranch -Branch $branch)) { Write-Warn 'Protected branch.'; continue }
+        if (-not (Confirm-GPushAction -Prompt "Perform branch action $action on $branch?")) { continue }
+        switch ($action) {
+            'n' { & git -C $Repository.Path switch -c $branch | ForEach-Object { Write-Host $_ } }
+            's' { & git -C $Repository.Path switch $branch | ForEach-Object { Write-Host $_ } }
+            'd' { & git -C $Repository.Path branch -d -- $branch | ForEach-Object { Write-Host $_ } }
+        }
+        if ($LASTEXITCODE -eq 0) { Write-GPushWorkspaceHistory "branch-$action" $Repository.Path }
+    }
+}
+function Show-GPushWorkspaceGitHub {
+    param($Repository)
+    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { Write-Err 'Install GitHub CLI (gh) and run gh auth login.'; return }
+    Push-Location -LiteralPath $Repository.Path
+    try {
+        & gh repo view | ForEach-Object { Write-Host $_ }
+        if ($LASTEXITCODE -ne 0) { return }
+        & gh issue list --limit 5 | ForEach-Object { Write-Host $_ }
+        & gh pr list --limit 5 | ForEach-Object { Write-Host $_ }
+        & gh release list --limit 5 | ForEach-Object { Write-Host $_ }
+        & gh run list --limit 5 | ForEach-Object { Write-Host $_ }
+    } finally { Pop-Location }
+}
+function Show-GPushWorkspaceDetail {
+    param($Repository)
+    while ($true) {
+        Write-Section "Repository detail / $($Repository.Name)"
+        Write-Dim $Repository.Path
+        & git -C $Repository.Path status --short --branch | ForEach-Object { Write-Host $_ }
+        & git -C $Repository.Path --no-pager log -5 '--format=%h  %s  (%ar)' | ForEach-Object { Write-Host $_ }
+        if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) { return }
+        $action = Read-Host '[C] Commit  [D] Diff  [B] Branches  [F] Fetch  [S] Sync  [G] GitHub  [Q] Back'
+        switch ($action) {
+            'c' { Invoke-GPushWorkspaceCommit $Repository; Wait-GPushWorkspace }
+            'd' { Show-GPushWorkspaceDiff $Repository; Wait-GPushWorkspace }
+            'b' { Show-GPushWorkspaceBranches $Repository }
+            'f' { $null = @(Get-GPushOverviewStates -Repositories @($Repository) -Fetch); Wait-GPushWorkspace }
+            's' { if (Confirm-GPushAction -Prompt 'Synchronize repository?') { $result = Invoke-GPushAllSync -Repository $Repository; Write-GPushAllRow -Snapshot $result.Snapshot -Result $result.Result; Write-GPushWorkspaceHistory "sync $($result.Result)" $Repository.Path }; Wait-GPushWorkspace }
+            'g' { Show-GPushWorkspaceGitHub $Repository; Wait-GPushWorkspace }
+            { $_ -in @('q','') } { return }
+        }
+    }
+}
+function Show-GPushWorkspaceSettings {
+    Show-GPushConfig
+    if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) { return }
+    $key = Read-Host 'Edit [default-remote / large-file-threshold] (empty cancels)'
+    if ($key -in @('default-remote','large-file-threshold')) {
+        $value = Read-Host 'New value'
+        if (Confirm-GPushAction -Prompt 'Save configuration?') { $null = Invoke-GPushConfigEdit -Action set -Key $key -Value $value }
+    }
+}
+function Show-GPushWorkspaceMenu {
+    Write-Section 'Command palette'
+    @('1 Overview','2 Detail','3 Commit','4 Diff','5 Branches','6 Stats','7 Activity','8 Settings','9 GitHub','0 Back') | ForEach-Object { Write-Host $_ }
+    if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) { return }
+    $choices = @{'1'='overview';'2'='detail';'3'='commit';'4'='diff';'5'='branches';'6'='stats';'7'='activity';'8'='settings';'9'='github'}
+    $choice = Read-Host 'Command number'
+    if ($choices.ContainsKey($choice)) { $null = Invoke-GPushVisualCommand -Mode $choices[$choice] -Tail @() }
+}
+function Resolve-GPushWorkspaceRepository {
+    param([string[]]$Tail)
+    $query = $Tail -join ' '
+    if (-not $query) { $query = (& git rev-parse --show-toplevel 2>$null) -join '' }
+    if (-not $query -and -not [Console]::IsInputRedirected) { $query = Read-Host 'Cached repository name' }
+    $query = Resolve-GPushAlias -Search $query
+    $matches = @(Get-GPushCache | Where-Object { $_.Name -eq $query -or $_.Path -eq $query })
+    if ($matches.Count -eq 1) { return $matches[0] }
+    Write-Err 'Specify one exact cached repository name or path.'
 }
 
 function Invoke-GPushVisualCommand {
     param([string]$Mode, [string[]]$Tail)
     switch ($Mode) {
+        { $_ -in @('detail','commit','diff','branches','github') } {
+            $repository = Resolve-GPushWorkspaceRepository -Tail $Tail
+            if (-not $repository) { return 2 }
+            switch ($Mode) {
+                'detail' { Show-GPushWorkspaceDetail $repository }
+                'commit' { Invoke-GPushWorkspaceCommit $repository }
+                'diff' { Show-GPushWorkspaceDiff $repository }
+                'branches' { Show-GPushWorkspaceBranches $repository }
+                'github' { Show-GPushWorkspaceGitHub $repository }
+            }
+        }
+        'menu' { Show-GPushWorkspaceMenu }
+        'settings' { Show-GPushWorkspaceSettings }
+        'activity' { $historyFile = Join-Path $ConfigDir 'history.log'; if (Test-Path $historyFile) { Get-Content $historyFile -Tail 30 | ForEach-Object { Write-Host $_ } } }
         'overview' {
             if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) { Show-GPushVisualStatus 'overview'; return 0 }
             $repositories = @(Get-GPushCache | Sort-Object Name, Path)
@@ -6139,9 +6312,8 @@ function Invoke-GPushVisualCommand {
                     'UpArrow' { $selected = ($selected + $repositories.Count - 1) % $repositories.Count }
                     'DownArrow' { $selected = ($selected + 1) % $repositories.Count }
                     'Enter' {
-                        & git -C $repository.Path status --short | ForEach-Object { Write-Host $_ }
-                        & git -C $repository.Path diff --stat HEAD | ForEach-Object { Write-Host $_ }
-                        $null = Read-Host 'Press Enter to continue'
+                        Show-GPushWorkspaceDetail $repository
+                        $states[$selected] = Get-GPushOverviewLocalState -Repository $repository
                     }
                     'R' {
                         $states = @(Get-GPushOverviewStates -Repositories $repositories)
