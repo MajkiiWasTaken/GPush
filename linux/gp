@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-SCRIPT_VERSION="4.4.1"
+SCRIPT_VERSION="4.4.2"
 AUTHOR="Michal Švrček"
 GITHUB="https://github.com/MajkiiWasTaken"
 

@@ -13,7 +13,7 @@ $OutputEncoding           = [System.Text.UTF8Encoding]::new($false)
 # CONFIG
 # ============================================================
 
-$ScriptVersion = "4.4.1"
+$ScriptVersion = "4.4.2"
 $CompletionSchemaVersion = "12"
 
 $ConfigDir  = Join-Path $env:LOCALAPPDATA "GPush"
@@ -62,6 +62,16 @@ $FavoriteRepositories = @()
 # ============================================================
 # OUTPUT HELPERS
 # ============================================================
+
+function Confirm-GPushAction {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Prompt
+    )
+
+    $answer = Read-Host "$Prompt [y/N]" -ErrorAction Stop
+    return ($answer -match '^(?i:y|yes)$')
+}
 
 function Write-Info {
     param([string]$Text)
@@ -1230,23 +1240,24 @@ function Test-GPushDownloadedPackage {
         $expected = $null
 
         foreach ($line in ($checksumText -split "`r?`n")) {
-            if ($line -match '(?i)\b([A-F0-9]{64})\b') {
-                if ($checksumAsset.name -match '(?i)SHA256SUMS|sha256sums' -and
-                    $line -notmatch [regex]::Escape([string]$PackageAsset.name)) {
-                    continue
-                }
+            $hashMatch = [regex]::Match($line, '(?i)^\s*([a-f0-9]{64})(?:\s+\*?(.+?))?\s*$')
+            if (-not $hashMatch.Success) { continue }
 
-                $expected = $Matches[1].ToLowerInvariant()
-                break
-            }
+            $listedName = $hashMatch.Groups[2].Value
+            if ($listedName.StartsWith('./')) { $listedName = $listedName.Substring(2) }
+            if ($listedName -and $listedName -cne [string]$PackageAsset.name) { continue }
+            if ($checksumAsset.name -match '(?i)^sha256sums' -and -not $listedName) { continue }
+
+            $expected = $hashMatch.Groups[1].Value.ToLowerInvariant()
+            break
         }
 
         if ([string]::IsNullOrWhiteSpace($expected)) {
-            Write-Warn "Checksum file was found, but no usable SHA-256 value could be read."
-            return $true
+            Write-Err "No usable SHA-256 value for this package. Update cancelled."
+            return $false
         }
 
-        $actual = (Get-FileHash -Path $PackagePath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $actual = (Get-FileHash -LiteralPath $PackagePath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
 
         if ($actual -ne $expected) {
             Write-Err "Downloaded package checksum does not match the published SHA-256."
@@ -1259,9 +1270,9 @@ function Test-GPushDownloadedPackage {
         return $true
     }
     catch {
-        Write-Warn "Checksum verification could not be completed."
+        Write-Err "Checksum verification could not be completed. Update cancelled."
         Write-Dim $_.Exception.Message
-        return $true
+        return $false
     }
 }
 
@@ -3726,6 +3737,10 @@ function ConvertFrom-GPushSubcommand {
             return @("--recent")
         }
 
+        "update" {
+            return Join-GPushArgs @("--update") $rest
+        }
+
         "completion" {
             $exitCode = Invoke-GPushCompletionCommand -Arguments $rest
             exit $exitCode
@@ -4444,16 +4459,6 @@ function Test-ProtectedBranch {
     }
 
     return $false
-}
-
-function Confirm-GPushAction {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Prompt
-    )
-
-    $answer = Read-Host "$Prompt [y/N]"
-    return ($answer -match '^(?i:y|yes)$')
 }
 
 function Confirm-GPushActionDefaultYes {
@@ -5622,33 +5627,6 @@ function Show-GPushAllRepositories {
     return $(if ($issues -gt 0) { 1 } else { 0 })
 }
 
-
-# ============================================================
-# NEW TOP-LEVEL COMMAND DISPATCH
-# ============================================================
-
-# Dispatch after all shared helpers are defined, but before any legacy
-# operation starts. RawArguments are used deliberately so the old parser
-# and the classic "gp <project> <commit message>" behavior remain untouched.
-if ($RawArguments.Count -gt 0) {
-    $topLevelCommand = ([string]$RawArguments[0]).ToLowerInvariant()
-    $topLevelTail = if ($RawArguments.Count -gt 1) {
-        @($RawArguments[1..($RawArguments.Count - 1)])
-    }
-    else {
-        @()
-    }
-
-    if ($topLevelCommand -eq "update") {
-        $exitCode = Invoke-GPushUpdateCommand -Arguments $topLevelTail
-        exit $exitCode
-    }
-
-    if ($topLevelCommand -eq "project") {
-        $exitCode = Invoke-GPushProjectCommand -Arguments $topLevelTail
-        exit $exitCode
-    }
-}
 
 # ============================================================
 # ALIASES / FAVORITES / RECENT

@@ -131,6 +131,16 @@ jobs:
       # 4. PSScriptAnalyzer
       # ------------------------------------------------------------
 
+      - name: Check update command routing without network
+        shell: pwsh
+        run: |
+          foreach ($prefix in @('update', '--update')) {
+              $output = & pwsh -NoProfile -File $env:WINDOWS_GP $prefix invalid-action 2>&1 | Out-String
+              if ($LASTEXITCODE -ne 2 -or $output -notmatch 'Unknown update action: invalid-action') {
+                  throw "Update routing failed for $prefix : $output"
+              }
+          }
+
       - name: Install PSScriptAnalyzer
         shell: pwsh
         run: |

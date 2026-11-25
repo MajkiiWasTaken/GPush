@@ -215,3 +215,7 @@ Distributed under the MIT License.
 ### Bulk repository synchronization
 
 `gp all` (or `gp all sync`) fetches and synchronizes cached repositories without creating commits. `gp all push "Update projects"` additionally commits local changes after confirmation. Use `--allow-protected` to permit pushes to protected branches. Dirty repositories are skipped in sync mode; diverged histories and risky files in bulk commit mode require manual attention. No automatic force push or rebase is performed. Run `gp cache refresh` first if the cache is empty.
+
+### Updating GPush
+
+Use `gp update check` to check for releases, `gp update` (or `gp update install`) to install, and `gp update rollback` to restore a backup. On Windows, `gp --update` remains a compatible legacy alias.

@@ -2,6 +2,13 @@
 
 All notable changes to GPush are documented here.
 
+## 4.4.2
+
+### Fixed
+- Windows `gp update`, `gp update check`, `gp update install` and `gp update rollback` now route through the main argument parser.
+- Update and rollback confirmation is defined before early command dispatch.
+- Windows SHA-256 verification no longer depends on the mutable `$Matches` variable and cancels installation if a published checksum cannot be verified.
+
 ## 4.4.1
 
 ### Added

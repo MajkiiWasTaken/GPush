@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALLER_VERSION="4.4.1"
+INSTALLER_VERSION="4.4.2"
 AUTHOR="Michal Švrček"
 GITHUB="https://github.com/MajkiiWasTaken"
 
