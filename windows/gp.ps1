@@ -24,7 +24,7 @@ $OutputEncoding           = [System.Text.UTF8Encoding]::new($false)
 # CONFIG
 # ============================================================
 
-$ScriptVersion = "4.6.1"
+$ScriptVersion = "4.7.0"
 $CompletionSchemaVersion = "14"
 
 $ConfigDir  = Join-Path $env:LOCALAPPDATA "GPush"
@@ -971,7 +971,7 @@ function Show-Help {
 
     Write-Host "A small Git helper for finding repositories, inspecting their state,"
     Write-Host "and handling common Git workflows safely."
-    Write-Dim "Run gp without a project to pick quickly from favorites and recent repositories."
+    Write-Dim "Run gp without arguments to open the interactive main menu."
     Write-Host ""
 
     Write-Host "USAGE" -ForegroundColor Yellow
@@ -3916,6 +3916,7 @@ if (-not $skipCompletionBootstrap -and [Environment]::UserInteractive -and -not 
 
 $VisualMode = ''
 $VisualTail = @()
+if ($RawArguments.Count -eq 0) { $VisualMode = 'menu' }
 if ($RawArguments.Count -gt 0) {
     if ($RawArguments[0] -in @('overview','health','stats','history','watch','changes','detail','commit','diff','branches','menu','activity','settings','github')) {
         $VisualMode = [string]$RawArguments[0]; $VisualTail = @($RawArguments | Select-Object -Skip 1)
@@ -6123,7 +6124,7 @@ function Show-GPushOverviewFrame {
         else { Write-Host $line -ForegroundColor Yellow }
     }
     Write-Dim ("{0}/{1} | {2}" -f ($Selected+1), $States.Count, $States[$Selected].Sync)
-    Write-Dim '[Up/Down] Select  [Enter] Detail  [F] Fetch  [A] Fetch all'
+    Write-Dim '[Up/Down] Select  [Enter] Repository menu  [F] Fetch  [A] Fetch all'
     Write-Dim '[R] Refresh local  [S] Sync  [Q] Quit'
 }
 
@@ -6359,15 +6360,160 @@ function Show-GPushWorkspaceActivity {
         Write-Host $parts[2]
     }
 }
-function Show-GPushWorkspaceMenu {
-    $commands = @('overview','detail','commit','diff','branches','stats','activity','settings','github')
-    $labels = @('Overview','Repository detail','Commit changes','Diff viewer','Branches','Development statistics','Activity history','Settings','GitHub')
-    if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) { Write-Section 'Command palette'; $labels | ForEach-Object { Write-Host $_ }; return }
-    while ($true) {
-        $picked = @(Select-GPushWorkspaceRows -Title 'Command palette' -Rows $labels)
-        if (-not $picked.Count) { return }
-        $null = Invoke-GPushVisualCommand -Mode $commands[$picked[0]] -Tail @()
+function Select-GPushMenuRepository {
+    $repositories = @(Get-GPushCache | Sort-Object Name, Path)
+    if (-not $repositories.Count) {
+        Write-Warn 'No cached repositories. Open Repository cache > Refresh first.'
         Wait-GPushWorkspace
+        return
+    }
+    $labels = @($repositories | ForEach-Object { "$($_.Name)  |  $($_.Path)" })
+    $picked = @(Select-GPushWorkspaceRows -Title 'Select repository' -Rows $labels)
+    if ($picked.Count) { return $repositories[$picked[0]] }
+}
+function Show-GPushMenuRepositoryTools {
+    param($Repository)
+    $path = $Repository.Path
+    $labels = @('Commit all changes (classic workflow)','List tags','Create annotated tag','Push tag','List remotes','Add remote','Change remote URL','Remove remote','List stashes','Stash changes','Restore latest stash','Project info','Build project','Test project','Run project','Open project shell','Back')
+    while ($true) {
+        $picked = @(Select-GPushWorkspaceRows -Title "Repository tools / $($Repository.Name)" -Rows $labels)
+        if (-not $picked.Count -or $picked[0] -eq 16) { return }
+        switch ($picked[0]) {
+            0 { $message = Read-Host 'Commit message (empty cancels)'; if ($message -and (Confirm-GPushAction -Prompt 'Commit all changes and push using classic workflow?')) { $arguments = @($path, '--', $message); & $PSCommandPath @arguments } }
+            1 { & $PSCommandPath tag list $path }
+            { $_ -in @(2,3) } {
+                $name = Read-Host 'Tag name (empty cancels)'
+                if ($name -and -not $name.StartsWith('-')) {
+                    if ($_ -eq 2) { $message = Read-Host 'Tag message'; if (Confirm-GPushAction -Prompt "Create tag $name?") { & $PSCommandPath tag create $path $name $message } }
+                    elseif (Confirm-GPushAction -Prompt "Push tag $name?") { & $PSCommandPath tag push $path $name }
+                }
+            }
+            4 { & $PSCommandPath remote list $path }
+            { $_ -in @(5,6,7) } {
+                $name = Read-Host 'Remote name (empty cancels)'
+                if ($name -and -not $name.StartsWith('-')) {
+                    if ($_ -eq 7) { & $PSCommandPath remote remove $path $name }
+                    else {
+                        $url = Read-Host 'Remote URL (empty cancels)'
+                        if ($url -and -not $url.StartsWith('-')) {
+                            if ($_ -eq 5) { if (Confirm-GPushAction -Prompt "Add remote $name?") { & $PSCommandPath remote add $path $name $url } }
+                            else { & $PSCommandPath remote set-url $path $name $url }
+                        }
+                    }
+                }
+            }
+            8 { & $PSCommandPath stash list $path }
+            9 { if (Confirm-GPushAction -Prompt 'Stash tracked and untracked changes?') { & $PSCommandPath stash push $path } }
+            10 { if (Confirm-GPushAction -Prompt 'Apply and remove latest stash?') { & $PSCommandPath stash pop $path } }
+            11 { & $PSCommandPath project info $path }
+            12 { if (Confirm-GPushAction -Prompt 'Build this project?') { & $PSCommandPath project build $path } }
+            13 { if (Confirm-GPushAction -Prompt 'Run project tests?') { & $PSCommandPath project test $path } }
+            14 { if (Confirm-GPushAction -Prompt 'Run this project?') { & $PSCommandPath project run $path } }
+            15 { & $PSCommandPath project shell $path }
+        }
+        Wait-GPushWorkspace
+    }
+}
+function Show-GPushMenuRepository {
+    param($Repository)
+    $labels = @('Commit selected files','Sync / push existing commits','Fetch remote references','Status and recent commits','Browse diff','Manage branches','Commit graph','GitHub information','Open repository folder','More repository tools','Back')
+    while ($true) {
+        $picked = @(Select-GPushWorkspaceRows -Title "Repository / $($Repository.Name)" -Rows $labels)
+        if (-not $picked.Count) { return }
+        switch ($picked[0]) {
+            0 { Invoke-GPushWorkspaceCommit $Repository }
+            1 {
+                if (Confirm-GPushAction -Prompt 'Synchronize this repository?') {
+                    $allow = Confirm-GPushAction -Prompt 'Allow pushing to protected branches as well?'
+                    $result = Invoke-GPushAllSync -Repository $Repository -AllowProtectedBranches:$allow
+                    Write-GPushAllRow -Snapshot $result.Snapshot -Result $result.Result
+                    Write-GPushWorkspaceHistory "sync $($result.Result)" $Repository.Path
+                }
+            }
+            2 {
+                $state = @(Get-GPushOverviewStates -Repositories @($Repository) -Fetch)[0]
+                $result = if ($state.FetchOk) { 'OK fetched' } else { 'FAIL fetch' }
+                Write-GPushAllRow -Snapshot $state -Result $result
+                Write-GPushWorkspaceHistory "fetch $result" $Repository.Path
+            }
+            3 { Show-GPushWorkspaceDetail $Repository; continue }
+            4 { Show-GPushWorkspaceDiff $Repository; continue }
+            5 { Show-GPushWorkspaceBranches $Repository; continue }
+            6 { & git -C $Repository.Path --no-pager log --graph --all --decorate --oneline -n 40 | ForEach-Object { Write-Host $_ } }
+            7 { Show-GPushWorkspaceGitHub $Repository }
+            8 { Invoke-Item -LiteralPath $Repository.Path }
+            9 { Show-GPushMenuRepositoryTools $Repository }
+            10 { return }
+        }
+        Wait-GPushWorkspace
+    }
+}
+function Show-GPushMenuBulk {
+    $labels = @('Repository status (local)','Fetch all repositories','Synchronize all repositories','Commit and synchronize all repositories','Preview synchronization (dry-run)','Back')
+    while ($true) {
+        $picked = @(Select-GPushWorkspaceRows -Title 'Bulk operations' -Rows $labels)
+        if (-not $picked.Count -or $picked[0] -eq 5) { return }
+        $repositories = @(Get-GPushCache | Sort-Object Name, Path)
+        if (-not $repositories.Count) { Write-Warn 'No cached repositories. Refresh the cache first.'; Wait-GPushWorkspace; continue }
+        switch ($picked[0]) {
+            0 { $null = Show-GPushAllRepositories -Repositories $repositories -Mode status }
+            1 { if (Confirm-GPushAction -Prompt 'Fetch all cached repositories?') { $null = Show-GPushAllRepositories -Repositories $repositories -Mode fetch } }
+            { $_ -in @(2,3) } {
+                $message = ''; $mode = 'sync'
+                if ($_ -eq 3) { $message = Read-Host 'Commit message (empty cancels)'; if ([string]::IsNullOrWhiteSpace($message)) { break }; $mode = 'push' }
+                if (Confirm-GPushAction -Prompt 'Operate on all cached repositories?') {
+                    $allow = Confirm-GPushAction -Prompt 'Allow pushing to protected branches as well?'
+                    $null = Show-GPushAllRepositories -Repositories $repositories -Mode $mode -CommitMessage $message -AllowProtectedBranches:$allow
+                }
+            }
+            4 { Show-GPushVisualStatus 'dry-run' }
+        }
+        Wait-GPushWorkspace
+    }
+}
+function Show-GPushMenuCache {
+    $labels = @('List repositories','Refresh cache (scan search roots)','Add repository path','Recent repositories','Favorites','Clone repository','Back')
+    while ($true) {
+        $picked = @(Select-GPushWorkspaceRows -Title 'Repository cache' -Rows $labels)
+        if (-not $picked.Count -or $picked[0] -eq 6) { return }
+        switch ($picked[0]) {
+            0 { & $PSCommandPath cache list }
+            1 { if (Confirm-GPushAction -Prompt 'Scan configured search roots?') { & $PSCommandPath cache refresh } }
+            2 { $path = Read-Host 'Repository path (empty cancels)'; if ($path) { & $PSCommandPath cache add $path } }
+            3 { & $PSCommandPath recent }
+            4 { & $PSCommandPath favorite list }
+            5 { $url = Read-Host 'Clone URL (empty cancels)'; if ($url -and -not $url.StartsWith('-') -and (Confirm-GPushAction -Prompt 'Clone repository?')) { & $PSCommandPath clone $url } }
+        }
+        Wait-GPushWorkspace
+    }
+}
+function Show-GPushMenuUpdate {
+    $picked = @(Select-GPushWorkspaceRows -Title 'Software update' -Rows @('Check for updates','Install update','Restore previous version','Back'))
+    if (-not $picked.Count -or $picked[0] -eq 3) { return }
+    $actions = @('check','install','rollback')
+    $null = Invoke-GPushUpdateCommand -Arguments @($actions[$picked[0]])
+    Wait-GPushWorkspace
+}
+function Show-GPushWorkspaceMenu {
+    $labels = @('Workspace overview','Repositories / commit and push','Bulk operations','Repository cache','Development statistics','Workspace health','Activity history','Settings','Software update','Help / CLI commands','Exit')
+    if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) { Show-Help; return }
+    while ($true) {
+        $picked = @(Select-GPushWorkspaceRows -Title "GPush $ScriptVersion / Main menu" -Rows $labels)
+        if (-not $picked.Count -or $picked[0] -eq 10) { return }
+        try {
+            switch ($picked[0]) {
+                0 { $null = Invoke-GPushVisualCommand -Mode 'overview' -Tail @() }
+                1 { $repository = Select-GPushMenuRepository; if ($repository) { Show-GPushMenuRepository $repository } }
+                2 { Show-GPushMenuBulk }
+                3 { Show-GPushMenuCache }
+                4 { $null = Invoke-GPushVisualCommand -Mode 'stats' -Tail @(); Wait-GPushWorkspace }
+                5 { Show-GPushVisualStatus 'health'; Wait-GPushWorkspace }
+                6 { Show-GPushWorkspaceActivity; Wait-GPushWorkspace }
+                7 { Show-GPushWorkspaceSettings }
+                8 { Show-GPushMenuUpdate }
+                9 { Show-Help; Wait-GPushWorkspace }
+            }
+        } catch { Write-Err $_.Exception.Message; Wait-GPushWorkspace }
     }
 }
 function Resolve-GPushWorkspaceRepository {
@@ -6395,7 +6541,7 @@ function Invoke-GPushVisualCommand {
                 'github' { Show-GPushWorkspaceGitHub $repository }
             }
         }
-        'menu' { Show-GPushWorkspaceMenu }
+        'menu' { Show-GPushWorkspaceMenu | Out-Host }
         'settings' { Show-GPushWorkspaceSettings }
         'activity' { Show-GPushWorkspaceActivity }
         'overview' {
@@ -6416,7 +6562,7 @@ function Invoke-GPushVisualCommand {
                     'UpArrow' { $selected = ($selected + $repositories.Count - 1) % $repositories.Count }
                     'DownArrow' { $selected = ($selected + 1) % $repositories.Count }
                     'Enter' {
-                        Show-GPushWorkspaceDetail $repository
+                        Show-GPushMenuRepository $repository | Out-Host
                         $states[$selected] = Get-GPushOverviewLocalState -Repository $repository
                     }
                     'R' {

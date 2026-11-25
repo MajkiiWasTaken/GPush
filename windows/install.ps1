@@ -3,7 +3,7 @@ param(
     [switch]$Force
 )
 
-$InstallerVersion = "4.6.1"
+$InstallerVersion = "4.7.0"
 
 [Console]::InputEncoding  = [System.Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)

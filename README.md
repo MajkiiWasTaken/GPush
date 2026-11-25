@@ -23,6 +23,21 @@ GPush is a small Git helper for quickly working with repositories without manual
 
 ---
 
+### Interactive main menu (4.7.0)
+
+Run `gp` with no arguments (or `gp menu`) to open the keyboard-driven workspace. Use Up/Down, Enter and Escape; type to filter a menu. No repository scan or fetch is performed by opening the main menu. Choose **Workspace overview** for cached local status, or **Repositories / commit and push** to select a repository and open its actions. Enter in the overview opens the same repository menu.
+
+The repository menu includes selected-file commits, safe synchronization/push, explicit fetch, diff, branches, graph, GitHub, tags, remotes, stash and project tools. The main menu also offers bulk operations, cache management, statistics, health, activity, settings and updates. The synchronization menus ask separately before allowing protected branch pushes. Existing CLI commands remain available:
+
+```sh
+gp V2X "Fix communication"
+gp overview
+gp all status
+gp update
+```
+
+When input or output is redirected, bare `gp` prints help instead of waiting for keyboard input. After installing an update from the menu, exit and restart GPush to use the new script.
+
 ### Install
 
 #### Windows
@@ -254,7 +269,7 @@ Overview loads local Git state once. Arrow keys only redraw cached rows. `R` ref
 
 | Command | Description |
 |---|---|
-| `gp menu` | Keyboard command palette with search |
+| `gp menu` | Interactive main menu with search |
 | `gp detail Project` | Local status and recent commits, repository actions |
 | `gp commit Project` | Select files with arrows and Space, commit locally, optionally synchronize |
 | `gp diff Project` | Choose a tracked file and scroll its colored diff against HEAD |

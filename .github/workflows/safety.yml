@@ -182,6 +182,14 @@ jobs:
           }
           exit 0
 
+      - name: Check non-interactive main menu fallback
+        shell: pwsh
+        run: |
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "gpush-menu-test"
+          $output = & pwsh -NoProfile -NonInteractive -File $env:WINDOWS_GP | Out-String
+          if ($LASTEXITCODE -ne 0 -or $output -notmatch 'interactive main menu') { throw "Main menu fallback failed: $output" }
+          exit 0
+
       - name: Install PSScriptAnalyzer
         shell: pwsh
         run: |
@@ -442,6 +450,13 @@ jobs:
       # ------------------------------------------------------------
       # 3. ShellCheck
       # ------------------------------------------------------------
+
+      - name: Check non-interactive main menu fallback
+        shell: bash
+        run: |
+          set -euo pipefail
+          output=$(bash "$LINUX_GP" </dev/null)
+          grep -q 'Open interactive main menu' <<< "$output"
 
       - name: Run ShellCheck
         shell: bash

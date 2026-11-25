@@ -2,6 +2,15 @@
 
 All notable changes to GPush are documented here.
 
+## 4.7.0
+
+- Bare `gp` opens a searchable, keyboard-driven main menu; classic project shortcuts are unchanged.
+- Repository action menu shared with overview; bulk operations, cache, statistics, health, activity, settings and updater menus.
+- Advanced repository tools for tags, remotes, stash and project tasks.
+- Menu navigation does not inspect Git repositories or fetch remote data.
+- Non-interactive invocations of bare `gp` show help.
+- Fixed ShellCheck SC2209 in settings (`action='set'`).
+
 ## 4.6.1
 
 - Shared cached keyboard picker for commit files, diff files, branch selection and command palette.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-SCRIPT_VERSION="4.6.1"
+SCRIPT_VERSION="4.7.0"
 AUTHOR="Michal Švrček"
 GITHUB="https://github.com/MajkiiWasTaken"
 
@@ -175,6 +175,7 @@ EOFH
     printf 'committing local changes, and pushing the current branch safely.\n\n'
 
     printf '%sUSAGE%s\n' "$C_YELLOW" "$C_RESET"
+    printf '  gp                         Open interactive main menu\n'
     printf '  %sgp%s <project> [commit message]\n' "$C_GREEN" "$C_RESET"
     printf '  %sgp%s <command> <action> [arguments]\n\n' "$C_GREEN" "$C_RESET"
 
@@ -2546,7 +2547,7 @@ overview_frame() {
         printf '%s %-*.*s %-*.*s %-*.*s %6s | %-5s %s changed%s\n' "$marker" "$rw" "$rw" "${overview_fields[n]}" "$bw" "$bw" "${overview_fields[n+1]}" "$cw" "$cw" "${overview_fields[n+2]}" "${overview_fields[n+3]}" "${overview_fields[n+4]}" "${overview_fields[n+5]}" "$C_RESET"
     done
     printf '%d/%d | %s\n' "$((selected+1))" "${#overview_paths[@]}" "${overview_fields[selected*8+6]}"
-    dim '[Up/Down] Select  [Enter] Detail  [F] Fetch  [A] Fetch all'
+    dim '[Up/Down] Select  [Enter] Repository menu  [F] Fetch  [A] Fetch all'
     dim '[R] Refresh local  [S] Sync  [Q] Quit'
 }
 
@@ -2565,7 +2566,7 @@ workspace_key() {
 workspace_pick() {
     local title="$1" multiple="$2"; shift 2
     local -a rows=("$@") marks=()
-    local selected=0 i start limit=14 query='' key
+    local selected=0 i start limit query='' key height width line
     local -a visible=()
     WORKSPACE_SELECTION=()
     (( ${#rows[@]} )) || return 1
@@ -2575,16 +2576,24 @@ workspace_pick() {
             if [[ "${rows[i],,}" == *"${query,,}"* ]]; then visible+=("$i"); fi
         done
         if (( selected >= ${#visible[@]} )); then selected=0; fi
+        height=$(tput lines 2>/dev/null || printf 24)
+        width=$(tput cols 2>/dev/null || printf 80)
+        [[ "$height" =~ ^[0-9]+$ ]] || height=24
+        [[ "$width" =~ ^[0-9]+$ ]] || width=80
+        limit=$((height>10?height-10:1))
         start=$((selected / limit * limit))
         printf '\033[H\033[2J'; section "$title"
-        printf 'Search: %s\n\n' "$query"
+        printf 'Search: %s  |  %s items\n\n' "$query" "${#visible[@]}"
         for ((i=start; i<start+limit && i<${#visible[@]}; i++)); do
             key=${visible[i]}
-            if (( i == selected )); then printf '%s> %s' "$C_CYAN" "$C_RESET"; else printf '  '; fi
+            if (( i == selected )); then
+                if [[ -n "$C_CYAN" ]]; then printf '\033[30;46m> '; else printf '> '; fi
+            else printf '  '; fi
             if [[ "$multiple" == true ]]; then
                 if [[ ${marks[key]:-0} == 1 ]]; then printf '[x] '; else printf '[ ] '; fi
             fi
-            printf '%s\n' "${rows[key]//[[:cntrl:]]/?}"
+            line=${rows[key]//[[:cntrl:]]/?}
+            printf '%.*s%s\n' "$((width>8?width-7:1))" "$line" "$C_RESET"
         done
         dim 'Up/Down: select | Enter: accept | Esc: back | /: search'
         if [[ "$multiple" != true ]]; then dim 'Type to filter | Backspace: erase'; fi
@@ -2738,7 +2747,7 @@ workspace_settings() {
         key=${keys[WORKSPACE_SELECTION[0]]}
         handle_config show
         case "$key" in
-            default-remote|large-file-threshold) action=set;;
+            default-remote|large-file-threshold) action='set';;
             *) read -r -p 'Action [add/remove/reset]: ' action || return 0; case "$action" in add|remove|reset) ;; *) continue;; esac;;
         esac
         value=''
@@ -2755,14 +2764,147 @@ workspace_activity() {
         printf '%s%s%s  %s%-14s%s %s\n' "$C_GRAY" "$stamp" "$C_RESET" "$C_CYAN" "$action" "$C_RESET" "$rest"
     done < <(tail -n 30 "$CONFIG_DIR/history.log")
 }
-workspace_menu() {
-    local -a commands=(overview detail commit diff branches stats activity settings github)
-    local -a labels=('Overview' 'Repository detail' 'Commit changes' 'Diff viewer' 'Branches' 'Development statistics' 'Activity history' 'Settings' 'GitHub')
-    if [[ ! -t 0 || ! -t 1 ]]; then section 'Command palette'; printf '%s\n' "${labels[@]}"; return; fi
-    while workspace_pick 'Command palette' false "${labels[@]}"; do
-        visual_command "${commands[WORKSPACE_SELECTION[0]]}"
+# Main workspace: no Git or network operations while navigating menus.
+workspace_choose_repo() {
+    load_cache
+    local -a paths=("${CACHED_REPOS[@]}") labels=()
+    local path
+    if (( ${#paths[@]} == 0 )); then
+        warn 'No cached repositories. Open Repository cache > Refresh first.'
+        workspace_pause; return 1
+    fi
+    for path in "${paths[@]}"; do labels+=("${path##*/}  |  $path"); done
+    workspace_pick 'Select repository' false "${labels[@]}" || return 1
+    MENU_REPO=${paths[WORKSPACE_SELECTION[0]]}
+}
+workspace_menu_repo_tools() {
+    local path="$1" action name url message
+    local -a labels=('Commit all changes (classic workflow)' 'List tags' 'Create annotated tag' 'Push tag' 'List remotes' 'Add remote' 'Change remote URL' 'Remove remote' 'List stashes' 'Stash changes' 'Restore latest stash' 'Project info' 'Build project' 'Test project' 'Run project' 'Open project shell' 'Back')
+    while workspace_pick "Repository tools / ${path##*/}" false "${labels[@]}"; do
+        action=${WORKSPACE_SELECTION[0]}
+        case "$action" in
+            0) read -r -p 'Commit message (empty cancels): ' message || return 0; if [[ -n "$message" ]] && confirm 'Commit all changes and push using classic workflow?'; then (classic_commit "$path" "$message" false false); fi;;
+            1) (handle_tag list "$path");;
+            2|3) read -r -p 'Tag name (empty cancels): ' name || return 0; [[ -n "$name" && "$name" != -* ]] || continue
+                 if [[ "$action" == 2 ]]; then read -r -p 'Tag message: ' message || return 0; if confirm "Create tag $name?"; then (handle_tag create "$path" "$name" "$message"); fi
+                 elif confirm "Push tag $name?"; then (handle_tag push "$path" "$name"); fi;;
+            4) (handle_remote list "$path");;
+            5|6|7) read -r -p 'Remote name (empty cancels): ' name || return 0; [[ -n "$name" && "$name" != -* ]] || continue
+                   if [[ "$action" == 7 ]]; then (handle_remote remove "$path" "$name")
+                   else read -r -p 'Remote URL (empty cancels): ' url || return 0; [[ -n "$url" && "$url" != -* ]] || continue
+                        if [[ "$action" == 5 ]]; then if confirm "Add remote $name?"; then (handle_remote add "$path" "$name" "$url"); fi; else (handle_remote set-url "$path" "$name" "$url"); fi
+                   fi;;
+            8) (handle_stash list "$path");;
+            9) if confirm 'Stash tracked and untracked changes?'; then (handle_stash push "$path"); fi;;
+            10) if confirm 'Apply and remove latest stash?'; then (handle_stash pop "$path"); fi;;
+            11) (handle_project info "$path");;
+            12) if confirm 'Build this project?'; then (handle_project build "$path"); fi;;
+            13) if confirm 'Run project tests?'; then (handle_project test "$path"); fi;;
+            14) if confirm 'Run this project?'; then (handle_project run "$path"); fi;;
+            15) (handle_project shell "$path");;
+            16) return 0;;
+        esac
         workspace_pause
     done
+    return 0
+}
+workspace_menu_repo() {
+    local path="$1" action
+    local -a labels=('Commit selected files' 'Sync / push existing commits' 'Fetch remote references' 'Status and recent commits' 'Browse diff' 'Manage branches' 'Commit graph' 'GitHub information' 'Open repository folder' 'More repository tools' 'Back')
+    while workspace_pick "Repository / ${path##*/}" false "${labels[@]}"; do
+        action=${WORKSPACE_SELECTION[0]}
+        case "$action" in
+            0) workspace_commit "$path";;
+            1) if confirm 'Synchronize this repository?'; then
+                   local allow=false
+                   if confirm 'Allow pushing to protected branches as well?'; then allow=true; fi
+                   bulk_sync "$path" "$allow" '' && workspace_log sync "$path"
+               fi;;
+            2) overview_fetch "$path" && workspace_log fetch "$path";;
+            3) workspace_detail "$path"; continue;;
+            4) workspace_diff "$path"; continue;;
+            5) workspace_branches "$path"; continue;;
+            6) git -C "$path" --no-pager log --graph --all --decorate --oneline -n 40;;
+            7) workspace_github "$path";;
+            8) (handle_repo open "$path");;
+            9) workspace_menu_repo_tools "$path"; continue;;
+            10) return 0;;
+        esac
+        workspace_pause
+    done
+    return 0
+}
+workspace_menu_bulk() {
+    local -a labels=('Repository status (local)' 'Fetch all repositories' 'Synchronize all repositories' 'Commit and synchronize all repositories' 'Preview synchronization (dry-run)' 'Back')
+    local action message
+    local -a allow=()
+    while workspace_pick 'Bulk operations' false "${labels[@]}"; do
+        action=${WORKSPACE_SELECTION[0]}
+        case "$action" in
+            0) handle_all status;;
+            1) if confirm 'Fetch all cached repositories?'; then handle_all fetch; fi;;
+            2|3)
+                message=''; allow=()
+                if [[ "$action" == 3 ]]; then read -r -p 'Commit message (empty cancels): ' message || return 0; [[ -n "$message" ]] || continue; fi
+                if ! confirm 'Operate on all cached repositories?'; then continue; fi
+                if confirm 'Allow pushing to protected branches as well?'; then allow=(--allow-protected); fi
+                if [[ "$action" == 3 ]]; then handle_all push "${allow[@]}" -- "$message"; else handle_all sync "${allow[@]}"; fi;;
+            4) visual_status dry-run;;
+            5) return 0;;
+        esac
+        workspace_pause
+    done
+    return 0
+}
+workspace_menu_cache() {
+    local -a labels=('List repositories' 'Refresh cache (scan search roots)' 'Add repository path' 'Recent repositories' 'Favorites' 'Clone repository' 'Back')
+    local path
+    while workspace_pick 'Repository cache' false "${labels[@]}"; do
+        case "${WORKSPACE_SELECTION[0]}" in
+            0) handle_cache list;;
+            1) if confirm 'Scan configured search roots?'; then handle_cache refresh; fi;;
+            2) read -r -p 'Repository path (empty cancels): ' path || return 0; if [[ -n "$path" ]]; then handle_cache add "$path"; fi;;
+            3) handle_recent;;
+            4) handle_favorite list;;
+            5) read -r -p 'Clone URL (empty cancels): ' path || return 0; if [[ -n "$path" && "$path" != -* ]] && confirm 'Clone repository?'; then handle_clone "$path"; fi;;
+            6) return 0;;
+        esac
+        workspace_pause
+    done
+    return 0
+}
+workspace_menu_update() {
+    local -a labels=('Check for updates' 'Install update' 'Restore previous version' 'Back')
+    if workspace_pick 'Software update' false "${labels[@]}"; then
+        case "${WORKSPACE_SELECTION[0]}" in
+            0) handle_update check;;
+            1) handle_update install;;
+            2) handle_update rollback;;
+            3) return 0;;
+        esac
+        workspace_pause
+    fi
+    return 0
+}
+workspace_menu() {
+    local -a labels=('Workspace overview' 'Repositories / commit and push' 'Bulk operations' 'Repository cache' 'Development statistics' 'Workspace health' 'Activity history' 'Settings' 'Software update' 'Help / CLI commands' 'Exit')
+    if [[ ! -t 0 || ! -t 1 ]]; then show_help; return 0; fi
+    while workspace_pick "GPush $SCRIPT_VERSION / Main menu" false "${labels[@]}"; do
+        case "${WORKSPACE_SELECTION[0]}" in
+            0) visual_command overview;;
+            1) if workspace_choose_repo; then workspace_menu_repo "$MENU_REPO"; fi;;
+            2) workspace_menu_bulk;;
+            3) workspace_menu_cache;;
+            4) visual_command stats; workspace_pause;;
+            5) visual_command health; workspace_pause;;
+            6) workspace_activity; workspace_pause;;
+            7) workspace_settings;;
+            8) workspace_menu_update;;
+            9) show_help; workspace_pause;;
+            10) return 0;;
+        esac
+    done
+    return 0
 }
 
 visual_command() {
@@ -2784,7 +2926,7 @@ visual_command() {
                 case "$key" in
                     q|Q) return 0;;
                     $'\033') IFS= read -rsn2 -t 0.2 key || true; case "$key" in '') return 0;; '[A') selected=$(( (selected+${#overview_paths[@]}-1)%${#overview_paths[@]} ));; '[B') selected=$(( (selected+1)%${#overview_paths[@]} ));; esac;;
-                    '') workspace_detail "$path"; overview_refresh_one "$selected";;
+                    '') workspace_menu_repo "$path"; overview_refresh_one "$selected";;
                     r|R) overview_load false;;
                     a|A) if confirm 'Fetch all cached repositories?'; then overview_load true; fi;;
                     f|F) if overview_fetch "$path"; then overview_refresh_one "$selected"; else overview_refresh_one "$selected"; overview_fields[selected*8+6]="Fetch failed"; fi;;
@@ -2830,9 +2972,7 @@ main() {
     esac
 
     if [[ $# -eq 0 ]]; then
-        quick_select_repo || return 0
-        remember_recent "$SELECTED"
-        classic_commit "$SELECTED" "" false false
+        workspace_menu
         return $?
     fi
 
