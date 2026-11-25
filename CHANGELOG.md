@@ -2,6 +2,18 @@
 
 All notable changes to GPush are documented here.
 
+## 4.4.1
+
+### Added
+- `gp all` synchronizes cached repositories on Windows and Linux.
+- `gp all push "message"` commits local changes and synchronizes after confirmation.
+- Bulk operations skip risky files, active Git operations, divergent histories and protected branches unless explicitly allowed.
+- Added bulk push to command completion and documentation.
+
+### Fixed
+- Windows bulk operations no longer select only the current repository when invoked inside a Git worktree.
+- Bulk operations continue after individual failures and report a nonzero exit status when attention is required.
+
 ## 4.4.0
 
 ### Added

@@ -137,6 +137,8 @@ gp stash push MyProject
 gp favorite add MyProject
 gp fav list
 gp all fetch
+gp all
+gp all push "Update projects"
 gp clone <url>
 ```
 
@@ -167,7 +169,7 @@ If no commit message is supplied, GPush asks for it interactively.
 | `config` | Configuration and diagnostics |
 | `alias` | Repository aliases |
 | `favorite` / `fav` | Favorite repositories |
-| `all` | Status, fetch or sync all repositories |
+| `all` | Status, fetch, sync or commit/push cached repositories |
 | `project` | Project info, build, test, run, open and shell |
 | `clone` | Clone and cache a repository |
 | `recent` | Show recently used repositories |
@@ -209,3 +211,7 @@ git rebase --abort
 **Michal Švrček**
 
 Distributed under the MIT License.
+
+### Bulk repository synchronization
+
+`gp all` (or `gp all sync`) fetches and synchronizes cached repositories without creating commits. `gp all push "Update projects"` additionally commits local changes after confirmation. Use `--allow-protected` to permit pushes to protected branches. Dirty repositories are skipped in sync mode; diverged histories and risky files in bulk commit mode require manual attention. No automatic force push or rebase is performed. Run `gp cache refresh` first if the cache is empty.

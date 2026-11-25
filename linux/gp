@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-SCRIPT_VERSION="4.4.0"
+SCRIPT_VERSION="4.4.1"
 AUTHOR="Michal Švrček"
 GITHUB="https://github.com/MajkiiWasTaken"
 
@@ -190,7 +190,7 @@ EOFH
     printf '  %-11s%s\n' config 'show, path, doctor, add, remove, set, reset'
     printf '  %-11s%s\n' alias 'list, set, remove'
     printf '  %-11s%s\n' favorite 'list, add, remove  (alias: fav)'
-    printf '  %-11s%s\n' all 'status, fetch, sync'
+    printf '  %-11s%s\n' all 'status, fetch, sync, push (default: sync)'
     printf '  %-11s%s\n' clone '<url> [destination]'
     printf '  %-11s%s\n' favorites 'list favorite repositories'
     printf '  %-11s%s\n' recent 'show recent repositories'
@@ -1029,8 +1029,9 @@ translate_legacy() {
                 break
                 ;;
             --all)
-                translated_args=(all)
+                translated_args=(all status)
                 shift
+                case "${1:-}" in --fetch|--sync|--status) translated_args=(all "${1#--}"); shift ;; esac
                 translated_args+=("$@")
                 break
                 ;;
@@ -1489,50 +1490,121 @@ handle_favorite() {
     esac
 }
 
-handle_all() {
-    local action="${1:-status}"
-    local allow_protected=false
-
-    if [[ "${2:-}" == "--allow-protected" ]]; then
-        allow_protected=true
+# Bulk operations use the cache only and run each repository in isolation.
+bulk_sync() (
+    local repository="$1" allow="$2" message="$3"
+    cd "$repository" || return 1
+    local branch remote upstream target counts ahead=0 behind=0 dirty marker path name
+    branch="$(git symbolic-ref --quiet --short HEAD)" || { warn "SKIP detached: $repository"; return 1; }
+    remote="$(git config --get "branch.$branch.remote" || current_remote)" || return 1
+    [[ "$remote" != . && -n "$remote" ]] || return 1
+    git fetch --prune "$remote" || return 1
+    for marker in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply sequencer BISECT_START; do
+        path="$(git rev-parse --git-path "$marker")" || return 1
+        [[ ! -e "$path" ]] || { warn "SKIP Git operation: $repository"; return 1; }
+    done
+    dirty="$(git status --porcelain --untracked-files=all)" || return 1
+    upstream="$(git rev-parse --symbolic-full-name '@{u}' 2>/dev/null || true)"
+    target="$(git config --get "branch.$branch.merge" || true)"
+    if [[ -z "$upstream" ]]; then
+        if [[ -n "$target" ]]; then
+            warn "SKIP missing upstream: $repository"; return 1
+        fi
+        target="refs/heads/$branch"
+        if git show-ref --verify --quiet "refs/remotes/$remote/$branch"; then
+            upstream="refs/remotes/$remote/$branch"
+        fi
     fi
+    [[ "$target" == refs/heads/* ]] || return 1
+    if [[ -n "$upstream" ]]; then
+        counts="$(git rev-list --left-right --count "HEAD...$upstream")" || return 1
+        read -r ahead behind <<< "$counts"
+    fi
+    if (( ahead > 0 && behind > 0 )); then warn "SKIP diverged: $repository"; return 1; fi
+    if [[ -n "$dirty" && ( -z "$message" || "$behind" -gt 0 ) ]]; then
+        warn "SKIP dirty: $repository"; return 1
+    fi
+    if [[ -n "$dirty" || "$ahead" -gt 0 || -z "$upstream" ]]; then
+        if [[ "$allow" != true ]] && { protected_branch "$branch" || protected_branch "${target#refs/heads/}"; }; then
+            warn "SKIP protected: $repository"; return 1
+        fi
+    fi
+    if [[ -n "$dirty" ]]; then
+        local changed
+        changed="$(mktemp)" || return 1
+        trap 'rm -f -- "$changed"' EXIT
+        { git diff --name-only -z --diff-filter=ACMRTUXB && git diff --cached --name-only -z --diff-filter=ACMRTUXB && git ls-files --others --exclude-standard -z; } > "$changed" || return 1
+        while IFS= read -r -d '' path; do
+            name="${path##*/}"; name="${name,,}"
+            case "$name" in
+                .env.example|.env.sample|.env.template) ;;
+                .env|.env.*|*.pem|*.key|*.pfx|*.p12|id_rsa|id_ed25519|id_ecdsa|id_dsa|secrets*.json|secrets*.yml|secrets*.yaml|credentials*.json|credentials*.yml|credentials*.yaml|service-account*.json)
+                    warn "SKIP risky file: $path"; return 1 ;;
+            esac
+            if [[ -f "$path" ]] && (( $(wc -c < "$path") >= LARGE_FILE_MB * 1048576 )); then
+                warn "SKIP large file: $path"; return 1
+            fi
+        done < "$changed"
+        git add -A && git commit -m "$message" || return 1
+        dirty="$(git status --porcelain --untracked-files=all)" || return 1
+        [[ -z "$dirty" ]] || return 1
+        ahead=1
+    fi
+    if (( behind > 0 )); then
+        git merge --ff-only "$upstream" || return 1
+        ok "SYNCED $repository"
+    elif (( ahead > 0 )) || [[ -z "$upstream" ]]; then
+        if git rev-parse --verify '@{u}' >/dev/null 2>&1; then
+            git push "$remote" "HEAD:$target" || return 1
+        else
+            git push -u "$remote" "HEAD:$target" || return 1
+        fi
+        ok "PUSHED $repository"
+    else
+        ok "OK $repository"
+    fi
+)
 
-    get_repos
-    banner
-    section "All repositories"
-
-    local repository
-    local remote_name
-
-    for repository in "${REPOS[@]}"; do
+handle_all() {
+    local action=sync allow_protected=false message="" refresh=false
+    if [[ $# -gt 0 && "$1" != -* ]]; then action="$1"; shift; fi
+    case "$action" in status|fetch|sync|push) ;; *) err "Unknown all command: $action"; return 2 ;; esac
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --allow-protected) allow_protected=true ;;
+            --cached) ;;
+            --refresh) refresh=true ;;
+            --) shift; message="${message:+$message }$*"; break ;;
+            -*) err "Unknown all option: $1"; return 2 ;;
+            *) if [[ "$action" != push ]]; then err "Unexpected argument: $1"; return 2; fi
+               message="${message:+$message }$1" ;;
+        esac
+        shift
+    done
+    if [[ "$action" == push && -z "${message//[[:space:]]/}" ]]; then
+        err 'Use: gp all push "Commit message"'; return 2
+    fi
+    if [[ "$refresh" == true ]]; then
+        scan_repos; save_cache "${FOUND_REPOS[@]}"
+    fi
+    load_cache
+    local -a repositories=("${CACHED_REPOS[@]}")
+    if (( ${#repositories[@]} == 0 )); then err 'No usable cache. Run gp cache refresh.'; return 1; fi
+    banner; section "All cached repositories"
+    if [[ "$action" == push ]]; then
+        confirm "Commit and synchronize ${#repositories[@]} repositories?" || return 0
+    fi
+    local repository remote_name failures=0
+    for repository in "${repositories[@]}"; do
         case "$action" in
-            status)
-                printf '\n%s%s%s\n' "$C_WHITE" "$(repo_name "$repository")" "$C_RESET"
-                repo_status "$repository"
-                ;;
-            fetch)
-                if ! cd "$repository"; then
-                    warn "Fetch failed $(repo_name "$repository")"
-                    continue
-                fi
-
-                remote_name="$(current_remote 2>/dev/null || true)"
-
-                if [[ -n "$remote_name" ]] && git fetch --prune "$remote_name"; then
-                    ok "Fetched $(repo_name "$repository")"
-                else
-                    warn "Fetch skipped/failed $(repo_name "$repository")"
-                fi
-                ;;
-            sync)
-                safe_sync "$repository" "$allow_protected" || true
-                ;;
-            *)
-                err "Unknown all command: $action"
-                return 2
-                ;;
+            status) (repo_status "$repository") || failures=$((failures+1)) ;;
+            fetch) (cd "$repository" && remote_name="$(current_remote)" && git fetch --prune "$remote_name") || failures=$((failures+1)) ;;
+            sync|push) bulk_sync "$repository" "$allow_protected" "$message" || failures=$((failures+1)) ;;
         esac
     done
+    kv Repositories "${#repositories[@]}"
+    kv Attention "$failures"
+    (( failures == 0 ))
 }
 
 handle_repo() {
@@ -2218,7 +2290,7 @@ _gpush_complete() {
             if (( COMP_CWORD == 2 )); then _gpush_completion_add_matches "$cur" list add remove
             elif (( COMP_CWORD == 3 )); then _gpush_completion_add_matches "$cur" "${repos[@]}"; fi
             ;;
-        all) (( COMP_CWORD == 2 )) && _gpush_completion_add_matches "$cur" status fetch sync ;;
+        all) (( COMP_CWORD == 2 )) && _gpush_completion_add_matches "$cur" status fetch sync push ;;
         update) (( COMP_CWORD == 2 )) && _gpush_completion_add_matches "$cur" check install rollback ;;
         completion) (( COMP_CWORD == 2 )) && _gpush_completion_add_matches "$cur" install status uninstall ;;
         clone)

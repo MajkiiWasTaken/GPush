@@ -1,4 +1,4 @@
-$RawArguments = @($args)
+﻿$RawArguments = @($args)
 
 # ============================================================
 # ENCODING
@@ -13,8 +13,8 @@ $OutputEncoding           = [System.Text.UTF8Encoding]::new($false)
 # CONFIG
 # ============================================================
 
-$ScriptVersion = "4.4.0"
-$CompletionSchemaVersion = "11"
+$ScriptVersion = "4.4.1"
+$CompletionSchemaVersion = "12"
 
 $ConfigDir  = Join-Path $env:LOCALAPPDATA "GPush"
 $ConfigFile = Join-Path $ConfigDir "config.json"
@@ -968,7 +968,7 @@ function Show-Help {
     Write-Host ("  {0,-11}{1}" -f "add/set", "short config editing commands") -ForegroundColor White
     Write-Host ("  {0,-11}{1}" -f "alias", "list, set, remove") -ForegroundColor White
     Write-Host ("  {0,-11}{1}" -f "favorite", "list, add, remove  (alias: fav)") -ForegroundColor White
-    Write-Host ("  {0,-11}{1}" -f "all", "status, fetch, sync") -ForegroundColor White
+    Write-Host ("  {0,-11}{1}" -f "all", "status, fetch, sync, push (default: sync)") -ForegroundColor White
     Write-Host ("  {0,-11}{1}" -f "project", "info, build, test, run, open, shell") -ForegroundColor White
     Write-Host ("  {0,-11}{1}" -f "clone", "<url> [destination]") -ForegroundColor White
     Write-Host ("  {0,-11}{1}" -f "recent", "show recent repositories") -ForegroundColor White
@@ -1060,6 +1060,8 @@ function Show-Help {
     Write-ExampleHelp 'gp' "Pick from favorite/recent repositories or search by name."
     Write-ExampleHelp 'gp TestProject "Fix communication handling"' "Commit and safely push local changes."
     Write-ExampleHelp 'gp repo status TestProject' "Inspect one repository."
+    Write-ExampleHelp 'gp all' "Synchronize cached repositories."
+    Write-ExampleHelp 'gp all push "Update projects"' "Commit and synchronize cached repositories."
     Write-ExampleHelp 'gp repo sync TestProject' "Synchronize without creating a commit."
     Write-ExampleHelp 'gp branch new TestProject feature/api' "Create and switch to a branch."
     Write-ExampleHelp 'gp stash push TestProject' "Stash local changes."
@@ -2234,7 +2236,7 @@ function global:Get-GPushCompletionContext {
         "alias"      = @("list", "set", "remove")
         "favorite"   = @("list", "add", "remove")
         "fav"        = @("list", "add", "remove")
-        "all"        = @("status", "fetch", "sync")
+        "all"        = @("status", "fetch", "sync", "push")
         "project"    = @("info", "build", "test", "run", "open", "shell")
         "update"     = @("check", "install", "rollback")
         "completion" = @("install", "status", "mode", "uninstall")
@@ -3667,20 +3669,19 @@ function ConvertFrom-GPushSubcommand {
         }
 
         "all" {
-            if ($rest.Count -eq 0) {
-                return @("--all")
+            if ($rest.Count -eq 0 -or ([string]$rest[0]).StartsWith("-")) {
+                return Join-GPushArgs @("--all", "--sync", "--cached") $rest
             }
-
             $action = ([string]$rest[0]).ToLowerInvariant()
             $tail = @($rest | Select-Object -Skip 1)
-
             switch ($action) {
-                "status" { return Join-GPushArgs @("--all", "--status") $tail }
-                "fetch"  { return Join-GPushArgs @("--all", "--fetch") $tail }
-                "sync"   { return Join-GPushArgs @("--all", "--sync") $tail }
+                "status" { return Join-GPushArgs @("--all", "--status", "--cached") $tail }
+                "fetch"  { return Join-GPushArgs @("--all", "--fetch", "--cached") $tail }
+                "sync"   { return Join-GPushArgs @("--all", "--sync", "--cached") $tail }
+                "push"   { return Join-GPushArgs @("--all", "--bulk-push", "--cached") $tail }
                 default {
                     Write-Err "Unknown all command: $action"
-                    Write-Dim "Use: gp all status|fetch|sync"
+                    Write-Dim 'Use: gp all [status|fetch|sync|push]'
                     exit 2
                 }
             }
@@ -3828,12 +3829,9 @@ if (-not $skipCompletionBootstrap) {
     $null = Ensure-GPushPowerShellCompletion -Quiet
 }
 
-$tokens = if ($RawArguments.Count -eq 0) {
-    @()
-}
-else {
-    @(ConvertFrom-GPushSubcommand -Arguments $RawArguments)
-}
+$tokens = @(if ($RawArguments.Count -gt 0) {
+    ConvertFrom-GPushSubcommand -Arguments $RawArguments
+})
 
 $ShowHelp    = $false
 $ShowVersion = $false
@@ -3887,6 +3885,8 @@ $AllowProtected = $false
 $AllowRiskyFiles = $false
 $DryRun      = $false
 $NoPush      = $false
+$BulkPush = $false
+$BulkCommitMessage = ""
 
 $positionals = @()
 $parseOptions = $true
@@ -3916,6 +3916,7 @@ foreach ($token in $tokens) {
             "--config-path" { $ShowConfigPath = $true }
             "--doctor"  { $Doctor = $true }
             "--all"     { $AllRepos = $true }
+            "--bulk-push" { $BulkPush = $true }
             "--aliases"       { $AliasesOnly = $true }
             "--alias-set"     { $AliasSet = $true }
             "--alias-remove"  { $AliasRemove = $true }
@@ -3991,6 +3992,7 @@ if ($metaModes.Count -gt 1) {
 }
 
 $otherModeRequested = (
+    $BulkPush -or
     $ListRepos -or $Refresh -or $AddRepo -or $AllRepos -or
     $AliasesOnly -or $AliasSet -or $AliasRemove -or $FavoriteAdd -or $FavoriteRemove -or
     $FavoritesOnly -or $RecentOnly -or $OpenRepo -or $CloneRepo -or $ProjectMode -or $UpdateMode -or
@@ -4023,6 +4025,11 @@ if ($Doctor) {
     exit $doctorExitCode
 }
 
+if ($AllRepos -and ($ProjectMode -or $UpdateMode)) {
+    Write-Err "Bulk operations cannot be combined with project or update mode."
+    exit 2
+}
+
 if ($ProjectMode -and $UpdateMode) {
     Write-Err "Options --project and --update cannot be used together."
     exit 2
@@ -4052,8 +4059,25 @@ if ($UpdateMode) {
     exit $exitCode
 }
 
+if ($BulkPush -and -not $AllRepos) {
+    Write-Err "--bulk-push requires --all."
+    exit 2
+}
+
 if ($AllRepos) {
-    if ($positionals.Count -gt 0) {
+    if (@(@($StatusOnly, $FetchOnly, $SyncOnly, $BulkPush) | Where-Object { $_ }).Count -gt 1 -or $ProjectMode -or $UpdateMode) {
+        Write-Err "Choose only one bulk operation."
+        exit 2
+    }
+    if ($BulkPush) {
+        $BulkCommitMessage = ($positionals -join " ").Trim()
+        if ([string]::IsNullOrWhiteSpace($BulkCommitMessage)) {
+            Write-Err 'Use: gp all push "Commit message"'
+            exit 2
+        }
+        $positionals = @()
+    }
+    elseif ($positionals.Count -gt 0) {
         Write-Err "Option '--all' does not accept a project name or commit message."
         exit 2
     }
@@ -5157,7 +5181,7 @@ function Get-GPushRepositorySnapshot {
         RemoteBranchExists = $false
     }
 
-    Push-Location $Repository.Path
+    Push-Location -LiteralPath $Repository.Path -ErrorAction Stop
     try {
         $inside = Get-GitOutput -Arguments @("rev-parse", "--is-inside-work-tree") -AllowFailure
         if (-not $inside.Success -or $inside.Text.Trim() -ne "true") {
@@ -5175,7 +5199,7 @@ function Get-GPushRepositorySnapshot {
             $snapshot.Branch = $branchResult.Text.Trim()
         }
 
-        $statusResult = Get-GitOutput -Arguments @("status", "--short") -AllowFailure
+        $statusResult = Get-GitOutput -Arguments @("status", "--short", "--untracked-files=all") -AllowFailure
         if ($statusResult.Success) {
             $changed = @($statusResult.Lines | Where-Object { $_ -ne $null })
             $snapshot.DirtyCount = $changed.Count
@@ -5186,6 +5210,16 @@ function Get-GPushRepositorySnapshot {
         }
 
         $remote = Get-GPushRemoteForCurrentRepository
+        if (-not $snapshot.Detached) {
+            $tracking = Get-GitOutput -Arguments @("config", "--get", "branch.$($snapshot.Branch).remote") -AllowFailure
+            if ($tracking.Success) {
+                if ($tracking.Text.Trim() -eq ".") {
+                    $snapshot.Sync = "Unsupported local upstream"
+                    return [PSCustomObject]$snapshot
+                }
+                $remote = $tracking.Text.Trim()
+            }
+        }
         if ($remote) {
             $snapshot.Remote = $remote
         }
@@ -5218,6 +5252,11 @@ function Get-GPushRepositorySnapshot {
             $snapshot.CompareRef = $snapshot.Upstream
         }
         else {
+            $configuredMerge = Get-GitOutput -Arguments @("config", "--get", "branch.$($snapshot.Branch).merge") -AllowFailure
+            if ($configuredMerge.Success -and $configuredMerge.Text.Trim()) {
+                $snapshot.Sync = "Missing upstream"
+                return [PSCustomObject]$snapshot
+            }
             $remoteRef = "refs/remotes/$remote/$($snapshot.Branch)"
             if (Test-GitRef -Ref $remoteRef) {
                 $snapshot.RemoteBranchExists = $true
@@ -5239,6 +5278,9 @@ function Get-GPushRepositorySnapshot {
                 }
             }
 
+            if (-not $countResult.Success -or $parts.Count -lt 2) {
+                return [PSCustomObject]$snapshot
+            }
             if ($snapshot.Ahead -eq 0 -and $snapshot.Behind -eq 0) {
                 $snapshot.Sync = "Up to date"
             }
@@ -5346,7 +5388,8 @@ function Invoke-GPushAllSync {
     param(
         [Parameter(Mandatory = $true)]
         $Repository,
-        [switch]$AllowProtectedBranches
+        [switch]$AllowProtectedBranches,
+        [string]$CommitMessage = ""
     )
 
     $state = Get-GPushRepositorySnapshot -Repository $Repository -Fetch
@@ -5367,7 +5410,11 @@ function Invoke-GPushAllSync {
         return [PSCustomObject]@{ Snapshot = $state; Result = "SKIP no remote" }
     }
 
-    if ($state.DirtyCount -gt 0) {
+    if ($state.Worktree -eq "unknown" -or $state.Sync -in @("Unknown", "Missing upstream", "Unsupported local upstream")) {
+        return [PSCustomObject]@{ Snapshot = $state; Result = "FAIL unknown state" }
+    }
+
+    if ($state.DirtyCount -gt 0 -and -not $CommitMessage) {
         return [PSCustomObject]@{ Snapshot = $state; Result = "SKIP dirty" }
     }
 
@@ -5376,18 +5423,51 @@ function Invoke-GPushAllSync {
     }
 
     $requiresPush = (
-        $state.Ahead -gt 0 -or
+        $state.Ahead -gt 0 -or $state.DirtyCount -gt 0 -or
         $state.Sync -eq "New remote branch"
     )
 
     if ($requiresPush -and
-        (Test-ProtectedBranch -Branch $state.Branch) -and
+        ((Test-ProtectedBranch -Branch $state.Branch) -or
+         ($state.Upstream -ne "-" -and (Test-ProtectedBranch -Branch (($state.Upstream -replace ("^" + [regex]::Escape($state.Remote) + "/"), "") -replace " \(not tracking\)$", "")))) -and
         -not $AllowProtectedBranches) {
         return [PSCustomObject]@{ Snapshot = $state; Result = "PROTECTED skip" }
     }
 
-    Push-Location $Repository.Path
+    Push-Location -LiteralPath $Repository.Path -ErrorAction Stop
     try {
+        foreach ($marker in @("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "sequencer", "BISECT_START")) {
+            $markerPath = Get-GitPath $marker
+            if (-not $markerPath -or (Test-Path -LiteralPath $markerPath)) {
+                return [PSCustomObject]@{ Snapshot = $state; Result = "SKIP git operation" }
+            }
+        }
+        $conflicts = Get-GitOutput -Arguments @("diff", "--name-only", "--diff-filter=U") -AllowFailure
+        if (-not $conflicts.Success -or $conflicts.Text.Trim()) {
+            return [PSCustomObject]@{ Snapshot = $state; Result = "SKIP conflicts" }
+        }
+        if ($state.DirtyCount -gt 0) {
+            if ($state.Behind -gt 0) {
+                return [PSCustomObject]@{ Snapshot = $state; Result = "MANUAL dirty/behind" }
+            }
+            $risk = Get-RiskyFiles
+            if ($risk.Sensitive.Count -gt 0 -or $risk.Large.Count -gt 0) {
+                return [PSCustomObject]@{ Snapshot = $state; Result = "SKIP risky files" }
+            }
+            $add = Get-GitOutput -Arguments @("add", "-A") -AllowFailure
+            if (-not $add.Success) {
+                return [PSCustomObject]@{ Snapshot = $state; Result = "FAIL add" }
+            }
+            $commit = Get-GitOutput -Arguments @("commit", "-m", $CommitMessage) -AllowFailure
+            if (-not $commit.Success) {
+                return [PSCustomObject]@{ Snapshot = $state; Result = "FAIL commit" }
+            }
+            $state = Get-GPushRepositorySnapshot -Repository $Repository
+            if ($state.Worktree -ne "clean" -or $state.Sync -eq "Unknown") {
+                return [PSCustomObject]@{ Snapshot = $state; Result = "SKIP after commit" }
+            }
+        }
+
         if ($state.Behind -gt 0 -and $state.Ahead -eq 0) {
             $ffResult = Get-GitOutput -Arguments @("merge", "--ff-only", $state.CompareRef) -AllowFailure
             if (-not $ffResult.Success) {
@@ -5416,7 +5496,11 @@ function Invoke-GPushAllSync {
         if ($state.Ahead -gt 0 -and $state.Behind -eq 0) {
             $hasTracking = ($state.Upstream -ne "-" -and $state.Upstream -notmatch '\(not tracking\)$')
             $pushArgs = if ($hasTracking) {
-                @("push")
+                $merge = Get-GitOutput -Arguments @("config", "--get", "branch.$($state.Branch).merge") -AllowFailure
+                if (-not $merge.Success -or $merge.Text.Trim() -notmatch '^refs/heads/') {
+                    return [PSCustomObject]@{ Snapshot = $state; Result = "FAIL upstream" }
+                }
+                @("push", $state.Remote, "HEAD:$($merge.Text.Trim())")
             }
             else {
                 @("push", "-u", $state.Remote, $state.Branch)
@@ -5443,9 +5527,10 @@ function Show-GPushAllRepositories {
     param(
         [Parameter(Mandatory = $true)]
         $Repositories,
-        [ValidateSet("status", "fetch", "sync")]
+        [ValidateSet("status", "fetch", "sync", "push")]
         [string]$Mode = "status",
-        [switch]$AllowProtectedBranches
+        [switch]$AllowProtectedBranches,
+        [string]$CommitMessage = ""
     )
 
     Write-Section "All repositories"
@@ -5455,6 +5540,9 @@ function Show-GPushAllRepositories {
     }
     elseif ($Mode -eq "fetch") {
         Write-Dim "  Fetching every repository before displaying status."
+    }
+    elseif ($Mode -eq "push") {
+        Write-Warn "  Bulk commit and sync: risky, conflicting and diverged repositories are skipped."
     }
     else {
         Write-Warn "  Safe bulk sync: dirty/diverged repositories are skipped; no automatic rebase is performed."
@@ -5473,8 +5561,9 @@ function Show-GPushAllRepositories {
     foreach ($repository in @($Repositories | Sort-Object Name, Path)) {
         $total++
 
-        if ($Mode -eq "sync") {
-            $syncResult = Invoke-GPushAllSync -Repository $repository -AllowProtectedBranches:$AllowProtectedBranches
+        try {
+        if ($Mode -in @("sync", "push")) {
+            $syncResult = Invoke-GPushAllSync -Repository $repository -AllowProtectedBranches:$AllowProtectedBranches -CommitMessage $CommitMessage
             $state = $syncResult.Snapshot
             $result = $syncResult.Result
 
@@ -5502,6 +5591,13 @@ function Show-GPushAllRepositories {
             }
         }
 
+        }
+        catch {
+            $issues++
+            Write-Err "  $($repository.Name): $($_.Exception.Message)"
+            continue
+        }
+
         if ($state.DirtyCount -gt 0) {
             $dirty++
         }
@@ -5517,12 +5613,13 @@ function Show-GPushAllRepositories {
     Write-KeyValue "Clean" ([string]$clean) ([ConsoleColor]::Green)
     Write-KeyValue "Dirty" ([string]$dirty) $(if ($dirty -gt 0) { [ConsoleColor]::Yellow } else { [ConsoleColor]::Green })
 
-    if ($Mode -eq "sync") {
+    if ($Mode -in @("sync", "push")) {
         Write-KeyValue "Changed" ([string]$changed) $(if ($changed -gt 0) { [ConsoleColor]::Green } else { [ConsoleColor]::DarkGray })
     }
 
     Write-KeyValue "Attention" ([string]$issues) $(if ($issues -gt 0) { [ConsoleColor]::Yellow } else { [ConsoleColor]::Green })
     Write-Host ""
+    return $(if ($issues -gt 0) { 1 } else { 0 })
 }
 
 
@@ -5814,7 +5911,7 @@ $UtilityMode = (
 
 $DirectRepositoryPath = $null
 
-if ($UtilityMode -and [string]::IsNullOrWhiteSpace($Project)) {
+if (-not $AllRepos -and $UtilityMode -and [string]::IsNullOrWhiteSpace($Project)) {
     $currentRepo = & git rev-parse --show-toplevel 2>$null
 
     if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($currentRepo)) {
@@ -5845,7 +5942,10 @@ if (-not $DirectRepositoryPath) {
 }
 
 if ($AllRepos) {
-    $allMode = if ($SyncOnly) {
+    $allMode = if ($BulkPush) {
+        "push"
+    }
+    elseif ($SyncOnly) {
         "sync"
     }
     elseif ($FetchOnly) {
@@ -5855,12 +5955,21 @@ if ($AllRepos) {
         "status"
     }
 
-    Show-GPushAllRepositories `
+    if ($BulkPush) {
+        Write-KeyValue "Repositories" ([string]$repos.Count)
+        Write-KeyValue "Commit message" $BulkCommitMessage
+        if (-not (Confirm-GPushAction -Prompt "Commit and synchronize cached repositories?")) {
+            Write-Warn "Bulk push cancelled."
+            exit 0
+        }
+    }
+    $bulkExitCode = Show-GPushAllRepositories `
         -Repositories $repos `
         -Mode $allMode `
+        -CommitMessage $BulkCommitMessage `
         -AllowProtectedBranches:$AllowProtected
 
-    exit 0
+    exit $bulkExitCode
 }
 
 # A standalone refresh only rebuilds the repository cache.
