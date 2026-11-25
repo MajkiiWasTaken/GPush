@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-SCRIPT_VERSION="4.6.0"
+SCRIPT_VERSION="4.6.1"
 AUTHOR="Michal Švrček"
 GITHUB="https://github.com/MajkiiWasTaken"
 
@@ -2553,15 +2553,103 @@ overview_frame() {
 # Shared workspace screens. Read-only views do not fetch.
 workspace_pause() { if [[ -t 0 && -t 1 ]]; then read -r -p 'Press Enter to return...' _ || true; fi; }
 workspace_log() { mkdir -p "$CONFIG_DIR"; printf '%s %s %s\n' "$(date -Iseconds)" "$1" "$2" >> "$CONFIG_DIR/history.log"; }
+# Shared keyboard picker: navigation uses only the supplied in-memory rows.
+workspace_key() {
+    local suffix=''
+    IFS= read -rsn1 WORKSPACE_KEY || { WORKSPACE_KEY=esc; return; }
+    if [[ "$WORKSPACE_KEY" == $'\033' ]]; then
+        IFS= read -rsn2 -t 0.12 suffix || true
+        case "$suffix" in '[A') WORKSPACE_KEY=up;; '[B') WORKSPACE_KEY=down;; *) WORKSPACE_KEY=esc;; esac
+    elif [[ -z "$WORKSPACE_KEY" ]]; then WORKSPACE_KEY=enter; fi
+}
+workspace_pick() {
+    local title="$1" multiple="$2"; shift 2
+    local -a rows=("$@") marks=()
+    local selected=0 i start limit=14 query='' key
+    local -a visible=()
+    WORKSPACE_SELECTION=()
+    (( ${#rows[@]} )) || return 1
+    while true; do
+        visible=()
+        for i in "${!rows[@]}"; do
+            if [[ "${rows[i],,}" == *"${query,,}"* ]]; then visible+=("$i"); fi
+        done
+        if (( selected >= ${#visible[@]} )); then selected=0; fi
+        start=$((selected / limit * limit))
+        printf '\033[H\033[2J'; section "$title"
+        printf 'Search: %s\n\n' "$query"
+        for ((i=start; i<start+limit && i<${#visible[@]}; i++)); do
+            key=${visible[i]}
+            if (( i == selected )); then printf '%s> %s' "$C_CYAN" "$C_RESET"; else printf '  '; fi
+            if [[ "$multiple" == true ]]; then
+                if [[ ${marks[key]:-0} == 1 ]]; then printf '[x] '; else printf '[ ] '; fi
+            fi
+            printf '%s\n' "${rows[key]//[[:cntrl:]]/?}"
+        done
+        dim 'Up/Down: select | Enter: accept | Esc: back | /: search'
+        if [[ "$multiple" != true ]]; then dim 'Type to filter | Backspace: erase'; fi
+        if [[ "$multiple" == true ]]; then dim 'Space: toggle | A: select all | X: clear'; fi
+        workspace_key
+        case "$WORKSPACE_KEY" in
+            esc) return 1;;
+            up) if (( selected > 0 )); then selected=$((selected-1)); fi;;
+            down) if (( selected+1 < ${#visible[@]} )); then selected=$((selected+1)); fi;;
+            /) read -r -p 'Search (empty resets): ' query || return 1; selected=0;;
+            ' ') if [[ "$multiple" == true ]]; then if (( ${#visible[@]} )); then key=${visible[selected]}; marks[key]=$((1-${marks[key]:-0})); fi; else query+=' '; selected=0; fi;;
+            a|A) if [[ "$multiple" == true ]]; then for key in "${visible[@]}"; do marks[key]=1; done; else query+="$WORKSPACE_KEY"; selected=0; fi;;
+            x|X) if [[ "$multiple" == true ]]; then marks=(); else query+="$WORKSPACE_KEY"; selected=0; fi;;
+            enter) if [[ "$multiple" == true ]]; then
+                for i in "${!rows[@]}"; do if [[ ${marks[i]:-0} == 1 ]]; then WORKSPACE_SELECTION+=("$i"); fi; done
+            elif (( ${#visible[@]} )); then WORKSPACE_SELECTION=("${visible[selected]}"); fi
+            if (( ${#WORKSPACE_SELECTION[@]} )); then return 0; fi;;
+            $'\177'|$'\b') query=${query%?}; selected=0;;
+            *) if [[ "$multiple" != true && "$WORKSPACE_KEY" == [[:print:]] ]]; then query+="$WORKSPACE_KEY"; selected=0; fi;;
+        esac
+    done
+}
+workspace_view_lines() {
+    local title="$1"; shift
+    local -a content=("$@")
+    local offset=0 height page i last
+    while true; do
+        height=$(tput lines 2>/dev/null || printf 24)
+        [[ "$height" =~ ^[0-9]+$ ]] || height=24
+        page=$((height>8?height-8:1)); last=$((offset+page))
+        if (( last > ${#content[@]} )); then last=${#content[@]}; fi
+        printf '\033[H\033[2J'; section "$title"
+        for ((i=offset;i<last;i++)); do printf '%s%s\n' "${content[i]}" "$C_RESET"; done
+        dim "Lines $((offset+1))-$last / ${#content[@]} | Up/Down: scroll | Esc/Enter: back"
+        workspace_key
+        case "$WORKSPACE_KEY" in
+            esc|enter|q|Q) return 0;;
+            up) if ((offset>0)); then offset=$((offset-1)); fi;;
+            down) if ((offset+page<${#content[@]})); then offset=$((offset+1)); fi;;
+        esac
+    done
+}
 workspace_diff() {
-    local path="$1" color=never
-    [[ -z "$C_CYAN" ]] || color=always
-    git -C "$path" --no-pager diff "--color=$color" HEAD -- || return 1
-    git -C "$path" ls-files --others --exclude-standard
+    local path="$1" color=never file
+    local -a files=() lines=()
+    local diff_text
+    if [[ -n "$C_CYAN" ]]; then color=always; fi
+    if [[ ! -t 0 || ! -t 1 ]]; then
+        git -C "$path" --no-pager diff "--color=$color" HEAD -- || return 1
+        git -C "$path" ls-files --others --exclude-standard
+        return
+    fi
+    if ! git -C "$path" rev-parse --verify HEAD >/dev/null 2>&1; then err 'No commits yet.'; return 1; fi
+    mapfile -d '' -t files < <(git -C "$path" diff --no-renames --name-only -z HEAD --)
+    if (( ${#files[@]} == 0 )); then ok 'No tracked changes.'; git -C "$path" ls-files --others --exclude-standard; return; fi
+    while workspace_pick "Diff / ${path##*/}" false "${files[@]}"; do
+        file=${files[WORKSPACE_SELECTION[0]]}
+        diff_text=$(git -C "$path" --literal-pathspecs --no-pager diff "--color=$color" HEAD -- "$file") || return 1
+        mapfile -t lines <<< "$diff_text"
+        workspace_view_lines "Diff / ${file//[[:cntrl:]]/?}" "${lines[@]}"
+    done
 }
 workspace_commit() (
     local path="$1" message index file name marker
-    local -a files=() chosen=() indices=()
+    local -a files=() chosen=()
     cd "$path" || return 1
     [[ -t 0 && -t 1 ]] || { err 'Interactive terminal required.'; return 2; }
     for marker in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply sequencer BISECT_START; do
@@ -2571,17 +2659,8 @@ workspace_commit() (
     if ! git diff --cached --quiet; then err 'Commit manager requires an empty staging area. Commit or unstage existing changes first.'; return 1; fi
     mapfile -d '' -t files < <(git diff --no-renames --name-only -z; git ls-files --others --exclude-standard -z)
     (( ${#files[@]} > 0 )) || { ok 'No changes.'; return 0; }
-    section "Commit manager / ${path##*/}"
-    for index in "${!files[@]}"; do printf '%3d  %q\n' "$((index+1))" "${files[index]}"; done
-    read -r -p 'File numbers (space separated, or all; empty cancels): ' message || return 0
-    [[ -n "$message" ]] || return 0
-    if [[ "$message" == all ]]; then chosen=("${files[@]}"); else
-        read -r -a indices <<< "$message"
-        for index in "${indices[@]}"; do
-            [[ "$index" =~ ^[1-9][0-9]{0,8}$ ]] && (( index <= ${#files[@]} )) || return 2
-            chosen+=("${files[index-1]}")
-        done
-    fi
+    workspace_pick "Commit manager / ${path##*/}" true "${files[@]}" || return 0
+    for index in "${WORKSPACE_SELECTION[@]}"; do chosen+=("${files[index]}"); done
     for file in "${chosen[@]}"; do
         name=${file##*/}; name=${name,,}
         case "$name" in .env.example|.env.sample|.env.template) ;; .env|.env.*|*.pem|*.key|*.pfx|*.p12|id_rsa|id_ed25519|id_ecdsa|id_dsa|secrets*|credentials*|service-account*.json) err "Risky file: $file"; return 1;; esac
@@ -2590,20 +2669,27 @@ workspace_commit() (
     read -r -p 'Commit message: ' message || return 0
     [[ -n "$message" ]] || return 2
     confirm 'Stage selected files and commit locally?' || return 0
+    if ! git diff --cached --quiet; then err 'Staging area changed. Restart commit manager.'; return 1; fi
     git --literal-pathspecs add -A -- "${chosen[@]}" || return 1
-    git commit -m "$message" || return 1
+    git --literal-pathspecs commit --only -m "$message" -- "${chosen[@]}" || return 1
     workspace_log commit "$path"
     if confirm 'Synchronize and push (protected branches remain protected)?'; then bulk_sync "$path" false '' || return 1; workspace_log sync "$path"; fi
 )
 workspace_branches() (
     local path="$1" action branch
+    local -a branches=()
     while true; do
         section "Branches / ${path##*/}"
         git -C "$path" branch -vv || return 1
         [[ -t 0 && -t 1 ]] || return 0
-        read -r -p '[N] New  [S] Switch  [D] Delete merged  [G] Graph  [Q] Back: ' action || return 0
+        dim '[N] New  [S] Switch  [D] Delete merged  [G] Graph  [Q/Esc] Back'
+        workspace_key; action=$WORKSPACE_KEY
         case "${action,,}" in
-            n|s|d) read -r -p 'Branch name: ' branch || return 0
+            n|s|d) if [[ "${action,,}" == n ]]; then read -r -p 'Branch name: ' branch || return 0; else
+                mapfile -t branches < <(git -C "$path" for-each-ref --format='%(refname:short)' refs/heads)
+                workspace_pick 'Select local branch' false "${branches[@]}" || continue
+                branch=${branches[WORKSPACE_SELECTION[0]]}
+                fi
                 git check-ref-format --branch "$branch" >/dev/null 2>&1 || { err 'Invalid branch name.'; continue; }
                 [[ "$branch" != -* ]] || continue
                 case "${action,,}" in
@@ -2612,7 +2698,7 @@ workspace_branches() (
                     d) if protected_branch "$branch"; then warn 'Protected branch.'; elif confirm "Delete merged branch $branch?"; then git -C "$path" branch -d -- "$branch" && workspace_log branch-delete "$path"; fi;;
                 esac;;
             g) git -C "$path" --no-pager log --graph --all --decorate --oneline -n 40; workspace_pause;;
-            q|'') return 0;;
+            q|esc) return 0;;
         esac
     done
 )
@@ -2625,12 +2711,14 @@ workspace_github() (
 workspace_detail() {
     local path="$1" action
     while true; do
+        if [[ -t 0 && -t 1 ]]; then printf '\033[H\033[2J'; fi
         section "Repository detail / ${path##*/}"
         printf '%s\n' "$path"
         git -C "$path" status --short --branch
         git -C "$path" --no-pager log -5 --format='%h  %s  (%ar)'
         [[ -t 0 && -t 1 ]] || return 0
-        read -r -p '[C] Commit  [D] Diff  [B] Branches  [F] Fetch  [S] Sync  [G] GitHub  [Q] Back: ' action || return 0
+        dim '[C] Commit  [D] Diff  [B] Branches  [F] Fetch  [S] Sync  [G] GitHub  [Q/Esc] Back'
+        workspace_key; action=$WORKSPACE_KEY
         case "${action,,}" in
             c) workspace_commit "$path"; workspace_pause;;
             d) workspace_diff "$path"; workspace_pause;;
@@ -2638,24 +2726,43 @@ workspace_detail() {
             f) overview_fetch "$path" && workspace_log fetch "$path"; workspace_pause;;
             s) if confirm 'Synchronize repository?'; then bulk_sync "$path" false '' && workspace_log sync "$path"; fi; workspace_pause;;
             g) workspace_github "$path"; workspace_pause;;
-            q|'') return 0;;
+            q|esc) return 0;;
         esac
     done
 }
 workspace_settings() {
-    handle_config show
-    [[ -t 0 && -t 1 ]] || return 0
-    local key value
-    read -r -p 'Edit [default-remote / large-file-threshold] (empty cancels): ' key || return 0
-    case "$key" in default-remote|large-file-threshold) read -r -p 'New value: ' value || return 0; if confirm 'Save configuration?'; then handle_config_edit set "$key" "$value"; fi;; '') return 0;; *) return 2;; esac
+    if [[ ! -t 0 || ! -t 1 ]]; then handle_config show; return; fi
+    local key value action
+    local -a keys=(default-remote large-file-threshold search-root protected-branch ignored-directory)
+    while workspace_pick 'Settings' false "${keys[@]}"; do
+        key=${keys[WORKSPACE_SELECTION[0]]}
+        handle_config show
+        case "$key" in
+            default-remote|large-file-threshold) action=set;;
+            *) read -r -p 'Action [add/remove/reset]: ' action || return 0; case "$action" in add|remove|reset) ;; *) continue;; esac;;
+        esac
+        value=''
+        if [[ "$action" != reset ]]; then read -r -p 'Value (empty cancels): ' value || return 0; [[ -n "$value" ]] || continue; fi
+        if confirm 'Save configuration?'; then handle_config_edit "$action" "$key" "$value"; fi
+        workspace_pause
+    done
+}
+workspace_activity() {
+    section 'Workspace activity / latest 30 operations'
+    if [[ ! -f "$CONFIG_DIR/history.log" ]]; then dim 'No operations recorded yet.'; return; fi
+    local stamp action rest
+    while read -r stamp action rest; do
+        printf '%s%s%s  %s%-14s%s %s\n' "$C_GRAY" "$stamp" "$C_RESET" "$C_CYAN" "$action" "$C_RESET" "$rest"
+    done < <(tail -n 30 "$CONFIG_DIR/history.log")
 }
 workspace_menu() {
-    local choice
-    section 'Command palette'
-    printf '%s\n' '1 Overview' '2 Detail' '3 Commit' '4 Diff' '5 Branches' '6 Stats' '7 Activity' '8 Settings' '9 GitHub' '0 Back'
-    [[ -t 0 && -t 1 ]] || return 0
-    read -r -p 'Command number: ' choice || return 0
-    case "$choice" in 1) visual_command overview;; 2) visual_command detail;; 3) visual_command commit;; 4) visual_command diff;; 5) visual_command branches;; 6) visual_command stats;; 7) visual_command history;; 8) workspace_settings;; 9) visual_command github;; 0|'') return 0;; *) return 2;; esac
+    local -a commands=(overview detail commit diff branches stats activity settings github)
+    local -a labels=('Overview' 'Repository detail' 'Commit changes' 'Diff viewer' 'Branches' 'Development statistics' 'Activity history' 'Settings' 'GitHub')
+    if [[ ! -t 0 || ! -t 1 ]]; then section 'Command palette'; printf '%s\n' "${labels[@]}"; return; fi
+    while workspace_pick 'Command palette' false "${labels[@]}"; do
+        visual_command "${commands[WORKSPACE_SELECTION[0]]}"
+        workspace_pause
+    done
 }
 
 visual_command() {
@@ -2676,7 +2783,7 @@ visual_command() {
                 IFS= read -rsn1 key || return 0
                 case "$key" in
                     q|Q) return 0;;
-                    $'\033') IFS= read -rsn2 -t 0.2 key || true; case "$key" in '[A') selected=$(( (selected+${#overview_paths[@]}-1)%${#overview_paths[@]} ));; '[B') selected=$(( (selected+1)%${#overview_paths[@]} ));; esac;;
+                    $'\033') IFS= read -rsn2 -t 0.2 key || true; case "$key" in '') return 0;; '[A') selected=$(( (selected+${#overview_paths[@]}-1)%${#overview_paths[@]} ));; '[B') selected=$(( (selected+1)%${#overview_paths[@]} ));; esac;;
                     '') workspace_detail "$path"; overview_refresh_one "$selected";;
                     r|R) overview_load false;;
                     a|A) if confirm 'Fetch all cached repositories?'; then overview_load true; fi;;
@@ -2687,7 +2794,7 @@ visual_command() {
         detail|commit|diff|branches|github) select_repo "${1:-}" || return 1; "workspace_$action" "$SELECTED" ;;
         menu) workspace_menu ;;
         settings) workspace_settings ;;
-        activity) visual_command history ;;
+        activity) workspace_activity ;;
         health) visual_status health ;;
         watch) local interval="${1:-10}"; [[ "$interval" =~ ^[1-9][0-9]*$ ]] || return 2; [[ -t 1 ]] || { visual_status overview; return; }; while true; do printf '\033[H\033[2J'; visual_status overview; sleep "$interval"; done ;;
         history) if [[ -f "$CONFIG_DIR/history.log" ]]; then tail -n 30 "$CONFIG_DIR/history.log"; else dim "No bulk operations recorded yet."; fi ;;

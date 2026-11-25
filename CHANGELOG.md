@@ -2,6 +2,13 @@
 
 All notable changes to GPush are documented here.
 
+## 4.6.1
+
+- Shared cached keyboard picker for commit files, diff files, branch selection and command palette.
+- Live single-selection filtering, multi-selection, scrollable file diffs and Escape navigation.
+- Selected-file commits use literal pathspecs and check the staging area again before committing.
+- Expanded settings editor and colored activity output.
+
 ## 4.6.0
 
 - Workspace detail, numbered command palette, selected-file commit manager, colored working-tree diff, local branch manager, activity log and configuration menu.

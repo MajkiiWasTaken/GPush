@@ -250,17 +250,17 @@ The updater prefers `curl.exe`, falls back to `Invoke-WebRequest`, bypasses HTTP
 
 Overview loads local Git state once. Arrow keys only redraw cached rows. `R` refreshes local state, `F` fetches the selected repository, `A` fetches all after confirmation, and `S` synchronizes the selected repository after confirmation. Remote counts are based on the last fetch.
 
-### Interactive workspace (4.6.0)
+### Interactive workspace (4.6.1)
 
 | Command | Description |
 |---|---|
-| `gp menu` | Numbered command palette |
+| `gp menu` | Keyboard command palette with search |
 | `gp detail Project` | Local status and recent commits, repository actions |
-| `gp commit Project` | Select file numbers, commit locally, optionally synchronize |
-| `gp diff Project` | Colored diff against HEAD, list untracked files |
+| `gp commit Project` | Select files with arrows and Space, commit locally, optionally synchronize |
+| `gp diff Project` | Choose a tracked file and scroll its colored diff against HEAD |
 | `gp branches Project` | List, create, switch and safely delete merged branches |
 | `gp activity` | Recent recorded operations |
-| `gp settings` | Edit default remote and large-file threshold |
+| `gp settings` | Edit remote, large-file threshold, search roots, protected branches and ignored directories |
 | `gp github Project` | Issues, PRs, releases and workflow runs via authenticated `gh` |
 
-Enter in overview opens repository detail. No remote fetch is performed on opening detail or navigating overview. The commit manager requires an empty staging area and skips risky files; optional synchronization retains protected-branch safeguards. The new menus use numbered/letter prompts. Untracked file contents are not included in the diff. GitHub commands require network access and `gh auth login`.
+Enter in overview opens repository detail. No remote fetch is performed on opening detail or navigating overview. The commit manager requires an empty staging area and skips risky files; optional synchronization retains protected-branch safeguards. The keyboard picker supports Up/Down, Enter, Esc, direct typing to filter single-selection lists, Backspace, and / to enter a search filter. Multi-select uses Space, A (select visible), and X (clear). Branch actions and confirmations retain simple prompts. Untracked file contents are not included in the diff. GitHub commands require network access and `gh auth login`.

@@ -24,7 +24,7 @@ $OutputEncoding           = [System.Text.UTF8Encoding]::new($false)
 # CONFIG
 # ============================================================
 
-$ScriptVersion = "4.6.0"
+$ScriptVersion = "4.6.1"
 $CompletionSchemaVersion = "14"
 
 $ConfigDir  = Join-Path $env:LOCALAPPDATA "GPush"
@@ -6135,11 +6135,85 @@ function Write-GPushWorkspaceHistory {
 function Wait-GPushWorkspace {
     if (-not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected) { $null = Read-Host 'Press Enter to return' }
 }
+# Shared keyboard picker; all rows are cached for the lifetime of the screen.
+function Select-GPushWorkspaceRows {
+    param([string]$Title, [string[]]$Rows, [switch]$Multiple)
+    if ($Rows.Count -eq 0) { return }
+    $selected = 0; $query = ''; $marks = @{}
+    while ($true) {
+        $visible = @(for ($i=0; $i -lt $Rows.Count; $i++) {
+            if ($Rows[$i].IndexOf($query,[StringComparison]::OrdinalIgnoreCase) -ge 0) { $i }
+        })
+        if ($selected -ge $visible.Count) { $selected = 0 }
+        $limit = [Math]::Max(1,[Math]::Min(18,[Console]::WindowHeight-8))
+        $start = [int]([Math]::Floor($selected / $limit) * $limit)
+        Clear-Host; Write-Section $Title; Write-Dim "Search: $query"
+        for ($i=$start; $i -lt [Math]::Min($start+$limit,$visible.Count); $i++) {
+            $index = $visible[$i]
+            $prefix = if ($i -eq $selected) {'> '} else {'  '}
+            $mark = if ($Multiple) { if ($marks[$index]) {'[x] '} else {'[ ] '} } else {''}
+            $line = Limit-GPushTableText -Text ($prefix+$mark+($Rows[$index] -replace '[\x00-\x1f\x7f]','?')) -Width ([Math]::Max(1,[Console]::WindowWidth-1))
+            if ($i -eq $selected) { Write-Host $line -ForegroundColor Black -BackgroundColor Cyan } else { Write-Host $line }
+        }
+        Write-Dim 'Up/Down: select | Enter: accept | Esc: back | /: search'
+        if (-not $Multiple) { Write-Dim 'Type to filter | Backspace: erase' }
+        if ($Multiple) { Write-Dim 'Space: toggle | A: select all | X: clear' }
+        $key = [Console]::ReadKey($true)
+        switch ($key.Key) {
+            Escape { return }
+            UpArrow { if ($selected -gt 0) { $selected-- } }
+            DownArrow { if ($selected+1 -lt $visible.Count) { $selected++ } }
+            Spacebar { if ($Multiple) { if ($visible.Count) { $index=$visible[$selected]; $marks[$index] = -not $marks[$index] } } else { $query+=' '; $selected=0 } }
+            A { if ($Multiple) { foreach ($index in $visible) { $marks[$index]=$true } } else { $query+=$key.KeyChar; $selected=0 } }
+            X { if ($Multiple) { $marks=@{} } else { $query+=$key.KeyChar; $selected=0 } }
+            Backspace { if ($query.Length) { $query=$query.Substring(0,$query.Length-1); $selected=0 } }
+            Enter {
+                if ($Multiple) {
+                    $chosen = @(for ($i=0; $i -lt $Rows.Count; $i++) { if ($marks[$i]) { $i } })
+                    if ($chosen.Count) { return $chosen }
+                } elseif ($visible.Count) { return $visible[$selected] }
+            }
+            default { if ($key.KeyChar -eq '/') { $query=[string](Read-Host 'Search (empty resets)'); $selected=0 } elseif (-not $Multiple -and -not [char]::IsControl($key.KeyChar)) { $query+=$key.KeyChar; $selected=0 } }
+        }
+    }
+}
+function Show-GPushWorkspaceLines {
+    param([string]$Title,[string[]]$Lines)
+    $offset=0
+    while ($true) {
+        $page=[Math]::Max(1,[Console]::WindowHeight-8)
+        $last=[Math]::Min($offset+$page,$Lines.Count)
+        Clear-Host; Write-Section $Title
+        for ($i=$offset; $i -lt $last; $i++) { Write-Host $Lines[$i] }
+        Write-Dim "Lines $($offset+1)-$last / $($Lines.Count) | Up/Down: scroll | Esc/Enter: back"
+        switch ([Console]::ReadKey($true).Key) {
+            Escape { return }
+            Enter { return }
+            Q { return }
+            UpArrow { if ($offset -gt 0) { $offset-- } }
+            DownArrow { if ($offset+$page -lt $Lines.Count) { $offset++ } }
+        }
+    }
+}
 function Show-GPushWorkspaceDiff {
     param($Repository)
     $color = if ($script:GPushNoColor -or $env:NO_COLOR -or [Console]::IsOutputRedirected) {'never'} else {'always'}
-    & git -C $Repository.Path --no-pager diff "--color=$color" HEAD -- | ForEach-Object { Write-Host $_ }
-    & git -C $Repository.Path ls-files --others --exclude-standard | ForEach-Object { Write-Host "Untracked: $_" }
+    if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) {
+        & git -C $Repository.Path --no-pager diff "--color=$color" HEAD -- | ForEach-Object { Write-Host $_ }
+        & git -C $Repository.Path ls-files --others --exclude-standard | ForEach-Object { Write-Host "Untracked: $_" }
+        return
+    }
+    $files = @(& git -C $Repository.Path -c core.quotePath=false diff --no-renames --name-only HEAD --)
+    if ($LASTEXITCODE -ne 0) { Write-Err 'Cannot inspect diff.'; return }
+    if (-not $files.Count) { Write-Ok 'No tracked changes.'; return }
+    while ($true) {
+        $picked = @(Select-GPushWorkspaceRows -Title "Diff / $($Repository.Name)" -Rows $files)
+        if (-not $picked.Count) { return }
+        $file = $files[$picked[0]]
+        $lines = @(& git -C $Repository.Path --literal-pathspecs --no-pager diff "--color=$color" HEAD -- $file)
+        if ($LASTEXITCODE -ne 0) { Write-Err 'Cannot read diff.'; Wait-GPushWorkspace; continue }
+        Show-GPushWorkspaceLines -Title "Diff / $file" -Lines $lines
+    }
 }
 function Invoke-GPushWorkspaceCommit {
     param($Repository)
@@ -6160,18 +6234,9 @@ function Invoke-GPushWorkspaceCommit {
         if ($LASTEXITCODE -ne 0) { Write-Err 'Cannot inspect untracked changes.'; return }
         $files = @($tracked + $untracked | Sort-Object -Unique)
         if ($files.Count -eq 0) { Write-Ok 'No changes.'; return }
-        Write-Section "Commit manager / $($Repository.Name)"
-        for ($i=0; $i -lt $files.Count; $i++) { Write-Host ('{0,3}  {1}' -f ($i+1),$files[$i]) }
-        $answer = Read-Host 'File numbers (space separated, or all; empty cancels)'
-        if (-not $answer) { return }
-        $chosen = @()
-        if ($answer -eq 'all') { $chosen = $files } else {
-            foreach ($token in ($answer.Trim() -split '\s+')) {
-                $index=0
-                if (-not [int]::TryParse($token,[ref]$index) -or $index -lt 1 -or $index -gt $files.Count) { Write-Err 'Invalid file number.'; return }
-                $chosen += $files[$index-1]
-            }
-        }
+        $picked = @(Select-GPushWorkspaceRows -Title "Commit manager / $($Repository.Name)" -Rows $files -Multiple)
+        if (-not $picked.Count) { return }
+        $chosen = @($picked | ForEach-Object { $files[$_] })
         foreach ($file in $chosen) {
             if (Test-SensitivePath -Path $file) { Write-Err "Risky file: $file"; return }
             if (Test-Path -LiteralPath $file -PathType Leaf) {
@@ -6181,9 +6246,11 @@ function Invoke-GPushWorkspaceCommit {
         $message = Read-Host 'Commit message'
         if ([string]::IsNullOrWhiteSpace($message)) { return }
         if (-not (Confirm-GPushAction -Prompt 'Stage selected files and commit locally?')) { return }
+        & git diff --cached --quiet
+        if ($LASTEXITCODE -ne 0) { Write-Err 'Staging area changed. Restart commit manager.'; return }
         & git --literal-pathspecs add -A -- @chosen | ForEach-Object { Write-Host $_ }
         if ($LASTEXITCODE -ne 0) { return }
-        & git commit -m $message | ForEach-Object { Write-Host $_ }
+        & git --literal-pathspecs commit --only -m $message -- @chosen | ForEach-Object { Write-Host $_ }
         if ($LASTEXITCODE -ne 0) { return }
         Write-GPushWorkspaceHistory commit $Repository.Path
         if (Confirm-GPushAction -Prompt 'Synchronize and push (protected branches remain protected)?') {
@@ -6199,11 +6266,19 @@ function Show-GPushWorkspaceBranches {
         Write-Section "Branches / $($Repository.Name)"
         & git -C $Repository.Path branch -vv | ForEach-Object { Write-Host $_ }
         if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) { return }
-        $action = Read-Host '[N] New  [S] Switch  [D] Delete merged  [G] Graph  [Q] Back'
+        Write-Dim '[N] New  [S] Switch  [D] Delete merged  [G] Graph  [Q/Esc] Back'
+        $key=[Console]::ReadKey($true)
+        if ($key.Key -eq 'Escape') { return }
+        $action=[string]$key.KeyChar
         if ($action -in @('q','')) { return }
         if ($action -eq 'g') { & git -C $Repository.Path --no-pager log --graph --all --decorate --oneline -n 40 | ForEach-Object { Write-Host $_ }; Wait-GPushWorkspace; continue }
         if ($action -notin @('n','s','d')) { continue }
-        $branch = Read-Host 'Branch name'
+        if ($action -eq 'n') { $branch = Read-Host 'Branch name' } else {
+            $branches = @(& git -C $Repository.Path for-each-ref '--format=%(refname:short)' refs/heads)
+            $picked = @(Select-GPushWorkspaceRows -Title 'Select local branch' -Rows $branches)
+            if (-not $picked.Count) { continue }
+            $branch = $branches[$picked[0]]
+        }
         if (-not $branch -or $branch.StartsWith('-')) { continue }
         & git check-ref-format --branch $branch | Out-Null
         if ($LASTEXITCODE -ne 0) { Write-Err 'Invalid branch name.'; continue }
@@ -6233,12 +6308,16 @@ function Show-GPushWorkspaceGitHub {
 function Show-GPushWorkspaceDetail {
     param($Repository)
     while ($true) {
+        if (-not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected) { Clear-Host }
         Write-Section "Repository detail / $($Repository.Name)"
         Write-Dim $Repository.Path
         & git -C $Repository.Path status --short --branch | ForEach-Object { Write-Host $_ }
         & git -C $Repository.Path --no-pager log -5 '--format=%h  %s  (%ar)' | ForEach-Object { Write-Host $_ }
         if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) { return }
-        $action = Read-Host '[C] Commit  [D] Diff  [B] Branches  [F] Fetch  [S] Sync  [G] GitHub  [Q] Back'
+        Write-Dim '[C] Commit  [D] Diff  [B] Branches  [F] Fetch  [S] Sync  [G] GitHub  [Q/Esc] Back'
+        $key = [Console]::ReadKey($true)
+        if ($key.Key -eq 'Escape') { return }
+        $action = [string]$key.KeyChar
         switch ($action) {
             'c' { Invoke-GPushWorkspaceCommit $Repository; Wait-GPushWorkspace }
             'd' { Show-GPushWorkspaceDiff $Repository; Wait-GPushWorkspace }
@@ -6251,21 +6330,45 @@ function Show-GPushWorkspaceDetail {
     }
 }
 function Show-GPushWorkspaceSettings {
-    Show-GPushConfig
-    if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) { return }
-    $key = Read-Host 'Edit [default-remote / large-file-threshold] (empty cancels)'
-    if ($key -in @('default-remote','large-file-threshold')) {
-        $value = Read-Host 'New value'
-        if (Confirm-GPushAction -Prompt 'Save configuration?') { $null = Invoke-GPushConfigEdit -Action set -Key $key -Value $value }
+    if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) { Show-GPushConfig; return }
+    $keys = @('default-remote','large-file-threshold','search-root','protected-branch','ignored-directory')
+    while ($true) {
+        $picked = @(Select-GPushWorkspaceRows -Title 'Settings' -Rows $keys)
+        if (-not $picked.Count) { return }
+        $key = $keys[$picked[0]]
+        Show-GPushConfig
+        $action = 'set'; $value = ''
+        if ($key -notin @('default-remote','large-file-threshold')) {
+            $action = Read-Host 'Action [add/remove/reset]'
+            if ($action -notin @('add','remove','reset')) { continue }
+        }
+        if ($action -ne 'reset') { $value = Read-Host 'Value (empty cancels)'; if (-not $value) { continue } }
+        if (Confirm-GPushAction -Prompt 'Save configuration?') { $null = Invoke-GPushConfigEdit -Action $action -Key $key -Value $value }
+        Wait-GPushWorkspace
+    }
+}
+function Show-GPushWorkspaceActivity {
+    Write-Section 'Workspace activity / latest 30 operations'
+    $historyFile = Join-Path $ConfigDir 'history.log'
+    if (-not (Test-Path $historyFile)) { Write-Dim 'No operations recorded yet.'; return }
+    foreach ($line in @(Get-Content $historyFile -Tail 30)) {
+        $parts = $line -split ' ',3
+        if ($parts.Count -lt 3) { Write-Dim $line; continue }
+        Write-Host $parts[0] -ForegroundColor DarkGray -NoNewline
+        Write-Host ('  {0,-14} ' -f $parts[1]) -ForegroundColor Cyan -NoNewline
+        Write-Host $parts[2]
     }
 }
 function Show-GPushWorkspaceMenu {
-    Write-Section 'Command palette'
-    @('1 Overview','2 Detail','3 Commit','4 Diff','5 Branches','6 Stats','7 Activity','8 Settings','9 GitHub','0 Back') | ForEach-Object { Write-Host $_ }
-    if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) { return }
-    $choices = @{'1'='overview';'2'='detail';'3'='commit';'4'='diff';'5'='branches';'6'='stats';'7'='activity';'8'='settings';'9'='github'}
-    $choice = Read-Host 'Command number'
-    if ($choices.ContainsKey($choice)) { $null = Invoke-GPushVisualCommand -Mode $choices[$choice] -Tail @() }
+    $commands = @('overview','detail','commit','diff','branches','stats','activity','settings','github')
+    $labels = @('Overview','Repository detail','Commit changes','Diff viewer','Branches','Development statistics','Activity history','Settings','GitHub')
+    if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) { Write-Section 'Command palette'; $labels | ForEach-Object { Write-Host $_ }; return }
+    while ($true) {
+        $picked = @(Select-GPushWorkspaceRows -Title 'Command palette' -Rows $labels)
+        if (-not $picked.Count) { return }
+        $null = Invoke-GPushVisualCommand -Mode $commands[$picked[0]] -Tail @()
+        Wait-GPushWorkspace
+    }
 }
 function Resolve-GPushWorkspaceRepository {
     param([string[]]$Tail)
@@ -6294,7 +6397,7 @@ function Invoke-GPushVisualCommand {
         }
         'menu' { Show-GPushWorkspaceMenu }
         'settings' { Show-GPushWorkspaceSettings }
-        'activity' { $historyFile = Join-Path $ConfigDir 'history.log'; if (Test-Path $historyFile) { Get-Content $historyFile -Tail 30 | ForEach-Object { Write-Host $_ } } }
+        'activity' { Show-GPushWorkspaceActivity }
         'overview' {
             if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) { Show-GPushVisualStatus 'overview'; return 0 }
             $repositories = @(Get-GPushCache | Sort-Object Name, Path)
@@ -6309,6 +6412,7 @@ function Invoke-GPushVisualCommand {
                 $key = [Console]::ReadKey($true).Key
                 switch ($key) {
                     'Q' { return 0 }
+                    'Escape' { return 0 }
                     'UpArrow' { $selected = ($selected + $repositories.Count - 1) % $repositories.Count }
                     'DownArrow' { $selected = ($selected + 1) % $repositories.Count }
                     'Enter' {
