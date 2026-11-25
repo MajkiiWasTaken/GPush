@@ -24,7 +24,7 @@ $OutputEncoding           = [System.Text.UTF8Encoding]::new($false)
 # CONFIG
 # ============================================================
 
-$ScriptVersion = "4.5.0"
+$ScriptVersion = "4.5.1"
 $CompletionSchemaVersion = "13"
 
 $ConfigDir  = Join-Path $env:LOCALAPPDATA "GPush"
@@ -1221,6 +1221,40 @@ function Get-GPushChecksumAsset {
     return $null
 }
 
+function Receive-GPushUpdateFile {
+    param([string]$Uri, [string]$Destination, [switch]$UseWebRequest)
+
+    # Unique URL and explicit cache directives prevent stale release downloads.
+    $separator = if ($Uri.Contains('?')) { '&' } else { '?' }
+    $downloadUri = $Uri + $separator + 'gpush_nocache=' + [guid]::NewGuid().ToString('N')
+    $curl = Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (Test-Path -LiteralPath $Destination) {
+        Remove-Item -LiteralPath $Destination -Force -ErrorAction Stop
+    }
+
+    if ($curl -and -not $UseWebRequest) {
+        Write-Dim 'Download method: curl.exe (no cache)'
+        & $curl.Source --fail --location --silent --show-error --connect-timeout 30 --max-time 300 `
+            --header 'Cache-Control: no-cache, no-store' --header 'Pragma: no-cache' `
+            --user-agent "GPush/$ScriptVersion" --output $Destination -- $downloadUri
+        if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $Destination) -and (Get-Item -LiteralPath $Destination).Length -gt 0) {
+            return
+        }
+        Write-Warn 'curl.exe download failed; trying PowerShell.'
+        if (Test-Path -LiteralPath $Destination) {
+            Remove-Item -LiteralPath $Destination -Force -ErrorAction Stop
+        }
+    }
+
+    Write-Dim 'Download method: Invoke-WebRequest (no cache)'
+    Invoke-WebRequest -Uri $downloadUri -OutFile $Destination -UseBasicParsing `
+        -Headers @{ 'User-Agent' = "GPush/$ScriptVersion"; 'Cache-Control' = 'no-cache, no-store'; 'Pragma' = 'no-cache' } `
+        -TimeoutSec 300 -ErrorAction Stop
+    if (-not (Test-Path -LiteralPath $Destination) -or (Get-Item -LiteralPath $Destination).Length -eq 0) {
+        throw 'Download did not produce a non-empty file.'
+    }
+}
+
 function Test-GPushDownloadedPackage {
     param(
         [Parameter(Mandatory = $true)]
@@ -1236,18 +1270,14 @@ function Test-GPushDownloadedPackage {
         -PackageName ([string]$PackageAsset.name)
 
     if ($null -eq $checksumAsset) {
-        Write-Dim "No SHA-256 asset published; package structure will still be validated."
-        return $true
+        Write-Err "No SHA-256 asset published. Update cancelled."
+        return $false
     }
 
     $checksumFile = Join-Path ([System.IO.Path]::GetDirectoryName($PackagePath)) "checksum.txt"
 
     try {
-        Invoke-WebRequest `
-            -Uri $checksumAsset.browser_download_url `
-            -OutFile $checksumFile `
-            -Headers @{ "User-Agent" = "GPush/$ScriptVersion" } `
-            -ErrorAction Stop
+        Receive-GPushUpdateFile -Uri $checksumAsset.browser_download_url -Destination $checksumFile
 
         $checksumText = Get-Content -Path $checksumFile -Raw -ErrorAction Stop
         $expected = $null
@@ -1406,18 +1436,26 @@ function Install-GPushRelease {
         New-Item -ItemType Directory -Path $extractPath -Force | Out-Null
 
         Show-GPushVisualBar -Done 0 -Total 4
-        Write-Info "[UPDATE] Downloading $($asset.name)"
-        Invoke-WebRequest `
-            -Uri $asset.browser_download_url `
-            -OutFile $packagePath `
-            -Headers @{ "User-Agent" = "GPush/$ScriptVersion" } `
-            -ErrorAction Stop
-
-        Write-Ok "[UPDATE] Downloaded"
-        Show-GPushVisualBar -Done 1 -Total 4
-
-        Write-Info "[UPDATE] Verifying package"
-        if (-not (Test-GPushDownloadedPackage -PackagePath $packagePath -Release $Release -PackageAsset $asset)) {
+        $verified = $false
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
+            Write-Info "[UPDATE] Downloading $($asset.name) (attempt $attempt/3)"
+            try {
+                Receive-GPushUpdateFile -Uri $asset.browser_download_url -Destination $packagePath -UseWebRequest:($attempt -eq 2)
+                Write-KeyValue "Downloaded bytes" ([string](Get-Item -LiteralPath $packagePath).Length)
+                Show-GPushVisualBar -Done 1 -Total 4
+                Write-Info "[UPDATE] Verifying package"
+                if (Test-GPushDownloadedPackage -PackagePath $packagePath -Release $Release -PackageAsset $asset) {
+                    $verified = $true
+                    break
+                }
+            }
+            catch {
+                Write-Warn "Download attempt failed: $($_.Exception.Message)"
+            }
+            if ($attempt -lt 3) { Write-Warn "Retrying with a fresh download URL." }
+        }
+        if (-not $verified) {
+            Write-Err "Update cancelled: no verified package after three attempts."
             return 1
         }
 

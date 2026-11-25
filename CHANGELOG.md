@@ -2,6 +2,13 @@
 
 All notable changes to GPush are documented here.
 
+## 4.5.1
+
+- Windows updater prefers curl.exe and falls back to PowerShell downloads.
+- Fresh download URLs and no-cache headers for packages and checksums.
+- Retry failed or mismatched downloads up to three times; report downloaded size.
+- Reject updates without a verified published SHA-256 checksum on Windows.
+
 ## 4.5.0
 
 ### Added

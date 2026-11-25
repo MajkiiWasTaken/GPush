@@ -241,3 +241,7 @@ Use `gp update check` to check for releases, `gp update` (or `gp update install`
 | `gp --no-color overview` | Disable GPush output colors |
 
 Visual previews do not contact remotes unless Fetch or Sync is explicitly selected. Sync preserves protected-branch checks. Stats include all authors on each repository's current branch; shared commits may be counted across repositories. ASCII bars are used for compatibility. Bulk progress advances per completed repository; updater progress advances per milestone. History records local paths and operation results, not commit contents.
+
+### Windows update reliability (4.5.1)
+
+The updater prefers `curl.exe`, falls back to `Invoke-WebRequest`, bypasses HTTP caches and retries failed downloads up to three times. A matching published SHA-256 is required before installation. Older clients affected by stale downloads may need a one-time manual upgrade using a verified release archive.
