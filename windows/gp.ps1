@@ -1,4 +1,15 @@
 ﻿$RawArguments = @($args)
+if ($RawArguments.Count -gt 0 -and $RawArguments[0] -eq "--no-color") {
+    $RawArguments = @($RawArguments | Select-Object -Skip 1)
+    $script:GPushNoColor = $true
+}
+if ($script:GPushNoColor -or $env:NO_COLOR) {
+    function Write-Host {
+        param([Parameter(Position=0,ValueFromRemainingArguments=$true)] $Object, [switch]$NoNewline, $ForegroundColor, $BackgroundColor, $Separator)
+        if ($null -ne $Separator) { Microsoft.PowerShell.Utility\Write-Host $Object -NoNewline:$NoNewline -Separator $Separator }
+        else { Microsoft.PowerShell.Utility\Write-Host $Object -NoNewline:$NoNewline }
+    }
+}
 
 # ============================================================
 # ENCODING
@@ -13,8 +24,8 @@ $OutputEncoding           = [System.Text.UTF8Encoding]::new($false)
 # CONFIG
 # ============================================================
 
-$ScriptVersion = "4.4.2"
-$CompletionSchemaVersion = "12"
+$ScriptVersion = "4.5.0"
+$CompletionSchemaVersion = "13"
 
 $ConfigDir  = Join-Path $env:LOCALAPPDATA "GPush"
 $ConfigFile = Join-Path $ConfigDir "config.json"
@@ -121,6 +132,13 @@ function Write-Section {
 function Write-Separator {
     Write-Host ""
     Write-Host ("-" * 52) -ForegroundColor DarkGray
+}
+
+function Show-GPushVisualBar {
+    param([int]$Done, [int]$Total)
+    $width = 20
+    $filled = [int][Math]::Floor($width * $Done / [Math]::Max(1,$Total))
+    Write-Host ('[' + ('#' * $filled) + ('-' * ($width-$filled)) + "] $Done/$Total") -ForegroundColor Cyan
 }
 
 function Show-Banner {
@@ -1001,6 +1019,7 @@ function Show-Help {
     Write-OptionHelp "-r, --refresh" "Rescan search roots and rebuild the repository cache."
     Write-OptionHelp "--add" "Add a Git repository to the cache manually."
     Write-OptionHelp "--cached" "Use the repository cache only."
+    Write-OptionHelp "--no-color" "Disable output colors (place before command)."
     Write-OptionHelp "--recent" "Show recently used repositories."
     Write-OptionHelp "--open" "Open a repository folder in File Explorer."
     Write-OptionHelp "--clone" "Clone a repository and add it to the cache."
@@ -1073,6 +1092,13 @@ function Show-Help {
     Write-ExampleHelp 'gp all' "Synchronize cached repositories."
     Write-ExampleHelp 'gp all push "Update projects"' "Commit and synchronize cached repositories."
     Write-ExampleHelp 'gp repo sync TestProject' "Synchronize without creating a commit."
+    Write-ExampleHelp 'gp overview' "Workspace health and repository summary."
+    Write-ExampleHelp 'gp stats' "30-day commit activity and daily heatmap."
+    Write-ExampleHelp 'gp changes <project>' "Working tree and line statistics."
+    Write-ExampleHelp 'gp branch graph <project>' "Decorated commit graph."
+    Write-ExampleHelp 'gp all dry-run' "Read-only synchronization preview."
+    Write-ExampleHelp 'gp all status --json' "Machine-readable cached status."
+    Write-ExampleHelp 'gp all status' "Show last commit, behind/ahead and working tree for cached repositories."
     Write-ExampleHelp 'gp branch new TestProject feature/api' "Create and switch to a branch."
     Write-ExampleHelp 'gp stash push TestProject' "Stash local changes."
     Write-ExampleHelp 'gp cache refresh' "Rebuild the repository cache."
@@ -1164,19 +1190,6 @@ function Get-GPushWindowsReleaseAsset {
 
     if ($preferred.Count -gt 0) {
         return $preferred[0]
-    }
-
-    $fallback = @(
-        $assets |
-            Where-Object {
-                $_.name -match '(?i)\.zip$' -and
-                $_.name -notmatch '(?i)(source|src)'
-            } |
-            Sort-Object name
-    )
-
-    if ($fallback.Count -gt 0) {
-        return $fallback[0]
     }
 
     return $null
@@ -1392,6 +1405,7 @@ function Install-GPushRelease {
         New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
         New-Item -ItemType Directory -Path $extractPath -Force | Out-Null
 
+        Show-GPushVisualBar -Done 0 -Total 4
         Write-Info "[UPDATE] Downloading $($asset.name)"
         Invoke-WebRequest `
             -Uri $asset.browser_download_url `
@@ -1400,12 +1414,14 @@ function Install-GPushRelease {
             -ErrorAction Stop
 
         Write-Ok "[UPDATE] Downloaded"
+        Show-GPushVisualBar -Done 1 -Total 4
 
         Write-Info "[UPDATE] Verifying package"
         if (-not (Test-GPushDownloadedPackage -PackagePath $packagePath -Release $Release -PackageAsset $asset)) {
             return 1
         }
 
+        Show-GPushVisualBar -Done 2 -Total 4
         Expand-Archive -Path $packagePath -DestinationPath $extractPath -Force
 
         $candidateScripts = @(
@@ -1441,10 +1457,12 @@ function Install-GPushRelease {
         Write-Info "[UPDATE] Creating rollback backup"
         $backupPath = Backup-GPushInstallation -CurrentScript $PSCommandPath
         Write-Dim "Backup: $backupPath"
+        Show-GPushVisualBar -Done 3 -Total 4
 
         Write-Info "[UPDATE] Installing gp.ps1"
         Copy-Item -Path $newScript.FullName -Destination $PSCommandPath -Force
 
+        Show-GPushVisualBar -Done 4 -Total 4
         Write-Ok "GPush updated successfully."
         Write-KeyValue "Previous" $ScriptVersion
         Write-KeyValue "Current" $packageVersionText ([ConsoleColor]::Green)
@@ -1459,7 +1477,7 @@ function Install-GPushRelease {
     }
     finally {
         if (Test-Path $tempRoot) {
-            Remove-Item -Path $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+            try { [System.IO.Directory]::Delete($tempRoot, $true) } catch { Write-Dim "Temporary update cleanup failed." }
         }
     }
 }
@@ -2230,7 +2248,7 @@ function global:Get-GPushCompletionContext {
     $tokenLength = [Math]::Max(0, $tokenEnd - $tokenStart)
 
     $topLevel = @(
-        "repo", "branch", "tag", "remote", "stash", "cache", "config",
+        "overview", "health", "stats", "history", "watch", "changes", "repo", "branch", "tag", "remote", "stash", "cache", "config",
         "alias", "favorite", "fav", "favorites", "all", "project",
         "clone", "recent", "update", "completion", "help", "version",
         "add", "remove", "set", "reset"
@@ -2238,7 +2256,7 @@ function global:Get-GPushCompletionContext {
 
     $actions = @{
         "repo"       = @("status", "diff", "log", "open", "fetch", "pull", "sync")
-        "branch"     = @("list", "new", "switch", "delete", "prune")
+        "branch"     = @("list", "new", "switch", "delete", "prune", "graph")
         "tag"        = @("list", "create", "push", "delete", "release")
         "remote"     = @("list", "add", "set-url", "remove")
         "stash"      = @("push", "list", "pop")
@@ -2247,7 +2265,7 @@ function global:Get-GPushCompletionContext {
         "alias"      = @("list", "set", "remove")
         "favorite"   = @("list", "add", "remove")
         "fav"        = @("list", "add", "remove")
-        "all"        = @("status", "fetch", "sync", "push")
+        "all"        = @("status", "fetch", "sync", "push", "dry-run")
         "project"    = @("info", "build", "test", "run", "open", "shell")
         "update"     = @("check", "install", "rollback")
         "completion" = @("install", "status", "mode", "uninstall")
@@ -2403,6 +2421,12 @@ function global:Get-GPushCompletionContext {
         return (New-Result -Values @() -Label "Projects")
     }
 
+    if ($command -eq "changes" -and $rest.Count -eq 0) {
+        return (New-Result -Values $repositories -Label "Projects")
+    }
+    if ($command -eq "all" -and $rest.Count -eq 1 -and $rest[0] -eq "status") {
+        return (New-Result -Values @("--json", "--dirty", "--ahead", "--behind") -Label "Filters")
+    }
     if ($actions.ContainsKey($command)) {
         if ($rest.Count -eq 0) {
             return (New-Result -Values $actions[$command] -Label "Actions")
@@ -3321,7 +3345,7 @@ function Get-GPushCommandSuggestion {
     }
 
     $commands = @(
-        "repo", "branch", "tag", "remote", "stash", "cache", "config",
+        "overview", "health", "stats", "history", "watch", "changes", "repo", "branch", "tag", "remote", "stash", "cache", "config",
         "alias", "favorite", "favorites", "fav", "all", "project",
         "clone", "recent", "update", "completion", "help", "version",
         "add", "remove", "set", "reset"
@@ -3840,10 +3864,24 @@ $skipCompletionBootstrap = (
     )
 )
 
-if (-not $skipCompletionBootstrap) {
+if (-not $skipCompletionBootstrap -and [Environment]::UserInteractive -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected) {
     $null = Ensure-GPushPowerShellCompletion -Quiet
 }
 
+$VisualMode = ''
+$VisualTail = @()
+if ($RawArguments.Count -gt 0) {
+    if ($RawArguments[0] -in @('overview','health','stats','history','watch','changes')) {
+        $VisualMode = [string]$RawArguments[0]; $VisualTail = @($RawArguments | Select-Object -Skip 1)
+    } elseif ($RawArguments.Count -ge 2 -and $RawArguments[0] -eq 'branch' -and $RawArguments[1] -eq 'graph') {
+        $VisualMode = 'graph'; $VisualTail = @($RawArguments | Select-Object -Skip 2)
+    } elseif ($RawArguments.Count -eq 2 -and $RawArguments[0] -eq 'all' -and $RawArguments[1] -eq 'dry-run') {
+        $VisualMode = 'dry-run'
+    } elseif ($RawArguments.Count -eq 3 -and $RawArguments[0] -eq 'all' -and $RawArguments[1] -eq 'status' -and $RawArguments[2] -in @('--json','--dirty','--ahead','--behind')) {
+        $VisualMode = [string]$RawArguments[2]
+    }
+}
+if ($VisualMode) { $RawArguments = @('--all','--status','--cached') }
 $tokens = @(if ($RawArguments.Count -gt 0) {
     ConvertFrom-GPushSubcommand -Arguments $RawArguments
 })
@@ -5177,6 +5215,8 @@ function Get-GPushRepositorySnapshot {
         Remote = "-"
         Upstream = "-"
         CompareRef = $null
+        LastCommit = "-"
+        Compared = $false
         Ahead = 0
         Behind = 0
         Sync = "Unknown"
@@ -5202,6 +5242,11 @@ function Get-GPushRepositorySnapshot {
         }
         else {
             $snapshot.Branch = $branchResult.Text.Trim()
+        }
+
+        $commitResult = Get-GitOutput -Arguments @("log", "-1", "--format=%s") -AllowFailure
+        if ($commitResult.Success -and $commitResult.Text.Trim()) {
+            $snapshot.LastCommit = $commitResult.Text.Trim()
         }
 
         $statusResult = Get-GitOutput -Arguments @("status", "--short", "--untracked-files=all") -AllowFailure
@@ -5286,6 +5331,7 @@ function Get-GPushRepositorySnapshot {
             if (-not $countResult.Success -or $parts.Count -lt 2) {
                 return [PSCustomObject]$snapshot
             }
+            $snapshot.Compared = $true
             if ($snapshot.Ahead -eq 0 -and $snapshot.Behind -eq 0) {
                 $snapshot.Sync = "Up to date"
             }
@@ -5338,8 +5384,11 @@ function Write-GPushAllRow {
         [string]$Result = ""
     )
 
-    $repoText = Limit-GPushTableText -Text ([string]$Snapshot.Repository) -Width 24
-    $branchText = Limit-GPushTableText -Text ([string]$Snapshot.Branch) -Width 24
+    $commitText = Limit-GPushTableText -Text ([string]$Snapshot.LastCommit) -Width 34
+    $behindText = if ($Snapshot.Compared) { [string]$Snapshot.Behind } else { "-" }
+    $aheadText = if ($Snapshot.Compared) { [string]$Snapshot.Ahead } else { "-" }
+    $repoText = Limit-GPushTableText -Text ([string]$Snapshot.Repository) -Width 20
+    $branchText = Limit-GPushTableText -Text ([string]$Snapshot.Branch) -Width 18
     $worktreeText = Limit-GPushTableText -Text ([string]$Snapshot.Worktree) -Width 12
     $syncText = Limit-GPushTableText -Text ([string]$Snapshot.Sync) -Width 23
     $resultText = Limit-GPushTableText -Text $Result -Width 22
@@ -5383,7 +5432,9 @@ function Write-GPushAllRow {
         [ConsoleColor]::DarkGray
     }
 
-    Write-Host ("  {0,-24} {1,-24} " -f $repoText, $branchText) -NoNewline -ForegroundColor White
+    Write-Host ("  {0,-20} {1,-18} " -f $repoText, $branchText) -NoNewline -ForegroundColor White
+    Write-Host ("{0,-34} " -f $commitText) -NoNewline -ForegroundColor Gray
+    Write-Host ("{0,6} | {1,-5} " -f $behindText, $aheadText) -NoNewline -ForegroundColor $syncColor
     Write-Host ("{0,-12} " -f $worktreeText) -NoNewline -ForegroundColor $worktreeColor
     Write-Host ("{0,-23} " -f $syncText) -NoNewline -ForegroundColor $syncColor
     Write-Host $resultText -ForegroundColor $resultColor
@@ -5554,9 +5605,10 @@ function Show-GPushAllRepositories {
     }
 
     Write-Host ""
-    Write-Host ("  {0,-24} {1,-24} {2,-12} {3,-23} {4}" -f "Repository", "Branch", "Worktree", "Sync", "Result") -ForegroundColor DarkGray
-    Write-Host ("  {0}" -f ("-" * 112)) -ForegroundColor DarkGray
+    Write-Host ("  {0,-20} {1,-18} {2,-34} {3,6} | {4,-5} {5,-12} {6,-23} {7}" -f "Repository", "Branch", "Last commit", "Behind", "Ahead", "Worktree", "Sync", "Result") -ForegroundColor DarkGray
+    Write-Host ("  {0}" -f ("-" * 140)) -ForegroundColor DarkGray
 
+    $bulkTimer = [Diagnostics.Stopwatch]::StartNew()
     $total = 0
     $clean = 0
     $dirty = 0
@@ -5583,14 +5635,14 @@ function Show-GPushAllRepositories {
         else {
             $state = Get-GPushRepositorySnapshot -Repository $repository -Fetch:($Mode -eq "fetch")
             $result = if ($Mode -eq "fetch") {
-                if ($state.FetchOk) { "OK fetched" } else { "FAIL fetch" }
+                if (-not $state.Valid) { "FAIL invalid repo" } elseif ($state.Remote -eq "-") { "SKIP no remote" } elseif ($state.FetchOk) { "OK fetched" } else { "FAIL fetch" }
             }
             else {
                 ""
             }
 
             if (-not $state.Valid -or -not $state.FetchOk -or $state.Detached -or
-                $state.Sync -eq "No remote" -or
+                $state.Sync -in @("No remote", "Unknown", "Missing upstream", "Unsupported local upstream") -or $state.Worktree -eq "unknown" -or
                 ($state.Ahead -gt 0 -and $state.Behind -gt 0)) {
                 $issues++
             }
@@ -5611,6 +5663,11 @@ function Show-GPushAllRepositories {
         }
 
         Write-GPushAllRow -Snapshot $state -Result $result
+        if ($Mode -in @('sync','push')) {
+            Show-GPushVisualBar -Done $total -Total @($Repositories).Count
+            Write-Dim ("  Elapsed: {0:F1}s" -f $bulkTimer.Elapsed.TotalSeconds)
+            try { Add-Content -LiteralPath (Join-Path $ConfigDir 'history.log') -Value ("{0:o} {1} {2} {3}" -f (Get-Date),$Mode,$result,$repository.Path) -ErrorAction Stop } catch { Write-Dim 'History unavailable.' }
+        }
     }
 
     Write-Separator
@@ -5900,6 +5957,126 @@ if (-not $AllRepos -and $UtilityMode -and [string]::IsNullOrWhiteSpace($Project)
 # ============================================================
 # LOAD REPOSITORIES
 # ============================================================
+
+function Get-GPushVisualSnapshots {
+    foreach ($repository in @(Get-GPushCache | Sort-Object Name, Path)) {
+        try { Get-GPushRepositorySnapshot -Repository $repository }
+        catch { Write-Warning "Cannot inspect $($repository.Name): $($_.Exception.Message)" }
+    }
+}
+
+function Show-GPushVisualStatus {
+    param([string]$Mode)
+    $states = @(Get-GPushVisualSnapshots)
+    if ($Mode -eq '--json') {
+        $rows = @($states | ForEach-Object {
+            [PSCustomObject]@{ repository=$_.Repository; branch=$_.Branch; lastCommit=$_.LastCommit; behind=$(if ($_.Compared) {$_.Behind} else {$null}); ahead=$(if ($_.Compared) {$_.Ahead} else {$null}); dirtyCount=$_.DirtyCount; sync=$_.Sync; path=$_.Path }
+        })
+        ConvertTo-Json -InputObject $rows -Depth 4
+        return
+    }
+    $compact = $false
+    if (-not [Console]::IsOutputRedirected) { try { $compact = [Console]::WindowWidth -lt 120 } catch {} }
+    if ($compact) { Write-Host ('{0,-16} {1,-12} {2,-20} {3,5} | {4,-5} {5}' -f 'Repository','Branch','Last commit','Behind','Ahead','Worktree') }
+    else { Write-Host ('{0,-20} {1,-18} {2,-34} {3,6} | {4,-5} {5,-12} {6}' -f 'Repository','Branch','Last commit','Behind','Ahead','Worktree','Sync') }
+    foreach ($state in $states) {
+        if ($Mode -eq '--dirty' -and $state.DirtyCount -eq 0) { continue }
+        if ($Mode -eq '--ahead' -and (-not $state.Compared -or $state.Ahead -eq 0)) { continue }
+        if ($Mode -eq '--behind' -and (-not $state.Compared -or $state.Behind -eq 0)) { continue }
+        if ($compact) {
+            $behind = if ($state.Compared) { $state.Behind } else { '-' }
+            $ahead = if ($state.Compared) { $state.Ahead } else { '-' }
+            Write-Host ('{0,-16} {1,-12} {2,-20} {3,5} | {4,-5} {5}' -f (Limit-GPushTableText -Text $state.Repository -Width 16),(Limit-GPushTableText -Text $state.Branch -Width 12),(Limit-GPushTableText -Text $state.LastCommit -Width 20),$behind,$ahead,$state.Worktree)
+        } else { Write-GPushAllRow -Snapshot $state }
+        if ($Mode -eq 'dry-run') {
+            $plan = if ($state.Worktree -ne 'clean') {'SKIP dirty or unknown'} elseif (-not $state.Compared) {'CHECK upstream'} elseif ($state.Ahead -gt 0 -and $state.Behind -gt 0) {'SKIP diverged'} elseif ($state.Ahead -gt 0) {'PUSH candidate (subject to protection)'} elseif ($state.Behind -gt 0) {'FAST-FORWARD candidate'} else {'No action'}
+            Write-Dim "  $plan"
+        }
+    }
+    if ($Mode -in @('overview','health')) {
+        $clean = @($states | Where-Object { $_.Sync -eq 'Up to date' -and $_.Worktree -eq 'clean' }).Count
+        Write-Section 'Clean and synchronized'
+        Show-GPushVisualBar -Done $clean -Total $states.Count
+    }
+}
+
+function Invoke-GPushVisualCommand {
+    param([string]$Mode, [string[]]$Tail)
+    switch ($Mode) {
+        'overview' {
+            if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) { Show-GPushVisualStatus 'overview'; return 0 }
+            $selected = 0
+            while ($true) {
+                Clear-Host; Show-Banner; Show-GPushVisualStatus 'overview'
+                $repositories = @(Get-GPushCache | Sort-Object Name, Path)
+                if ($repositories.Count -eq 0) { Write-Warn 'Run gp cache refresh first.'; return 1 }
+                if ($selected -ge $repositories.Count) { $selected = 0 }
+                $repository = $repositories[$selected]
+                Write-Info ("Selected: " + $repository.Name)
+                Write-Dim '[Up/Down] Select  [Enter] Changes  [F] Fetch  [S] Sync  [Q] Quit'
+                $key = [Console]::ReadKey($true).Key
+                switch ($key) {
+                    'Q' { return 0 }
+                    'UpArrow' { $selected = ($selected + $repositories.Count - 1) % $repositories.Count }
+                    'DownArrow' { $selected = ($selected + 1) % $repositories.Count }
+                    'Enter' { & git -C $repository.Path status --short | ForEach-Object { Write-Host $_ }; & git -C $repository.Path diff --stat HEAD | ForEach-Object { Write-Host $_ }; $null = Read-Host 'Press Enter to continue' }
+                    'F' { $state = Get-GPushRepositorySnapshot -Repository $repository -Fetch; Write-GPushAllRow -Snapshot $state; $null = Read-Host 'Press Enter to continue' }
+                    'S' { if (Confirm-GPushAction -Prompt 'Synchronize selected repository (no commit)?') { $result = Invoke-GPushAllSync -Repository $repository; Write-GPushAllRow -Snapshot $result.Snapshot -Result $result.Result }; $null = Read-Host 'Press Enter to continue' }
+                }
+            }
+        }
+        'history' {
+            $historyFile = Join-Path $ConfigDir 'history.log'
+            if (Test-Path $historyFile) { Get-Content $historyFile -Tail 30 } else { Write-Dim 'No bulk operations recorded yet.' }
+        }
+        'watch' {
+            $interval = 10
+            if ($Tail.Count -gt 0 -and (-not [int]::TryParse($Tail[0], [ref]$interval) -or $interval -lt 1)) { return 2 }
+            if ([Console]::IsOutputRedirected) { Show-GPushVisualStatus 'overview'; return 0 }
+            while ($true) { Clear-Host; Show-GPushVisualStatus 'overview'; Start-Sleep -Seconds $interval }
+        }
+        'stats' {
+            $counts = @(); $days = @{}; $total = 0; $added = 0; $removed = 0
+            foreach ($repository in @(Get-GPushCache)) {
+                $dates = @(& git -C $repository.Path log '--since=30 days ago' '--format=%as' HEAD 2>$null)
+                $count = $dates.Count; $total += $count
+                foreach ($line in @(& git -C $repository.Path log '--since=30 days ago' '--format=' --numstat HEAD 2>$null)) {
+                    if ($line -match '^(\d+)\t(\d+)\t') { $added += [long]$Matches[1]; $removed += [long]$Matches[2] }
+                }
+                $counts += [PSCustomObject]@{Name=$repository.Name; Count=$count}
+                foreach ($day in $dates) { $days[$day] = 1 + [int]$days[$day] }
+            }
+            Write-Section 'Development activity / 30 days'; Write-KeyValue 'Commits' "$total"; Write-KeyValue 'Lines added' "$added"; Write-KeyValue 'Lines removed' "$removed"
+            $maximum = [int]($counts | Measure-Object Count -Maximum).Maximum
+            foreach ($item in $counts) { Write-Host ('{0,-22}' -f $item.Name) -NoNewline; Show-GPushVisualBar -Done $item.Count -Total $maximum }
+            $heat = for ($i=29; $i -ge 0; $i--) { $n=[int]$days[(Get-Date).AddDays(-$i).ToString('yyyy-MM-dd')]; if ($n -eq 0) {'.'} elseif ($n -lt 3) {'o'} elseif ($n -lt 6) {'O'} else {'#'} }
+            Write-Host ($heat -join ''); Write-Dim '. 0  o 1-2  O 3-5  # 6+ commits'
+        }
+        { $_ -in @('graph','changes') } {
+            if ($Tail.Count -eq 0) { $path = (& git rev-parse --show-toplevel 2>$null) -join ''; if ($LASTEXITCODE -ne 0) { Write-Err 'Specify a cached repository.'; return 2 } }
+            else {
+                $query = Resolve-GPushAlias -Search ($Tail -join ' ')
+                $matches = @(Get-GPushCache | Where-Object { $_.Name -eq $query -or $_.Path -eq $query })
+                if ($matches.Count -ne 1) { Write-Err 'Specify one exact cached repository name or path.'; return 2 }
+                $path = $matches[0].Path
+            }
+            if ($Mode -eq 'graph') { $color = if ($script:GPushNoColor -or $env:NO_COLOR -or [Console]::IsOutputRedirected) {'never'} else {'always'}; & git -C $path log --graph --all --decorate --oneline -n 40 "--color=$color" | ForEach-Object { Write-Host $_ }; return $LASTEXITCODE }
+            else { & git -C $path status --short | ForEach-Object { Write-Host $_ }; if ($LASTEXITCODE -ne 0) { return $LASTEXITCODE }; & git -C $path diff --stat HEAD | ForEach-Object { Write-Host $_ }; return $LASTEXITCODE }
+        }
+        default { Show-GPushVisualStatus $Mode }
+    }
+    return 0
+}
+
+if ($VisualMode) {
+    if (-not (Test-GitCommand)) { Write-Err 'Git was not found in PATH.'; exit 1 }
+    # JSON and history must use the success stream without mixing in a numeric result.
+    if ($VisualMode -eq '--json') { Show-GPushVisualStatus '--json'; exit 0 }
+    if ($VisualMode -eq 'history') { $historyFile = Join-Path $ConfigDir 'history.log'; if (Test-Path $historyFile) { Get-Content $historyFile -Tail 30 }; exit 0 }
+    $visualResult = @(Invoke-GPushVisualCommand -Mode $VisualMode -Tail $VisualTail)
+    if ($visualResult.Count -gt 1) { $visualResult[0..($visualResult.Count-2)] | Write-Output }
+    exit ([int]$visualResult[-1])
+}
 
 Show-Banner
 

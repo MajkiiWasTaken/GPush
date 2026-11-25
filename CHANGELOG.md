@@ -2,6 +2,30 @@
 
 All notable changes to GPush are documented here.
 
+## 4.5.0
+
+### Added
+- Interactive workspace overview, read-only health and watch commands.
+- Commit activity statistics, line totals, ASCII charts and decorated branch graph.
+- Working tree change summary, cached status filters, JSON and dry-run preview.
+- Bulk operation progress, elapsed time, local history and update milestone bars.
+- Compact visual tables and no-color option.
+
+### Compatibility
+- Existing 4.4.3 Git workflows and configuration remain in place.
+- Linux JSON output requires Python 3. Stats are based on current-branch history.
+
+## 4.4.3
+
+### Added
+- Cached repository dashboard with latest commit subject, behind/ahead counts and working tree state on Windows and Linux.
+
+### Fixed
+- CI explicitly handles expected nonzero updater test exit codes.
+- Unknown comparison counts are displayed as dashes instead of zero.
+- Linux updater rejects unusable published checksums and unrelated platform packages.
+- Non-interactive Windows invocations skip Tab completion bootstrap.
+
 ## 4.4.2
 
 ### Fixed

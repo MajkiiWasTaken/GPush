@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-SCRIPT_VERSION="4.4.2"
+SCRIPT_VERSION="4.5.0"
 AUTHOR="Michal Švrček"
 GITHUB="https://github.com/MajkiiWasTaken"
 
@@ -27,7 +27,7 @@ SEARCH_ROOTS=("${DEFAULT_SEARCH_ROOTS[@]}")
 PROTECTED_BRANCHES=("${DEFAULT_PROTECTED_BRANCHES[@]}")
 IGNORED_DIRS=("${DEFAULT_IGNORED_DIRS[@]}")
 
-if [[ -t 1 ]]; then
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
     C_RESET=$'\033[0m'
     C_CYAN=$'\033[36m'
     C_GREEN=$'\033[32m'
@@ -190,7 +190,8 @@ EOFH
     printf '  %-11s%s\n' config 'show, path, doctor, add, remove, set, reset'
     printf '  %-11s%s\n' alias 'list, set, remove'
     printf '  %-11s%s\n' favorite 'list, add, remove  (alias: fav)'
-    printf '  %-11s%s\n' all 'status, fetch, sync, push (default: sync)'
+    printf '  %-11s%s\n' all 'status, fetch, sync, push, dry-run (default: sync)'
+    printf '  %-11s%s\n' visual 'overview, health, stats, history, watch, changes; branch graph'
     printf '  %-11s%s\n' clone '<url> [destination]'
     printf '  %-11s%s\n' favorites 'list favorite repositories'
     printf '  %-11s%s\n' recent 'show recent repositories'
@@ -1565,6 +1566,41 @@ bulk_sync() (
     fi
 )
 
+bulk_dashboard_row() (
+    local repository="$1" action="$2" branch="-" commit="-" behind="-" ahead="-" worktree="unknown" state="Unknown" result="" remote="" upstream="" counts="" dirty="" failed=0
+    cd "$repository" || return 1
+    branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || printf '(detached)')"
+    commit="$(git log -1 --format=%s 2>/dev/null || printf '-')"
+    if dirty="$(git status --porcelain --untracked-files=all)"; then
+        if [[ -z "$dirty" ]]; then worktree=clean; else worktree="dirty ($(printf '%s\n' "$dirty" | wc -l))"; fi
+    else failed=1; fi
+    remote="$(git config --get "branch.$branch.remote" || current_remote || true)"
+    if [[ "$remote" == . ]]; then state="Local upstream"; failed=1
+    elif [[ -z "$remote" ]]; then state="No remote"; failed=1
+    elif [[ "$action" == fetch ]] && ! git fetch --quiet --prune "$remote"; then state="Fetch failed"; failed=1
+    elif [[ "$branch" == '(detached)' ]]; then state="Detached HEAD"; failed=1
+    else
+        upstream="$(git rev-parse --symbolic-full-name '@{u}' 2>/dev/null || true)"
+        if [[ -z "$upstream" ]]; then
+            if git config --get "branch.$branch.merge" >/dev/null; then state="Missing upstream"; failed=1
+            elif git show-ref --verify --quiet "refs/remotes/$remote/$branch"; then upstream="refs/remotes/$remote/$branch"
+            else state="New remote branch"; fi
+        fi
+        if [[ -n "$upstream" ]]; then
+            if counts="$(git rev-list --left-right --count "HEAD...$upstream")"; then
+                read -r ahead behind <<< "$counts"
+                if (( ahead > 0 && behind > 0 )); then state=Diverged; failed=1
+                elif (( ahead > 0 )); then state=Ahead
+                elif (( behind > 0 )); then state=Behind
+                else state="Up to date"; fi
+            else failed=1; fi
+        fi
+    fi
+    if [[ "$action" == fetch ]]; then result="OK fetched"; (( failed == 0 )) || result="Attention"; fi
+    printf '  %-20.20s %-18.18s %-34.34s %6s | %-5s %-12.12s %-23.23s %s\n' "${repository##*/}" "$branch" "$commit" "$behind" "$ahead" "$worktree" "$state" "$result"
+    return "$failed"
+)
+
 handle_all() {
     local action=sync allow_protected=false message="" refresh=false
     if [[ $# -gt 0 && "$1" != -* ]]; then action="$1"; shift; fi
@@ -1594,12 +1630,19 @@ handle_all() {
     if [[ "$action" == push ]]; then
         confirm "Commit and synchronize ${#repositories[@]} repositories?" || return 0
     fi
-    local repository remote_name failures=0
+    local repository failures=0 processed=0 started=$SECONDS
+    if [[ "$action" == status || "$action" == fetch ]]; then
+        printf '  %-20s %-18s %-34s %6s | %-5s %-12s %-23s %s\n' Repository Branch "Last commit" Behind Ahead Worktree Sync Result
+    fi
     for repository in "${repositories[@]}"; do
         case "$action" in
-            status) (repo_status "$repository") || failures=$((failures+1)) ;;
-            fetch) (cd "$repository" && remote_name="$(current_remote)" && git fetch --prune "$remote_name") || failures=$((failures+1)) ;;
-            sync|push) bulk_sync "$repository" "$allow_protected" "$message" || failures=$((failures+1)) ;;
+            status|fetch) bulk_dashboard_row "$repository" "$action" || failures=$((failures+1)) ;;
+            sync|push)
+                local result=OK
+                bulk_sync "$repository" "$allow_protected" "$message" || { failures=$((failures+1)); result=ATTENTION; }
+                processed=$((processed+1)); visual_bar "$processed" "${#repositories[@]}"; printf '  %ss\n' "$((SECONDS-started))"
+                printf '%s %s %s %s\n' "$(date -Iseconds)" "$action" "$result" "$repository" >> "$CONFIG_DIR/history.log" || true ;;
+
         esac
     done
     kv Repositories "${#repositories[@]}"
@@ -2035,7 +2078,6 @@ if sys.argv[2]=='tag': print(d.get('tag_name',''))
 elif sys.argv[2]=='linux_asset':
     assets=d.get('assets',[])
     cand=[a for a in assets if 'linux' in a.get('name','').lower() and a.get('name','').lower().endswith(('.tar.gz','.zip'))]
-    if not cand: cand=[a for a in assets if a.get('name','').lower().endswith(('.tar.gz','.zip')) and 'source' not in a.get('name','').lower()]
     if cand: print(cand[0].get('name','')+'|'+cand[0].get('browser_download_url',''))
 elif sys.argv[2]=='checksum':
     assets=d.get('assets',[])
@@ -2054,6 +2096,7 @@ backup_current_gp() {
     backup_path="$BACKUP_DIR/v$SCRIPT_VERSION-$(date +%Y%m%d-%H%M%S)"; mkdir -p "$backup_path"; cp "$current_path" "$backup_path/gp"; chmod +x "$backup_path/gp"; printf '%s' "$backup_path"
 }
 handle_update() {
+    if (( $# > 1 )); then err "Update accepts at most one action."; return 2; fi
     local action="${1:-install}"; case "$action" in check|install|rollback) ;; *) err "Unknown update action: $action"; dim 'Use: gp update [check|install|rollback]'; return 2;; esac
     banner
     if [[ "$action" == rollback ]]; then
@@ -2065,29 +2108,35 @@ handle_update() {
     if ! version_gt "$tag" "$SCRIPT_VERSION"; then ok 'GPush is up to date.'; rm -rf "$tmp"; return 0; fi
     warn "Update available: $SCRIPT_VERSION -> $tag"; if [[ "$action" == check ]]; then dim "Run 'gp update' to install."; rm -rf "$tmp"; return 0; fi
     asset="$(release_field "$json" linux_asset)"; [[ -n "$asset" ]] || { err 'Latest release has no Linux package asset.'; rm -rf "$tmp"; return 1; }; name="${asset%%|*}"; url="${asset#*|}"; confirm_default_yes "Download and install $tag?" || { rm -rf "$tmp"; return 0; }
-    info "[UPDATE] Downloading $name"; curl -fL -H "User-Agent: GPush/$SCRIPT_VERSION" "$url" -o "$tmp/$name" || { rm -rf "$tmp"; return 1; }
+    visual_bar 0 4; printf ' Downloading\n'; info "[UPDATE] Downloading $name"; curl -fL -H "User-Agent: GPush/$SCRIPT_VERSION" "$url" -o "$tmp/$name" || { rm -rf "$tmp"; return 1; }
+    visual_bar 1 4; printf ' Downloaded\n'
     local checksum checksum_url expected actual
     checksum="$(release_field "$json" checksum "$name" || true)"
     if [[ -n "$checksum" ]]; then
         checksum_url="${checksum#*|}"
         if curl -fsSL -H "User-Agent: GPush/$SCRIPT_VERSION" "$checksum_url" -o "$tmp/checksum.txt"; then
             expected="$(grep -F "$name" "$tmp/checksum.txt" 2>/dev/null | grep -Eo '[A-Fa-f0-9]{64}' | head -n1 || true)"
-            [[ -n "$expected" ]] || expected="$(grep -Eo '[A-Fa-f0-9]{64}' "$tmp/checksum.txt" | head -n1 || true)"
+            if [[ -z "$expected" && ( "${checksum%%|*}" == "$name.sha256" || "${checksum%%|*}" == "$name.sha256.txt" ) ]]; then
+                expected="$(grep -Eo '[A-Fa-f0-9]{64}' "$tmp/checksum.txt" | head -n1 || true)"
+            fi
             if [[ -n "$expected" ]]; then
                 if command -v sha256sum >/dev/null 2>&1; then actual="$(sha256sum "$tmp/$name" | awk '{print $1}')"; else actual="$(shasum -a 256 "$tmp/$name" | awk '{print $1}')"; fi
                 [[ "${actual,,}" == "${expected,,}" ]] || { err 'Downloaded package SHA-256 does not match published checksum.'; rm -rf "$tmp"; return 1; }
                 ok '[UPDATE] SHA-256 verified'
             else
-                warn '[UPDATE] Checksum asset found, but no SHA-256 value could be parsed.'
+                err '[UPDATE] No matching SHA-256 value; update cancelled.'; rm -rf "$tmp"; return 1
             fi
+        else
+            err '[UPDATE] Checksum download failed; update cancelled.'; rm -rf "$tmp"; return 1
         fi
     else
         dim '[UPDATE] No SHA-256 asset published; validating package structure instead.'
     fi
+    visual_bar 2 4; printf ' Package checks complete\n'
     mkdir -p "$tmp/extract"
     case "$name" in *.tar.gz) tar -xzf "$tmp/$name" -C "$tmp/extract" || { rm -rf "$tmp"; return 1; };; *.zip) command -v unzip >/dev/null 2>&1 || { err 'unzip is required for ZIP update packages.'; rm -rf "$tmp"; return 1; }; unzip -q "$tmp/$name" -d "$tmp/extract" || { rm -rf "$tmp"; return 1; };; *) err 'Unsupported Linux update package.'; rm -rf "$tmp"; return 1;; esac
     local new_gp package_version backup_path current_path; new_gp="$(find "$tmp/extract" -type f -name gp -print -quit)"; [[ -n "$new_gp" ]] || { err 'Release package does not contain gp.'; rm -rf "$tmp"; return 1; }; package_version="$(sed -n 's/^SCRIPT_VERSION="\([^"]*\)"/\1/p' "$new_gp" | head -n1)"; [[ "$(version_numeric "$package_version")" == "$(version_numeric "$tag")" ]] || { err "Package version '$package_version' does not match release '$tag'."; rm -rf "$tmp"; return 1; }
-    backup_path="$(backup_current_gp)" || { rm -rf "$tmp"; return 1; }; dim "Backup: $backup_path"; current_path="$(command -v gp 2>/dev/null || true)"; [[ -n "$current_path" ]] || current_path="$HOME/.local/bin/gp"; mkdir -p "$(dirname "$current_path")"; install -m 0755 "$new_gp" "$current_path" || { rm -rf "$tmp"; return 1; }; ok 'GPush updated successfully.'; kv Previous "$SCRIPT_VERSION"; kv Current "$package_version" "$C_GREEN"; rm -rf "$tmp"
+    backup_path="$(backup_current_gp)" || { rm -rf "$tmp"; return 1; }; visual_bar 3 4; printf ' Backup created\n'; dim "Backup: $backup_path"; current_path="$(command -v gp 2>/dev/null || true)"; [[ -n "$current_path" ]] || current_path="$HOME/.local/bin/gp"; mkdir -p "$(dirname "$current_path")"; install -m 0755 "$new_gp" "$current_path" || { rm -rf "$tmp"; return 1; }; visual_bar 4 4; printf ' Installed\n'; ok 'GPush updated successfully.'; kv Previous "$SCRIPT_VERSION"; kv Current "$package_version" "$C_GREEN"; rm -rf "$tmp"
 }
 levenshtein() {
     local a="${1,,}" b="${2,,}"
@@ -2123,7 +2172,7 @@ command_suggestion() {
         completition|competion) printf '%s' 'gp completion install'; return 0 ;;
     esac
 
-    local -a commands=(repo branch tag remote stash cache config alias favorite favorites fav all project clone recent update completion help version add remove set reset)
+    local -a commands=(repo branch tag remote stash cache config alias favorite favorites fav all overview health stats history watch changes project clone recent update completion help version add remove set reset)
     local best='' best_distance=999 distance candidate max_distance
     for candidate in "${commands[@]}"; do
         distance="$(levenshtein "$value" "$candidate")"
@@ -2228,7 +2277,7 @@ _gpush_complete() {
     local -a repos=()
     mapfile -t repos < <(_gpush_completion_repo_names)
 
-    local -a top=(repo branch tag remote stash cache config alias favorite fav favorites all project clone recent update completion help version add remove set reset)
+    local -a top=(repo branch tag remote stash cache config alias favorite fav favorites all overview health stats history watch changes project clone recent update completion help version add remove set reset)
     local -a config_all=(search-root protected-branch ignored-directory default-remote large-file-threshold)
     local -a config_lists=(search-root protected-branch ignored-directory)
     local -a config_scalars=(default-remote large-file-threshold)
@@ -2248,7 +2297,7 @@ _gpush_complete() {
             elif (( COMP_CWORD == 3 )); then _gpush_completion_add_matches "$cur" "${repos[@]}"; fi
             ;;
         branch)
-            if (( COMP_CWORD == 2 )); then _gpush_completion_add_matches "$cur" list new switch delete prune
+            if (( COMP_CWORD == 2 )); then _gpush_completion_add_matches "$cur" list new switch delete prune graph
             elif (( COMP_CWORD >= 3 )); then _gpush_completion_add_matches "$cur" "${repos[@]}"; fi
             ;;
         tag)
@@ -2290,7 +2339,8 @@ _gpush_complete() {
             if (( COMP_CWORD == 2 )); then _gpush_completion_add_matches "$cur" list add remove
             elif (( COMP_CWORD == 3 )); then _gpush_completion_add_matches "$cur" "${repos[@]}"; fi
             ;;
-        all) (( COMP_CWORD == 2 )) && _gpush_completion_add_matches "$cur" status fetch sync push ;;
+        all) if (( COMP_CWORD == 2 )); then _gpush_completion_add_matches "$cur" status fetch sync push dry-run; elif [[ "$action" == status ]]; then _gpush_completion_add_matches "$cur" --json --dirty --ahead --behind; fi ;;
+        changes) _gpush_completion_add_matches "$cur" "${repos[@]}" ;;
         update) (( COMP_CWORD == 2 )) && _gpush_completion_add_matches "$cur" check install rollback ;;
         completion) (( COMP_CWORD == 2 )) && _gpush_completion_add_matches "$cur" install status uninstall ;;
         clone)
@@ -2375,8 +2425,131 @@ handle_completion() {
     esac
 }
 
+# Visual commands use cached repositories and never modify Git history.
+visual_snapshot() (
+    local repository="$1" branch commit dirty counts ahead=- behind=- state=Unknown upstream remote
+    cd "$repository" || return 1
+    branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || printf detached)
+    commit=$(git log -1 --format=%s 2>/dev/null || printf '-')
+    dirty=$(git status --porcelain --untracked-files=all) || return 1
+    upstream=$(git rev-parse --symbolic-full-name '@{u}' 2>/dev/null || true)
+    if [[ -z "$upstream" ]]; then
+        remote=$(git config --get "branch.$branch.remote" || current_remote || true)
+        if [[ "$branch" == detached ]]; then state='Detached HEAD'
+        elif [[ -z "$remote" ]]; then state='No remote'
+        elif [[ "$remote" == . ]]; then state='Local upstream'
+        elif git config --get "branch.$branch.merge" >/dev/null; then state='Missing upstream'
+        elif git show-ref --verify --quiet "refs/remotes/$remote/$branch"; then upstream="refs/remotes/$remote/$branch"
+        else state='New remote branch'; fi
+    fi
+    if [[ -n "$upstream" ]] && counts=$(git rev-list --left-right --count "HEAD...$upstream" 2>/dev/null); then
+        read -r ahead behind <<< "$counts"
+        if (( ahead && behind )); then state=Diverged; elif (( ahead )); then state=Ahead; elif (( behind )); then state=Behind; else state='Up to date'; fi
+    fi
+    printf '%s\0' "${repository##*/}" "$branch" "$commit" "$behind" "$ahead" "$(if [[ -n "$dirty" ]]; then printf '%s' "$(printf '%s\n' "$dirty" | wc -l)"; else printf 0; fi)" "$state" "$repository"
+)
+visual_rows() {
+    local repository
+    for repository in "${CACHED_REPOS[@]}"; do visual_snapshot "$repository" || return 1; done
+}
+visual_bar() {
+    local done_count="$1" total="$2" width=20 filled
+    filled=$((done_count * width / (total > 0 ? total : 1)))
+    printf '%s[' "$C_CYAN"; printf '%*s' "$filled" '' | tr ' ' '#'; printf '%*s' "$((width-filled))" '' | tr ' ' '-'; printf ']%s %s/%s' "$C_RESET" "$done_count" "$total"
+}
+visual_status() {
+    local filter="${1:-}" repository branch commit behind ahead dirty state path n=0 clean=0
+    local -a fields=()
+    local snapshot_file
+    load_cache
+    if [[ "$filter" == --json ]]; then
+        command -v python3 >/dev/null || { err 'JSON output requires python3.'; return 1; }
+        ( set -o pipefail; visual_rows | python3 -c 'import sys,json; a=sys.stdin.buffer.read().split(b"\0")[:-1]; keys=("repository","branch","lastCommit","behind","ahead","dirtyCount","sync","path"); rows=[]
+for i in range(0,len(a),8):
+ r=dict(zip(keys,[v.decode("utf-8",errors="replace") for v in a[i:i+8]]));
+ for k in ("behind","ahead","dirtyCount"): r[k]=int(r[k]) if r[k].isdigit() else None
+ rows.append(r)
+print(json.dumps(rows,ensure_ascii=False,indent=2))' )
+        return $?
+    fi
+    snapshot_file=$(mktemp) || return 1
+    if ! visual_rows > "$snapshot_file"; then rm -f -- "$snapshot_file"; err 'Repository inspection failed.'; return 1; fi
+    mapfile -d '' -t fields < "$snapshot_file"
+    rm -f -- "$snapshot_file"
+    local commit_width=30 repo_width=20 columns=100
+    if [[ -t 1 ]]; then columns=$(tput cols 2>/dev/null || printf 100); fi
+    [[ "$columns" =~ ^[0-9]+$ ]] || columns=100
+    if (( columns < 90 )); then repo_width=14; commit_width=18; fi
+    if (( columns < 65 )); then repo_width=10; commit_width=10; fi
+    printf '%-*s %-14s %-*s %6s | %-5s %s\n' "$repo_width" Repository Branch "$commit_width" 'Last commit' Behind Ahead 'Worktree / Sync'
+    for ((n=0;n+7<${#fields[@]};n+=8)); do
+        repository=${fields[n]}; branch=${fields[n+1]}; commit=${fields[n+2]}; behind=${fields[n+3]}; ahead=${fields[n+4]}; dirty=${fields[n+5]}; state=${fields[n+6]}; path=${fields[n+7]}
+        case "$filter" in --dirty) (( dirty > 0 )) || continue;; --ahead) [[ "$ahead" != - ]] && (( ahead > 0 )) || continue;; --behind) [[ "$behind" != - ]] && (( behind > 0 )) || continue;; esac
+        printf '%-*.*s %-14.14s %-*.*s %6s | %-5s %s\n' "$repo_width" "$repo_width" "$repository" "$branch" "$commit_width" "$commit_width" "$commit" "$behind" "$ahead" "$dirty changed / $state"
+        if [[ "$filter" == dry-run ]]; then
+            if (( dirty )); then dim '  SKIP dirty'; elif [[ "$ahead" == - ]]; then dim '  CHECK upstream'; elif (( ahead && behind )); then dim '  SKIP diverged'; elif (( ahead )); then dim '  PUSH candidate (subject to protection)'; elif (( behind )); then dim '  FAST-FORWARD candidate'; else dim '  No action'; fi
+        fi
+        if [[ "$state" == 'Up to date' && "$dirty" == 0 ]]; then clean=$((clean+1)); fi
+        : "$path"
+    done
+    if [[ "$filter" == overview || "$filter" == health ]]; then
+        printf '\nClean and synchronized: '; visual_bar "$clean" "${#CACHED_REPOS[@]}"; printf '\n'
+    fi
+}
+visual_command() {
+    local action="$1"; shift
+    local repository total max=1 count day i date_key stamp added=0 removed=0 a d
+    case "$action" in
+        overview)
+            if [[ ! -t 0 || ! -t 1 ]]; then visual_status overview; return $?; fi
+            local key selected=0
+            while true; do
+                printf '\033[H\033[2J'; banner; visual_status overview || return 1
+                load_cache; if (( ${#CACHED_REPOS[@]} == 0 )); then warn 'Run gp cache refresh first.'; return 1; fi
+                (( selected < ${#CACHED_REPOS[@]} )) || selected=0
+                printf '\nSelected: %s\n[Up/Down] Select  [Enter] Changes  [F] Fetch  [S] Sync  [Q] Quit\n' "${CACHED_REPOS[selected]##*/}"
+                IFS= read -rsn1 key || return 0
+                case "$key" in
+                    q|Q) return 0;;
+                    $'\033') IFS= read -rsn2 -t 0.2 key || true; case "$key" in '[A') selected=$(( (selected+${#CACHED_REPOS[@]}-1)%${#CACHED_REPOS[@]} ));; '[B') selected=$(( (selected+1)%${#CACHED_REPOS[@]} ));; esac;;
+                    '') git -C "${CACHED_REPOS[selected]}" status --short; git -C "${CACHED_REPOS[selected]}" diff --stat HEAD; read -r -p 'Press Enter to continue...' key;;
+                    f|F) (cd "${CACHED_REPOS[selected]}" && git fetch --prune); read -r -p 'Press Enter to continue...' key;;
+                    s|S) if confirm 'Synchronize selected repository (no commit)?'; then bulk_sync "${CACHED_REPOS[selected]}" false ''; fi; read -r -p 'Press Enter to continue...' key;;
+                esac
+            done ;;
+        health) visual_status health ;;
+        watch) local interval="${1:-10}"; [[ "$interval" =~ ^[1-9][0-9]*$ ]] || return 2; [[ -t 1 ]] || { visual_status overview; return; }; while true; do printf '\033[H\033[2J'; visual_status overview; sleep "$interval"; done ;;
+        history) if [[ -f "$CONFIG_DIR/history.log" ]]; then tail -n 30 "$CONFIG_DIR/history.log"; else dim "No bulk operations recorded yet."; fi ;;
+        graph|changes) select_repo "${1:-}" || return 1
+            if [[ "$action" == graph ]]; then git -C "$SELECTED" log --graph --all --decorate --oneline -n 40 "--color=$(if [[ -n "$C_CYAN" ]]; then printf auto; else printf never; fi)"
+            else git -C "$SELECTED" status --short; git -C "$SELECTED" diff --stat HEAD; fi ;;
+        stats)
+            load_cache; local -a counts=(); local -A days=(); total=0
+            for repository in "${CACHED_REPOS[@]}"; do
+                count=$(git -C "$repository" rev-list --count --since='30 days ago' HEAD 2>/dev/null || printf 0); counts+=("$count"); total=$((total+count)); (( count <= max )) || max=$count
+                while IFS=$'\t' read -r a d _; do
+                    if [[ "$a" =~ ^[0-9]+$ && "$d" =~ ^[0-9]+$ ]]; then added=$((added+a)); removed=$((removed+d)); fi
+                done < <(git -C "$repository" log --since='30 days ago' --format= --numstat HEAD 2>/dev/null)
+                while IFS= read -r day; do [[ -n "$day" ]] || continue; days[$day]=$(( ${days[$day]:-0}+1 )); done < <(git -C "$repository" log --since='30 days ago' --format=%as HEAD 2>/dev/null)
+            done
+            section 'Development activity / 30 days'; kv Commits "$total"; kv 'Lines added' "$added"; kv 'Lines removed' "$removed"
+            for i in "${!CACHED_REPOS[@]}"; do repository=${CACHED_REPOS[i]}; printf '%-22.22s ' "${repository##*/}"; visual_bar "${counts[i]}" "$max"; printf '\n'; done
+            printf '\nDaily activity (oldest first):\n'
+            for ((i=29;i>=0;i--)); do date_key=$(date -d "$i days ago" +%F); stamp=${days[$date_key]:-0}; if (( stamp == 0 )); then printf '.'; elif (( stamp < 3 )); then printf 'o'; elif (( stamp < 6 )); then printf 'O'; else printf '#'; fi; done; printf '\n. 0  o 1-2  O 3-5  # 6+ commits\n' ;;
+    esac
+}
+
 main() {
     load_config
+    if [[ "${1:-}" == --no-color ]]; then
+        shift; C_RESET= C_CYAN= C_GREEN= C_YELLOW= C_RED= C_MAGENTA= C_GRAY= C_WHITE=
+    fi
+    case "${1:-}" in
+        overview|health|watch|stats|history|changes) local visual="$1"; shift; visual_command "$visual" "$@"; return $? ;;
+        branch) if [[ "${2:-}" == graph ]]; then shift 2; visual_command graph "$@"; return $?; fi ;;
+        all) if [[ "${2:-}" == dry-run && $# == 2 ]]; then visual_status dry-run; return $?; fi
+             if [[ "${2:-}" == status && "${3:-}" =~ ^--(json|dirty|ahead|behind)$ && $# == 3 ]]; then visual_status "$3"; return $?; fi ;;
+    esac
 
     if [[ $# -eq 0 ]]; then
         quick_select_repo || return 0

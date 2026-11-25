@@ -214,8 +214,30 @@ Distributed under the MIT License.
 
 ### Bulk repository synchronization
 
+`gp all status` displays repository, branch, last commit, behind/ahead counts, and working tree state. Counts use locally cached remote refs; `gp all fetch` refreshes them first. A dash means no reliable comparison is available.
+
 `gp all` (or `gp all sync`) fetches and synchronizes cached repositories without creating commits. `gp all push "Update projects"` additionally commits local changes after confirmation. Use `--allow-protected` to permit pushes to protected branches. Dirty repositories are skipped in sync mode; diverged histories and risky files in bulk commit mode require manual attention. No automatic force push or rebase is performed. Run `gp cache refresh` first if the cache is empty.
 
 ### Updating GPush
 
 Use `gp update check` to check for releases, `gp update` (or `gp update install`) to install, and `gp update rollback` to restore a backup. On Windows, `gp --update` remains a compatible legacy alias.
+
+## Visual Experience (4.5.0)
+
+| Command | Description |
+|---|---|
+| `gp overview` | Interactive cached workspace dashboard (arrows, Enter, F, S, Q); static when redirected |
+| `gp health` | Clean/synchronized ratio and cached status |
+| `gp watch [seconds]` | Refresh cached status periodically; Ctrl+C to stop |
+| `gp stats` | Current-branch commits, added/deleted lines and daily activity over 30 days |
+| `gp changes [project]` | Working tree and Git diff statistics |
+| `gp branch graph [project]` | Decorated commit graph (up to 40 commits) |
+| `gp history` | Last 30 bulk operation records |
+| `gp all status --json` | Cached state as JSON (Linux requires python3) |
+| `gp all status --dirty` | Dirty repositories |
+| `gp all status --ahead` | Repositories with local commits ahead |
+| `gp all status --behind` | Repositories behind their upstream |
+| `gp all dry-run` | Read-only, local-ref synchronization candidates; no fetch/commit/push |
+| `gp --no-color overview` | Disable GPush output colors |
+
+Visual previews do not contact remotes unless Fetch or Sync is explicitly selected. Sync preserves protected-branch checks. Stats include all authors on each repository's current branch; shared commits may be counted across repositories. ASCII bars are used for compatibility. Bulk progress advances per completed repository; updater progress advances per milestone. History records local paths and operation results, not commit contents.

@@ -134,12 +134,49 @@ jobs:
       - name: Check update command routing without network
         shell: pwsh
         run: |
+          $PSNativeCommandUseErrorActionPreference = $false
           foreach ($prefix in @('update', '--update')) {
-              $output = & pwsh -NoProfile -File $env:WINDOWS_GP $prefix invalid-action 2>&1 | Out-String
-              if ($LASTEXITCODE -ne 2 -or $output -notmatch 'Unknown update action: invalid-action') {
-                  throw "Update routing failed for $prefix : $output"
+              $output = & pwsh -NoProfile -NonInteractive -File $env:WINDOWS_GP $prefix invalid-action 2>&1 | Out-String
+              $code = $LASTEXITCODE
+              if ($code -ne 2 -or $output -notmatch 'Unknown update action: invalid-action') {
+                  throw "Update routing failed for $prefix (exit $code): $output"
               }
+              Write-Host "PASS: $prefix rejected invalid action (exit $code)"
           }
+          # GitHub's pwsh wrapper otherwise propagates the last native exit code.
+          exit 0
+
+      - name: Check cached repository dashboard
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "gpush-dashboard-test"
+          $repo = Join-Path $env:RUNNER_TEMP "TestProj"
+          $remote = Join-Path $env:RUNNER_TEMP "gpush-test-remote.git"
+          git init --bare $remote
+          git init -b main $repo
+          git -C $repo config user.name Test
+          git -C $repo config user.email test@example.invalid
+          Set-Content (Join-Path $repo "test.txt") "test"
+          git -C $repo add test.txt
+          git -C $repo commit -m "Added fix"
+          git -C $repo remote add origin $remote
+          git -C $repo push -u origin main
+          $cache = Join-Path $env:LOCALAPPDATA "GPush"
+          New-Item -ItemType Directory -Path $cache -Force | Out-Null
+          ConvertTo-Json -InputObject @(@{Name="TestProj"; Path=$repo}) | Set-Content (Join-Path $cache "repos.json")
+          $output = & pwsh -NoProfile -NonInteractive -File $env:WINDOWS_GP all status 2>&1 | Out-String
+          $code = $LASTEXITCODE
+          if ($code -ne 0 -or $output -notmatch 'TestProj\s+main\s+Added fix\s+0\s*\|\s*0') {
+              throw "Dashboard failed (exit $code): $output"
+          }
+          $json = & pwsh -NoProfile -NonInteractive -File $env:WINDOWS_GP all status --json | Out-String
+          if ($LASTEXITCODE -ne 0) { throw 'JSON status failed' }
+          $rows = @($json | ConvertFrom-Json)
+          if ($rows.Count -ne 1 -or $rows[0].repository -ne 'TestProj' -or $rows[0].ahead -ne 0) { throw "Unexpected JSON: $json" }
+          $preview = & pwsh -NoProfile -NonInteractive -File $env:WINDOWS_GP all dry-run | Out-String
+          if ($LASTEXITCODE -ne 0 -or $preview -notmatch 'No action') { throw "Dry-run failed: $preview" }
+          exit 0
 
       - name: Install PSScriptAnalyzer
         shell: pwsh
