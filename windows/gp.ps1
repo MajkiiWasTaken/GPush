@@ -24,7 +24,7 @@ $OutputEncoding           = [System.Text.UTF8Encoding]::new($false)
 # CONFIG
 # ============================================================
 
-$ScriptVersion = "4.5.1"
+$ScriptVersion = "4.5.2"
 $CompletionSchemaVersion = "13"
 
 $ConfigDir  = Join-Path $env:LOCALAPPDATA "GPush"
@@ -6038,28 +6038,132 @@ function Show-GPushVisualStatus {
     }
 }
 
+# Porcelain v2 combines branch, upstream, divergence and worktree in one local call.
+function Get-GPushOverviewLocalState {
+    param($Repository)
+    $state = [ordered]@{ Repository=$Repository.Name; Path=$Repository.Path; Branch='-'; LastCommit='-'; Compared=$false; Ahead=0; Behind=0; DirtyCount=0; Worktree='unknown'; Sync='Inspection failed' }
+    $status = Get-GitOutput -Arguments @('-C', $Repository.Path, '--no-optional-locks', 'status', '--porcelain=v2', '--branch', '--untracked-files=all') -AllowFailure
+    if (-not $status.Success) { return [PSCustomObject]$state }
+    $upstream = $null
+    $unborn = $false
+    foreach ($line in $status.Lines) {
+        $line = [string]$line
+        if ($line -match '^# branch\.head (.*)$') { $state.Branch = $Matches[1] }
+        elseif ($line -match '^# branch\.oid \(initial\)$') { $unborn = $true }
+        elseif ($line -match '^# branch\.upstream (.*)$') { $upstream = $Matches[1] }
+        elseif ($line -match '^# branch\.ab \+(\d+) -(\d+)$') {
+            $state.Ahead = [int]$Matches[1]; $state.Behind = [int]$Matches[2]; $state.Compared = $true
+        }
+        elseif ($line -match '^[12u?] ') { $state.DirtyCount++ }
+    }
+    $state.Worktree = if ($state.DirtyCount -eq 0) { 'clean' } else { "dirty ($($state.DirtyCount))" }
+    if (-not $unborn) {
+        $commit = Get-GitOutput -Arguments @('-C', $Repository.Path, 'log', '-1', '--format=%s') -AllowFailure
+        if ($commit.Success) { $state.LastCommit = $commit.Text.Trim() }
+    }
+    $state.Sync = if ($unborn) { 'No commits' } elseif ($state.Branch -eq '(detached)') { 'Detached HEAD' } elseif (-not $upstream) { 'No tracking upstream' } elseif (-not $state.Compared) { 'Unknown upstream status' } elseif ($state.Ahead -eq 0 -and $state.Behind -eq 0) { 'Up to date' } else { "$($state.Ahead) ahead / $($state.Behind) behind" }
+    return [PSCustomObject]$state
+}
+
+# Overview snapshots are loaded only on startup or an explicit action.
+function Get-GPushOverviewStates {
+    param([object[]]$Repositories, [switch]$Fetch)
+    $ProgressPreference = 'Continue'
+    $activity = if ($Fetch) { 'Fetching repositories' } else { 'Loading local repository status' }
+    $i = 0
+    try {
+        foreach ($repository in $Repositories) {
+            $percent = [int](100 * $i / [Math]::Max(1, $Repositories.Count))
+            Write-Progress -Id 42 -Activity $activity -Status ("{0}/{1} - {2}" -f ($i+1), $Repositories.Count, $repository.Name) -PercentComplete $percent
+            try {
+                if ($Fetch) { Get-GPushRepositorySnapshot -Repository $repository -Fetch }
+                else { Get-GPushOverviewLocalState -Repository $repository }
+            } catch {
+                [PSCustomObject]@{ Repository=$repository.Name; Path=$repository.Path; Branch='-'; LastCommit='-'; Compared=$false; Ahead=0; Behind=0; DirtyCount=0; Worktree='unknown'; Sync='Inspection failed' }
+            }
+            $i++
+        }
+    } finally { Write-Progress -Id 42 -Activity $activity -Completed }
+}
+
+function Show-GPushOverviewFrame {
+    param([object[]]$States, [int]$Selected)
+    Clear-Host
+    Show-Banner
+    $width = 100; $height = 25
+    try { $width = [Console]::WindowWidth; $height = [Console]::WindowHeight } catch {}
+    $page = [Math]::Max(1, $height - 12)
+    $first = [Math]::Max(0, [Math]::Min($Selected - [int][Math]::Floor($page / 2), $States.Count - $page))
+    $last = [Math]::Min($States.Count, $first + $page)
+    $clean = @($States | Where-Object { $_.Sync -eq 'Up to date' -and $_.Worktree -eq 'clean' }).Count
+    Write-Info ("Workspace overview | {0} repositories | {1} clean and synchronized" -f $States.Count, $clean)
+    Write-Dim 'Local snapshot (F/A fetch remote references; R refresh local status)'
+    $rw = [Math]::Max(8, [Math]::Min(24, [int]($width / 4)))
+    $bw = [Math]::Max(8, [Math]::Min(18, [int]($width / 6)))
+    $cw = [Math]::Max(8, $width - $rw - $bw - 32)
+    $format = "{0} {1,-$rw} {2,-$bw} {3,-$cw} {4,6} | {5,-5} {6}"
+    Write-Dim ($format -f ' ', 'Repository', 'Branch', 'Last commit', 'Behind', 'Ahead', 'Worktree')
+    for ($i=$first; $i -lt $last; $i++) {
+        $state = $States[$i]
+        $behind = if ($state.Compared) { $state.Behind } else { '-' }
+        $ahead = if ($state.Compared) { $state.Ahead } else { '-' }
+        $marker = if ($i -eq $Selected) { '>' } else { ' ' }
+        $line = $format -f $marker, (Limit-GPushTableText $state.Repository $rw), (Limit-GPushTableText $state.Branch $bw), (Limit-GPushTableText $state.LastCommit $cw), $behind, $ahead, $state.Worktree
+        $line = Limit-GPushTableText $line ([Math]::Max(1, $width-1))
+        if ($i -eq $Selected) { Write-Host $line -ForegroundColor White -BackgroundColor DarkCyan }
+        elseif ($state.Sync -eq 'Up to date' -and $state.Worktree -eq 'clean') { Write-Ok $line }
+        else { Write-Host $line -ForegroundColor Yellow }
+    }
+    Write-Dim ("{0}/{1} | {2}" -f ($Selected+1), $States.Count, $States[$Selected].Sync)
+    Write-Dim '[Up/Down] Select  [Enter] Changes  [F] Fetch  [A] Fetch all'
+    Write-Dim '[R] Refresh local  [S] Sync  [Q] Quit'
+}
+
 function Invoke-GPushVisualCommand {
     param([string]$Mode, [string[]]$Tail)
     switch ($Mode) {
         'overview' {
             if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) { Show-GPushVisualStatus 'overview'; return 0 }
+            $repositories = @(Get-GPushCache | Sort-Object Name, Path)
+            if ($repositories.Count -eq 0) { Write-Warn 'Run gp cache refresh first.'; return 1 }
+            Clear-Host
+            Show-Banner
+            $states = @(Get-GPushOverviewStates -Repositories $repositories)
             $selected = 0
             while ($true) {
-                Clear-Host; Show-Banner; Show-GPushVisualStatus 'overview'
-                $repositories = @(Get-GPushCache | Sort-Object Name, Path)
-                if ($repositories.Count -eq 0) { Write-Warn 'Run gp cache refresh first.'; return 1 }
-                if ($selected -ge $repositories.Count) { $selected = 0 }
+                Show-GPushOverviewFrame -States $states -Selected $selected
                 $repository = $repositories[$selected]
-                Write-Info ("Selected: " + $repository.Name)
-                Write-Dim '[Up/Down] Select  [Enter] Changes  [F] Fetch  [S] Sync  [Q] Quit'
                 $key = [Console]::ReadKey($true).Key
                 switch ($key) {
                     'Q' { return 0 }
                     'UpArrow' { $selected = ($selected + $repositories.Count - 1) % $repositories.Count }
                     'DownArrow' { $selected = ($selected + 1) % $repositories.Count }
-                    'Enter' { & git -C $repository.Path status --short | ForEach-Object { Write-Host $_ }; & git -C $repository.Path diff --stat HEAD | ForEach-Object { Write-Host $_ }; $null = Read-Host 'Press Enter to continue' }
-                    'F' { $state = Get-GPushRepositorySnapshot -Repository $repository -Fetch; Write-GPushAllRow -Snapshot $state; $null = Read-Host 'Press Enter to continue' }
-                    'S' { if (Confirm-GPushAction -Prompt 'Synchronize selected repository (no commit)?') { $result = Invoke-GPushAllSync -Repository $repository; Write-GPushAllRow -Snapshot $result.Snapshot -Result $result.Result }; $null = Read-Host 'Press Enter to continue' }
+                    'Enter' {
+                        & git -C $repository.Path status --short | ForEach-Object { Write-Host $_ }
+                        & git -C $repository.Path diff --stat HEAD | ForEach-Object { Write-Host $_ }
+                        $null = Read-Host 'Press Enter to continue'
+                    }
+                    'R' {
+                        $states = @(Get-GPushOverviewStates -Repositories $repositories)
+                    }
+                    'A' {
+                        if (Confirm-GPushAction -Prompt 'Fetch all cached repositories?') {
+                            $states = @(Get-GPushOverviewStates -Repositories $repositories -Fetch)
+                        }
+                    }
+                    'F' {
+                        $states[$selected] = @(Get-GPushOverviewStates -Repositories @($repository) -Fetch)[0]
+                    }
+                    'S' {
+                        if (Confirm-GPushAction -Prompt 'Synchronize selected repository (no commit)?') {
+                            try {
+                                $result = Invoke-GPushAllSync -Repository $repository
+                                Write-GPushAllRow -Snapshot $result.Snapshot -Result $result.Result
+                            } catch { Write-Warn $_.Exception.Message }
+                            $states[$selected] = @(Get-GPushOverviewStates -Repositories @($repository))[0]
+                            $null = Read-Host 'Press Enter to continue'
+                        }
+                    }
                 }
             }
         }

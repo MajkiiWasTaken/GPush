@@ -2,6 +2,12 @@
 
 All notable changes to GPush are documented here.
 
+## 4.5.2
+
+- Overview caches local repository snapshots in memory; arrow navigation never runs Git.
+- Native PowerShell progress and an in-place Linux loading bar during inspection.
+- Highlighted selection, paginated viewport and explicit R/F/A refresh actions.
+
 ## 4.5.1
 
 - Windows updater prefers curl.exe and falls back to PowerShell downloads.

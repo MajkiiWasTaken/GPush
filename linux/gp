@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-SCRIPT_VERSION="4.5.1"
+SCRIPT_VERSION="4.5.2"
 AUTHOR="Michal Švrček"
 GITHUB="https://github.com/MajkiiWasTaken"
 
@@ -2496,25 +2496,83 @@ print(json.dumps(rows,ensure_ascii=False,indent=2))' )
         printf '\nClean and synchronized: '; visual_bar "$clean" "${#CACHED_REPOS[@]}"; printf '\n'
     fi
 }
+# Overview uses Bash's dynamically scoped local arrays owned by visual_command.
+overview_fetch() {
+    local path="$1" remote
+    remote=$(git -C "$path" config --get "branch.$(git -C "$path" symbolic-ref --quiet --short HEAD 2>/dev/null).remote" 2>/dev/null || (cd "$path" && current_remote)) || return 1
+    [[ -n "$remote" && "$remote" != . ]] || return 1
+    git -C "$path" fetch --prune "$remote" >/dev/null
+}
+overview_refresh_one() {
+    local index="$1" path="${overview_paths[$1]}" i
+    local -a row=()
+    mapfile -d '' -t row < <(visual_snapshot "$path")
+    if (( ${#row[@]} != 8 )); then row=("${path##*/}" - - - - - 'Inspection failed' "$path"); fi
+    for ((i=0;i<8;i++)); do overview_fields[index*8+i]=${row[i]}; done
+}
+overview_load() {
+    local fetch="$1" i total=${#overview_paths[@]} filled j bar label='Loading local status'
+    [[ "$fetch" != true ]] || label='Fetching repositories'
+    for ((i=0;i<total;i++)); do
+        filled=$((i*24/total)); bar=''
+        for ((j=0;j<24;j++)); do if ((j<filled)); then bar+='━'; else bar+='─'; fi; done
+        printf '\r\033[2K%s %s%s%s %d/%d  %.30s' "$label" "$C_CYAN" "$bar" "$C_RESET" "$i" "$total" "${overview_paths[i]##*/}"
+        local fetch_failed=false
+        if [[ "$fetch" == true ]]; then overview_fetch "${overview_paths[i]}" || fetch_failed=true; fi
+        overview_refresh_one "$i"
+        if [[ "$fetch_failed" == true ]]; then overview_fields[i*8+6]="Fetch failed"; fi
+    done
+    printf '\r\033[2K%s %s%s%s %d/%d\n' "$label" "$C_GREEN" '━━━━━━━━━━━━━━━━━━━━━━━━' "$C_RESET" "$total" "$total"
+}
+overview_frame() {
+    local cols lines page first last i n marker rw bw cw clean=0
+    cols=$(tput cols 2>/dev/null || printf 100); lines=$(tput lines 2>/dev/null || printf 25)
+    [[ "$cols" =~ ^[0-9]+$ ]] || cols=100; [[ "$lines" =~ ^[0-9]+$ ]] || lines=25
+    page=$((lines>12?lines-12:1)); first=$((selected-page/2)); ((first>=0)) || first=0
+    if ((first+page>${#overview_paths[@]})); then first=$((${#overview_paths[@]}-page)); ((first>=0)) || first=0; fi
+    last=$((first+page)); ((last<=${#overview_paths[@]})) || last=${#overview_paths[@]}
+    rw=$((cols/4)); ((rw<=24)) || rw=24; ((rw>=8)) || rw=8
+    bw=$((cols/6)); ((bw<=18)) || bw=18; ((bw>=8)) || bw=8
+    cw=$((cols-rw-bw-32)); ((cw>=8)) || cw=8
+    for ((i=0;i<${#overview_paths[@]};i++)); do n=$((i*8)); if [[ "${overview_fields[n+6]}" == 'Up to date' && "${overview_fields[n+5]}" == 0 ]]; then clean=$((clean+1)); fi; done
+    printf '\033[H\033[2J'; banner
+    printf 'Workspace overview | %d repositories | %d clean and synchronized\n' "${#overview_paths[@]}" "$clean"
+    dim 'Local snapshot (F/A fetch remote references; R refresh local status)'
+    printf '  %-*s %-*s %-*s %6s | %-5s %s\n' "$rw" Repository "$bw" Branch "$cw" 'Last commit' Behind Ahead Worktree
+    for ((i=first;i<last;i++)); do
+        n=$((i*8)); marker=' '
+        if ((i==selected)); then marker='>'; if [[ -n "$C_CYAN" ]]; then printf '\033[7m'; fi; fi
+        printf '%s %-*.*s %-*.*s %-*.*s %6s | %-5s %s changed%s\n' "$marker" "$rw" "$rw" "${overview_fields[n]}" "$bw" "$bw" "${overview_fields[n+1]}" "$cw" "$cw" "${overview_fields[n+2]}" "${overview_fields[n+3]}" "${overview_fields[n+4]}" "${overview_fields[n+5]}" "$C_RESET"
+    done
+    printf '%d/%d | %s\n' "$((selected+1))" "${#overview_paths[@]}" "${overview_fields[selected*8+6]}"
+    dim '[Up/Down] Select  [Enter] Changes  [F] Fetch  [A] Fetch all'
+    dim '[R] Refresh local  [S] Sync  [Q] Quit'
+}
+
 visual_command() {
     local action="$1"; shift
     local repository total max=1 count day i date_key stamp added=0 removed=0 a d
     case "$action" in
         overview)
             if [[ ! -t 0 || ! -t 1 ]]; then visual_status overview; return $?; fi
-            local key selected=0
+            local key selected=0 path
+            local -a overview_fields=() overview_paths=()
+            load_cache; overview_paths=("${CACHED_REPOS[@]}")
+            if (( ${#overview_paths[@]} == 0 )); then warn 'Run gp cache refresh first.'; return 1; fi
+            printf '\033[H\033[2J'; banner
+            overview_load false
             while true; do
-                printf '\033[H\033[2J'; banner; visual_status overview || return 1
-                load_cache; if (( ${#CACHED_REPOS[@]} == 0 )); then warn 'Run gp cache refresh first.'; return 1; fi
-                (( selected < ${#CACHED_REPOS[@]} )) || selected=0
-                printf '\nSelected: %s\n[Up/Down] Select  [Enter] Changes  [F] Fetch  [S] Sync  [Q] Quit\n' "${CACHED_REPOS[selected]##*/}"
+                overview_frame
+                path=${overview_paths[selected]}
                 IFS= read -rsn1 key || return 0
                 case "$key" in
                     q|Q) return 0;;
-                    $'\033') IFS= read -rsn2 -t 0.2 key || true; case "$key" in '[A') selected=$(( (selected+${#CACHED_REPOS[@]}-1)%${#CACHED_REPOS[@]} ));; '[B') selected=$(( (selected+1)%${#CACHED_REPOS[@]} ));; esac;;
-                    '') git -C "${CACHED_REPOS[selected]}" status --short; git -C "${CACHED_REPOS[selected]}" diff --stat HEAD; read -r -p 'Press Enter to continue...' key;;
-                    f|F) (cd "${CACHED_REPOS[selected]}" && git fetch --prune); read -r -p 'Press Enter to continue...' key;;
-                    s|S) if confirm 'Synchronize selected repository (no commit)?'; then bulk_sync "${CACHED_REPOS[selected]}" false ''; fi; read -r -p 'Press Enter to continue...' key;;
+                    $'\033') IFS= read -rsn2 -t 0.2 key || true; case "$key" in '[A') selected=$(( (selected+${#overview_paths[@]}-1)%${#overview_paths[@]} ));; '[B') selected=$(( (selected+1)%${#overview_paths[@]} ));; esac;;
+                    '') git -C "$path" status --short; git -C "$path" diff --stat HEAD; read -r -p 'Press Enter to continue...' key;;
+                    r|R) overview_load false;;
+                    a|A) if confirm 'Fetch all cached repositories?'; then overview_load true; fi;;
+                    f|F) if overview_fetch "$path"; then overview_refresh_one "$selected"; else overview_refresh_one "$selected"; overview_fields[selected*8+6]="Fetch failed"; fi;;
+                    s|S) if confirm 'Synchronize selected repository (no commit)?'; then bulk_sync "$path" false ''; overview_refresh_one "$selected"; read -r -p 'Press Enter to continue...' key; fi;;
                 esac
             done ;;
         health) visual_status health ;;

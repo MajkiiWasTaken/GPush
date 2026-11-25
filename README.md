@@ -226,7 +226,7 @@ Use `gp update check` to check for releases, `gp update` (or `gp update install`
 
 | Command | Description |
 |---|---|
-| `gp overview` | Interactive cached workspace dashboard (arrows, Enter, F, S, Q); static when redirected |
+| `gp overview` | Interactive cached workspace dashboard (arrows, Enter, F, A, R, S, Q); static when redirected |
 | `gp health` | Clean/synchronized ratio and cached status |
 | `gp watch [seconds]` | Refresh cached status periodically; Ctrl+C to stop |
 | `gp stats` | Current-branch commits, added/deleted lines and daily activity over 30 days |
@@ -245,3 +245,7 @@ Visual previews do not contact remotes unless Fetch or Sync is explicitly select
 ### Windows update reliability (4.5.1)
 
 The updater prefers `curl.exe`, falls back to `Invoke-WebRequest`, bypasses HTTP caches and retries failed downloads up to three times. A matching published SHA-256 is required before installation. Older clients affected by stale downloads may need a one-time manual upgrade using a verified release archive.
+
+### Overview navigation (4.5.2)
+
+Overview loads local Git state once. Arrow keys only redraw cached rows. `R` refreshes local state, `F` fetches the selected repository, `A` fetches all after confirmation, and `S` synchronizes the selected repository after confirmation. Remote counts are based on the last fetch.
