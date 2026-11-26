@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-SCRIPT_VERSION="4.7.3"
+SCRIPT_VERSION="4.7.4"
 AUTHOR="Michal Švrček"
 GITHUB="https://github.com/MajkiiWasTaken"
 
@@ -2073,6 +2073,9 @@ elif sys.argv[2]=='linux_asset':
     assets=d.get('assets',[])
     cand=[a for a in assets if 'linux' in a.get('name','').lower() and a.get('name','').lower().endswith(('.tar.gz','.zip'))]
     if cand: print(cand[0].get('name','')+'|'+cand[0].get('browser_download_url',''))
+elif sys.argv[2]=='size':
+    for a in d.get('assets',[]):
+        if a.get('name')==sys.argv[3]: print(a.get('size',0)); break
 elif sys.argv[2]=='checksum':
     assets=d.get('assets',[])
     package=sys.argv[3] if len(sys.argv) > 3 else ''
@@ -2089,7 +2092,39 @@ backup_current_gp() {
     local current_path backup_path; current_path="$(command -v gp 2>/dev/null || true)"; [[ -n "$current_path" ]] || current_path="${BASH_SOURCE[0]}"
     backup_path="$BACKUP_DIR/v$SCRIPT_VERSION-$(date +%Y%m%d-%H%M%S)"; mkdir -p "$backup_path"; cp "$current_path" "$backup_path/gp"; chmod +x "$backup_path/gp"; printf '%s' "$backup_path"
 }
-handle_update() {
+update_stage() {
+    if [[ -t 1 ]]; then printf '\r\033[2K%s%s%s' "$C_CYAN" "$1" "$C_RESET"; else info "$1"; fi
+}
+update_stage_clear() { if [[ -t 1 ]]; then printf '\r\033[2K'; fi; }
+download_update_package() {
+    local url="$1" file="$2" size="$3" bytes=0 started=$SECONDS elapsed rate percent=0 pid previous_trap cancelled=false rc=0
+    local separator='?'
+    if [[ "$url" == *'?'* ]]; then separator='&'; fi
+    url+="${separator}gpush_nocache=$(date +%s)-$RANDOM"
+    if [[ ! -t 1 ]]; then curl -fsSL --connect-timeout 30 --max-time 300 -H 'Cache-Control: no-cache, no-store' -H "User-Agent: GPush/$SCRIPT_VERSION" "$url" -o "$file"; return $?; fi
+    previous_trap=$(trap -p INT)
+    curl -fsSL --connect-timeout 30 --max-time 300 -H 'Cache-Control: no-cache, no-store' -H "User-Agent: GPush/$SCRIPT_VERSION" "$url" -o "$file" &
+    pid=$!
+    trap 'cancelled=true; kill -TERM "$pid" 2>/dev/null || true' INT
+    while kill -0 "$pid" 2>/dev/null; do
+        if [[ "$cancelled" == true ]]; then break; fi
+        if [[ -f "$file" ]]; then bytes=$(wc -c < "$file"); fi
+        elapsed=$((SECONDS-started)); rate=$((bytes/(elapsed>0?elapsed:1)/1024))
+        printf '\r\033[2K%sDownloading%s  ' "$C_CYAN" "$C_RESET"
+        if [[ "$size" =~ ^[0-9]+$ ]] && ((size>0)); then
+            percent=$((100*bytes/size)); ((percent<=100)) || percent=100
+            workspace_block_bar "$((percent*28/100))" 28
+            printf '  %3d%%  %d/%d KiB  %d KiB/s' "$percent" "$((bytes/1024))" "$((size/1024))" "$rate"
+        else printf '%d KiB  %d KiB/s' "$((bytes/1024))" "$rate"; fi
+        sleep 0.12
+    done
+    wait "$pid" || rc=$?
+    if [[ -n "$previous_trap" ]]; then eval "$previous_trap"; else trap - INT; fi
+    printf '\r\033[2K'
+    if [[ "$cancelled" == true ]]; then return 130; fi
+    return "$rc"
+}
+handle_update() (
     if (( $# > 1 )); then err "Update accepts at most one action."; return 2; fi
     local action="${1:-install}"; case "$action" in check|install|rollback) ;; *) err "Unknown update action: $action"; dim 'Use: gp update [check|install|rollback]'; return 2;; esac
     banner
@@ -2097,13 +2132,15 @@ handle_update() {
         local newest current_path; newest="$(find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -r | head -n1 || true)"; [[ -n "$newest" && -f "$newest/gp" ]] || { warn 'No GPush backup exists.'; return 0; }
         current_path="$(command -v gp 2>/dev/null || true)"; [[ -n "$current_path" ]] || current_path="$HOME/.local/bin/gp"; section 'GPush Rollback'; kv Current "$SCRIPT_VERSION"; kv Backup "$newest" "$C_GRAY"; confirm 'Restore newest GPush backup?' || return 0; install -m 0755 "$newest/gp" "$current_path" || return 1; ok 'Rollback completed.'; dim 'Run a new gp command to use the restored version.'; return 0
     fi
-    local tmp json tag asset name url; tmp="$(mktemp -d)" || return 1; json="$tmp/release.json"; latest_release_json > "$json" || { rm -rf "$tmp"; return 1; }; tag="$(release_field "$json" tag)"; [[ -n "$tag" ]] || { err 'Could not read latest release version.'; rm -rf "$tmp"; return 1; }
+    local tmp json tag asset name url size download_rc=0; tmp="$(mktemp -d)" || return 1; trap 'rm -rf -- "$tmp"' EXIT; trap 'exit 130' INT; json="$tmp/release.json"; latest_release_json > "$json" || { rm -rf "$tmp"; return 1; }; tag="$(release_field "$json" tag)"; [[ -n "$tag" ]] || { err 'Could not read latest release version.'; rm -rf "$tmp"; return 1; }
     section 'GPush Update'; kv Installed "$SCRIPT_VERSION"; kv Latest "$tag"; kv Channel stable
     if ! version_gt "$tag" "$SCRIPT_VERSION"; then ok 'GPush is up to date.'; rm -rf "$tmp"; return 0; fi
     warn "Update available: $SCRIPT_VERSION -> $tag"; if [[ "$action" == check && "${WORKSPACE_OFFER_UPDATE:-false}" != true ]]; then dim "Run 'gp update' to install."; rm -rf "$tmp"; return 0; fi
     asset="$(release_field "$json" linux_asset)"; [[ -n "$asset" ]] || { err 'Latest release has no Linux package asset.'; rm -rf "$tmp"; return 1; }; name="${asset%%|*}"; url="${asset#*|}"; if [[ "$action" == check ]]; then confirm "Download and install $tag?" || { rm -rf "$tmp"; return 0; }; else confirm_default_yes "Download and install $tag?" || { rm -rf "$tmp"; return 0; }; fi
-    visual_bar 0 4; printf ' Downloading\n'; info "[UPDATE] Downloading $name"; curl -fL -H "User-Agent: GPush/$SCRIPT_VERSION" "$url" -o "$tmp/$name" || { rm -rf "$tmp"; return 1; }
-    visual_bar 1 4; printf ' Downloaded\n'
+    size=$(release_field "$json" size "$name")
+    download_update_package "$url" "$tmp/$name" "${size:-0}" || download_rc=$?
+    if ((download_rc!=0)); then return "$download_rc"; fi
+    update_stage 'Verifying package integrity'
     local checksum checksum_url expected actual
     checksum="$(release_field "$json" checksum "$name" || true)"
     if [[ -n "$checksum" ]]; then
@@ -2115,23 +2152,23 @@ handle_update() {
             fi
             if [[ -n "$expected" ]]; then
                 if command -v sha256sum >/dev/null 2>&1; then actual="$(sha256sum "$tmp/$name" | awk '{print $1}')"; else actual="$(shasum -a 256 "$tmp/$name" | awk '{print $1}')"; fi
-                [[ "${actual,,}" == "${expected,,}" ]] || { err 'Downloaded package SHA-256 does not match published checksum.'; rm -rf "$tmp"; return 1; }
-                ok '[UPDATE] SHA-256 verified'
+                [[ "${actual,,}" == "${expected,,}" ]] || { update_stage_clear; err 'Downloaded package SHA-256 does not match published checksum.'; rm -rf "$tmp"; return 1; }
+                update_stage 'Package integrity verified'
             else
-                err '[UPDATE] No matching SHA-256 value; update cancelled.'; rm -rf "$tmp"; return 1
+                update_stage_clear; err 'No matching SHA-256 value; update cancelled.'; rm -rf "$tmp"; return 1
             fi
         else
-            err '[UPDATE] Checksum download failed; update cancelled.'; rm -rf "$tmp"; return 1
+            update_stage_clear; err 'Checksum download failed; update cancelled.'; rm -rf "$tmp"; return 1
         fi
     else
-        dim '[UPDATE] No SHA-256 asset published; validating package structure instead.'
+        update_stage_clear; err 'No SHA-256 asset published. Update cancelled.'; return 1
     fi
-    visual_bar 2 4; printf ' Package checks complete\n'
+    update_stage 'Preparing installation'
     mkdir -p "$tmp/extract"
     case "$name" in *.tar.gz) tar -xzf "$tmp/$name" -C "$tmp/extract" || { rm -rf "$tmp"; return 1; };; *.zip) command -v unzip >/dev/null 2>&1 || { err 'unzip is required for ZIP update packages.'; rm -rf "$tmp"; return 1; }; unzip -q "$tmp/$name" -d "$tmp/extract" || { rm -rf "$tmp"; return 1; };; *) err 'Unsupported Linux update package.'; rm -rf "$tmp"; return 1;; esac
     local new_gp package_version backup_path current_path; new_gp="$(find "$tmp/extract" -type f -name gp -print -quit)"; [[ -n "$new_gp" ]] || { err 'Release package does not contain gp.'; rm -rf "$tmp"; return 1; }; package_version="$(sed -n 's/^SCRIPT_VERSION="\([^"]*\)"/\1/p' "$new_gp" | head -n1)"; [[ "$(version_numeric "$package_version")" == "$(version_numeric "$tag")" ]] || { err "Package version '$package_version' does not match release '$tag'."; rm -rf "$tmp"; return 1; }
-    backup_path="$(backup_current_gp)" || { rm -rf "$tmp"; return 1; }; visual_bar 3 4; printf ' Backup created\n'; dim "Backup: $backup_path"; current_path="$(command -v gp 2>/dev/null || true)"; [[ -n "$current_path" ]] || current_path="$HOME/.local/bin/gp"; mkdir -p "$(dirname "$current_path")"; install -m 0755 "$new_gp" "$current_path" || { rm -rf "$tmp"; return 1; }; visual_bar 4 4; printf ' Installed\n'; ok 'GPush updated successfully.'; kv Previous "$SCRIPT_VERSION"; kv Current "$package_version" "$C_GREEN"; rm -rf "$tmp"
-}
+    backup_path="$(backup_current_gp)" || { rm -rf "$tmp"; return 1; }; update_stage 'Installing verified package'; current_path="$(command -v gp 2>/dev/null || true)"; [[ -n "$current_path" ]] || current_path="$HOME/.local/bin/gp"; mkdir -p "$(dirname "$current_path")"; install -m 0755 "$new_gp" "$current_path" || { rm -rf "$tmp"; return 1; }; update_stage_clear; ok 'GPush updated successfully. SHA-256 verified.'; dim "Rollback backup: $backup_path"; kv Previous "$SCRIPT_VERSION"; kv Current "$package_version" "$C_GREEN"; rm -rf "$tmp"
+)
 levenshtein() {
     local a="${1,,}" b="${2,,}"
     local alen=${#a} blen=${#b}
@@ -2545,6 +2582,21 @@ overview_frame() {
 }
 
 # Shared workspace screens. Read-only views do not fetch.
+workspace_run_operation() {
+    local interrupted=false operation_rc=0 previous_trap
+    previous_trap=$(trap -p INT)
+    trap 'interrupted=true' INT
+    ( trap 'exit 130' INT; "$@" ) || operation_rc=$?
+    if [[ -n "$previous_trap" ]]; then eval "$previous_trap"; else trap - INT; fi
+    if [[ "$interrupted" == true || "$operation_rc" == 130 ]]; then
+        warn 'Operation cancelled by user.'
+        return 130
+    fi
+    return "$operation_rc"
+}
+workspace_clear_screen() {
+    if [[ -t 1 ]]; then printf '\033[H\033[2J'; fi
+}
 workspace_pause() {
     if [[ -t 0 && -t 1 ]]; then
         printf '\n'; dim 'Esc  Back    Ctrl+C  Exit'
@@ -2554,30 +2606,32 @@ workspace_pause() {
 workspace_log() { mkdir -p "$CONFIG_DIR"; printf '%s %s %s\n' "$(date -Iseconds)" "$1" "$2" >> "$CONFIG_DIR/history.log"; }
 # Shared keyboard picker: navigation uses only the supplied in-memory rows.
 workspace_key() {
-    local suffix='' next='' terminal_mode answer=''
+    local suffix='' next_key='' terminal_mode answer=''
     terminal_mode=$(stty -g) || { WORKSPACE_KEY=esc; return; }
     stty intr undef
     if ! IFS= read -rsn1 WORKSPACE_KEY; then stty "$terminal_mode"; WORKSPACE_KEY=esc; return; fi
     if [[ "$WORKSPACE_KEY" == $'\003' ]]; then
-        printf '\n'; warn 'Exit GPush? [Y/Enter/Ctrl+C] Yes  [N/Esc] Cancel'
-        if IFS= read -rsn1 answer; then
-            stty "$terminal_mode"
-            case "$answer" in y|Y|''|$'\003') if [[ "$BASHPID" != "$$" ]]; then kill -TERM "$$"; fi; exit 130;; esac
-        else
-            stty "$terminal_mode"
-        fi
+        printf '\n'; warn 'Exit GPush?'
+        printf '%s[Y, Enter, Ctrl+C] - Yes%s    |   %s[N, ESC] - No%s\n' "$C_GREEN" "$C_RESET" "$C_RED" "$C_RESET"
+        while IFS= read -rsn1 answer; do
+            case "$answer" in
+                y|Y|''|$'\003') stty "$terminal_mode"; if [[ "$BASHPID" != "$$" ]]; then kill -TERM "$$"; fi; exit 130;;
+                n|N|$'\033') break;;
+            esac
+        done
+        stty "$terminal_mode"
         WORKSPACE_KEY=ignored; return
     fi
     stty "$terminal_mode"
     if [[ "$WORKSPACE_KEY" == $'\033' ]]; then
         IFS= read -rsn1 -t 0.15 suffix || true
         if [[ "$suffix" == '[' || "$suffix" == O ]]; then
-            while IFS= read -rsn1 -t 0.15 next; do
-                suffix+=$next
-                [[ "$next" == [@-~] ]] && break
+            while IFS= read -rsn1 -t 0.15 next_key; do
+                suffix+=$next_key
+                [[ "$next_key" == [@-~] ]] && break
             done
         fi
-        case "$suffix" in '['*A|OA) WORKSPACE_KEY=up;; '['*B|OB) WORKSPACE_KEY=down;; '') WORKSPACE_KEY=esc;; *) WORKSPACE_KEY=ignored;; esac
+        case "$suffix" in '['*A|OA) WORKSPACE_KEY=up;; '['*B|OB) WORKSPACE_KEY=down;; '['*C|OC) WORKSPACE_KEY=right;; '['*D|OD) WORKSPACE_KEY=left;; '') WORKSPACE_KEY=esc;; *) WORKSPACE_KEY=ignored;; esac
     elif [[ -z "$WORKSPACE_KEY" ]]; then WORKSPACE_KEY=enter; fi
 }
 workspace_pick() {
@@ -2671,8 +2725,8 @@ workspace_pick() {
         workspace_key
         case "$WORKSPACE_KEY" in
             esc) return 1;;
-            up) if (( selected > 0 )); then selected=$((selected-1)); fi;;
-            down) if (( selected+1 < ${#visible[@]} )); then selected=$((selected+1)); fi;;
+            up) if (( ${#visible[@]} )); then selected=$(( (selected+${#visible[@]}-1)%${#visible[@]} )); fi;;
+            down) if (( ${#visible[@]} )); then selected=$(( (selected+1)%${#visible[@]} )); fi;;
             /) read -r -p 'Search (empty resets): ' query || return 1; selected=0;;
             ' ') if [[ "$multiple" == true ]]; then if (( ${#visible[@]} )); then key=${visible[selected]}; marks[key]=$((1-${marks[key]:-0})); fi; else query+=' '; selected=0; fi;;
             a|A) if [[ "$multiple" == true ]]; then for key in "${visible[@]}"; do marks[key]=1; done; else query+="$WORKSPACE_KEY"; selected=0; fi;;
@@ -2852,12 +2906,12 @@ workspace_detail() {
         dim '[C] Commit  [D] Diff  [B] Branches  [F] Fetch  [S] Sync  [G] GitHub  [Q/Esc] Back'
         workspace_key; action=$WORKSPACE_KEY
         case "${action,,}" in
-            c) workspace_commit "$path"; workspace_pause;;
+            c) workspace_run_operation workspace_commit "$path"; workspace_pause;;
             d) workspace_diff "$path";;
             b) workspace_branches "$path";;
-            f) overview_fetch "$path" && workspace_log fetch "$path"; workspace_pause;;
-            s) if confirm 'Synchronize repository?'; then bulk_sync "$path" false '' && workspace_log sync "$path"; fi; workspace_pause;;
-            g) workspace_github "$path"; workspace_pause;;
+            f) workspace_run_operation overview_fetch "$path" && workspace_log fetch "$path"; workspace_pause;;
+            s) if confirm 'Synchronize repository?'; then workspace_run_operation bulk_sync "$path" false '' && workspace_log sync "$path"; fi; workspace_pause;;
+            g) workspace_run_operation workspace_github "$path"; workspace_pause;;
             q|esc) return 0;;
         esac
     done
@@ -2905,8 +2959,9 @@ workspace_menu_repo_tools() {
     local -a labels=('Commit all changes (classic workflow)' 'List tags' 'Create annotated tag' 'Push tag' 'List remotes' 'Add remote' 'Change remote URL' 'Remove remote' 'List stashes' 'Stash changes' 'Restore latest stash' 'Project info' 'Build project' 'Test project' 'Run project' 'Open project shell' 'Back')
     while workspace_pick "Repository tools / ${path##*/}" false "${labels[@]}"; do
         action=${WORKSPACE_SELECTION[0]}
+        workspace_clear_screen
         case "$action" in
-            0) read -r -p 'Commit message (empty cancels): ' message || return 0; if [[ -n "$message" ]] && confirm 'Commit all changes and push using classic workflow?'; then (classic_commit "$path" "$message" false false); fi;;
+            0) read -r -p 'Commit message (empty cancels): ' message || return 0; if [[ -n "$message" ]] && confirm 'Commit all changes and push using classic workflow?'; then workspace_run_operation classic_commit "$path" "$message" false false; fi;;
             1) (handle_tag list "$path");;
             2|3) read -r -p 'Tag name (empty cancels): ' name || return 0; [[ -n "$name" && "$name" != -* ]] || continue
                  if [[ "$action" == 2 ]]; then read -r -p 'Tag message: ' message || return 0; if confirm "Create tag $name?"; then (handle_tag create "$path" "$name" "$message"); fi
@@ -2921,9 +2976,9 @@ workspace_menu_repo_tools() {
             9) if confirm 'Stash tracked and untracked changes?'; then (handle_stash push "$path"); fi;;
             10) if confirm 'Apply and remove latest stash?'; then (handle_stash pop "$path"); fi;;
             11) (handle_project info "$path");;
-            12) if confirm 'Build this project?'; then (handle_project build "$path"); fi;;
-            13) if confirm 'Run project tests?'; then (handle_project test "$path"); fi;;
-            14) if confirm 'Run this project?'; then (handle_project run "$path"); fi;;
+            12) if confirm 'Build this project?'; then workspace_run_operation handle_project build "$path"; fi;;
+            13) if confirm 'Run project tests?'; then workspace_run_operation handle_project test "$path"; fi;;
+            14) if confirm 'Run this project?'; then workspace_run_operation handle_project run "$path"; fi;;
             15) (handle_project shell "$path");;
             16) return 0;;
         esac
@@ -2936,25 +2991,26 @@ workspace_menu_repo() {
     local -a labels=('Commit selected files' 'Sync / push existing commits' 'Fetch remote references' 'Status and recent commits' 'Browse diff' 'Manage branches' 'Commit graph' 'GitHub information' 'Open repository folder' 'More repository tools' 'Push committed changes only' 'Back')
     while workspace_pick "Repository / ${path##*/}" false "${labels[@]}"; do
         action=${WORKSPACE_SELECTION[0]}
+        workspace_clear_screen
         case "$action" in
-            0) workspace_commit "$path";;
+            0) workspace_run_operation workspace_commit "$path";;
             1) if confirm 'Synchronize this repository?'; then
                    local allow=false
                    if confirm 'Allow pushing to protected branches as well?'; then allow=true; fi
-                   bulk_sync "$path" "$allow" '' && workspace_log sync "$path"
+                   workspace_run_operation bulk_sync "$path" "$allow" '' && workspace_log sync "$path"
                fi;;
-            2) overview_fetch "$path" && workspace_log fetch "$path";;
+            2) workspace_run_operation overview_fetch "$path" && workspace_log fetch "$path";;
             3) workspace_detail "$path"; continue;;
             4) workspace_diff "$path"; continue;;
             5) workspace_branches "$path"; continue;;
             6) git -C "$path" --no-pager log --graph --all --decorate --oneline -n 40;;
-            7) workspace_github "$path";;
+            7) workspace_run_operation workspace_github "$path";;
             8) (handle_repo open "$path");;
             9) workspace_menu_repo_tools "$path"; continue;;
             10) if confirm 'Push existing commits without changing working tree?'; then
                     local push_allow=false
                     if confirm 'Allow pushing to protected branches?'; then push_allow=true; fi
-                    bulk_sync "$path" "$push_allow" '' true && workspace_log push "$path"
+                    workspace_run_operation bulk_sync "$path" "$push_allow" '' true && workspace_log push "$path"
                 fi;;
             11) return 0;;
         esac
@@ -2968,15 +3024,16 @@ workspace_menu_bulk() {
     local -a allow=()
     while workspace_pick 'Bulk operations' false "${labels[@]}"; do
         action=${WORKSPACE_SELECTION[0]}
+        workspace_clear_screen
         case "$action" in
-            0) handle_all status;;
-            1) if confirm 'Fetch all cached repositories?'; then handle_all fetch; fi;;
+            0) workspace_run_operation handle_all status;;
+            1) if confirm 'Fetch all cached repositories?'; then workspace_run_operation handle_all fetch; fi;;
             2|3)
                 message=''; allow=()
                 if [[ "$action" == 3 ]]; then read -r -p 'Commit message (empty cancels): ' message || return 0; [[ -n "$message" ]] || continue; fi
                 if ! confirm 'Operate on all cached repositories?'; then continue; fi
                 if confirm 'Allow pushing to protected branches as well?'; then allow=(--allow-protected); fi
-                if [[ "$action" == 3 ]]; then handle_all push "${allow[@]}" -- "$message"; else handle_all sync "${allow[@]}"; fi;;
+                if [[ "$action" == 3 ]]; then workspace_run_operation handle_all push "${allow[@]}" -- "$message"; else workspace_run_operation handle_all sync "${allow[@]}"; fi;;
             4) visual_status dry-run;;
             5) return 0;;
         esac
@@ -2988,13 +3045,14 @@ workspace_menu_cache() {
     local -a labels=('List repositories' 'Refresh cache (scan search roots)' 'Add repository path' 'Recent repositories' 'Favorites' 'Clone repository' 'Back')
     local path
     while workspace_pick 'Repository cache' false "${labels[@]}"; do
+        workspace_clear_screen
         case "${WORKSPACE_SELECTION[0]}" in
             0) handle_cache list;;
-            1) if confirm 'Scan configured search roots?'; then handle_cache refresh; fi;;
+            1) if confirm 'Scan configured search roots?'; then workspace_run_operation handle_cache refresh; fi;;
             2) read -r -p 'Repository path (empty cancels): ' path || return 0; if [[ -n "$path" ]]; then handle_cache add "$path"; fi;;
             3) handle_recent;;
             4) handle_favorite list;;
-            5) read -r -p 'Clone URL (empty cancels): ' path || return 0; if [[ -n "$path" && "$path" != -* ]] && confirm 'Clone repository?'; then handle_clone "$path"; fi;;
+            5) read -r -p 'Clone URL (empty cancels): ' path || return 0; if [[ -n "$path" && "$path" != -* ]] && confirm 'Clone repository?'; then workspace_run_operation handle_clone "$path"; fi;;
             6) return 0;;
         esac
         workspace_pause
@@ -3004,10 +3062,11 @@ workspace_menu_cache() {
 workspace_menu_update() {
     local -a labels=('Check for updates' 'Install update' 'Restore previous version' 'Back')
     while workspace_pick 'Software update' false "${labels[@]}"; do
+        workspace_clear_screen
         case "${WORKSPACE_SELECTION[0]}" in
-            0) WORKSPACE_OFFER_UPDATE=true handle_update check;;
-            1) handle_update install;;
-            2) handle_update rollback;;
+            0) WORKSPACE_OFFER_UPDATE=true workspace_run_operation handle_update check;;
+            1) workspace_run_operation handle_update install;;
+            2) workspace_run_operation handle_update rollback;;
             3) return 0;;
         esac
         workspace_pause
@@ -3018,12 +3077,13 @@ workspace_menu() {
     local -a labels=('Workspace overview' 'Repositories / commit and push' 'Bulk operations' 'Repository cache' 'Development statistics' 'Workspace health' 'Activity history' 'Settings' 'Software update' 'Help / CLI commands' 'Exit')
     if [[ ! -t 0 || ! -t 1 ]]; then show_help; return 0; fi
     while workspace_pick "GPush $SCRIPT_VERSION / Main menu" false "${labels[@]}"; do
+        workspace_clear_screen
         case "${WORKSPACE_SELECTION[0]}" in
             0) visual_command overview;;
             1) if workspace_choose_repo; then workspace_menu_repo "$MENU_REPO"; fi;;
             2) workspace_menu_bulk;;
             3) workspace_menu_cache;;
-            4) visual_command stats; workspace_pause;;
+            4) workspace_stats_screen;;
             5) visual_command health; workspace_pause;;
             6) workspace_activity; workspace_pause;;
             7) workspace_settings;;
@@ -3035,9 +3095,136 @@ workspace_menu() {
     return 0
 }
 
+# One history walk per repository; commit markers and numstat share the same stream.
+# Activity cache lives only in this GPush process; R forces a fresh history scan.
+declare -A GP_STATS_RAW=() GP_STATS_AT=() GP_STATS_VALID=()
+workspace_stats() {
+    local period="${1:-30}" show_all="${2:-false}" refresh="${3:-false}" repository line day a d count total=0 added=0 removed=0 max=1 i date_key stamp hidden=0 unavailable=0 name filled width=28 name_width=24 cols=80 heat_days cache_key cache_hit=true
+    local tmp='' previous_trap cancelled=false completed=0 pid j batch_end rc now
+    local -A stats_days=()
+    local -a stats_counts=() stats_names=() stats_order=() stats_paths=() stats_pids=() stats_pending=()
+    case "$period" in 7|30|90|365) ;; *) err 'Use gp stats [7|30|90|365].'; return 2;; esac
+    load_cache
+    stats_paths=("${CACHED_REPOS[@]}"); now=$(date +%s)
+    for repository in "${stats_paths[@]}"; do
+        cache_key="$period|$repository"
+        if [[ "$refresh" == true || -z "${GP_STATS_AT[$cache_key]:-}" ]] || (( now - ${GP_STATS_AT[$cache_key]:-0} >= 60 )); then
+            stats_pending+=("$repository"); cache_hit=false
+        fi
+    done
+    if (( ${#stats_pending[@]} )); then
+        tmp=$(mktemp -d) || return 1
+        previous_trap=$(trap -p INT)
+        trap 'cancelled=true; for pid in "${stats_pids[@]}"; do kill -TERM "$pid" 2>/dev/null || true; done' INT
+        if [[ -t 1 ]]; then
+            printf '\r\033[2K%sLoading activity%s  ' "$C_CYAN" "$C_RESET"
+            workspace_block_bar 0 24; printf '    0%%'
+        fi
+        # Bound disk/process pressure: no more than four concurrent history walks.
+        for ((i=0;i<${#stats_pending[@]};i+=4)); do
+            stats_pids=(); batch_end=$((i+4)); if ((batch_end>${#stats_pending[@]})); then batch_end=${#stats_pending[@]}; fi
+            for ((j=i;j<batch_end;j++)); do
+                if [[ "$cancelled" == true ]]; then break; fi
+                git -C "${stats_pending[j]}" log --no-color --since="$period days ago" --format='@GP:%as' --numstat HEAD > "$tmp/$j" 2> "$tmp/$j.err" &
+                stats_pids+=("$!")
+            done
+            for j in "${!stats_pids[@]}"; do
+                pid=${stats_pids[j]}; rc=0; wait "$pid" || rc=$?
+                if [[ "$cancelled" == true ]]; then break; fi
+                cache_key="$period|${stats_pending[i+j]}"
+                GP_STATS_RAW[$cache_key]=$(<"$tmp/$((i+j))")
+                GP_STATS_VALID[$cache_key]=$rc; GP_STATS_AT[$cache_key]=$now
+                completed=$((completed+1))
+                if [[ -t 1 ]]; then
+                    printf '\r\033[2K%sLoading activity%s  ' "$C_CYAN" "$C_RESET"
+                    workspace_block_bar "$((completed*24/${#stats_pending[@]}))" 24
+                    printf '  %3d%%' "$((completed*100/${#stats_pending[@]}))"
+                fi
+            done
+            if [[ "$cancelled" == true ]]; then
+                for pid in "${stats_pids[@]}"; do kill -TERM "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; done
+                break
+            fi
+        done
+        if [[ -n "$previous_trap" ]]; then eval "$previous_trap"; else trap - INT; fi
+        rm -rf -- "$tmp"
+        if [[ -t 1 ]]; then printf '\r\033[2K'; fi
+        if [[ "$cancelled" == true ]]; then warn 'Operation cancelled by user.'; return 130; fi
+    fi
+    if [[ -t 1 ]]; then
+        cols=$(tput cols 2>/dev/null || printf 80); [[ "$cols" =~ ^[0-9]+$ ]] || cols=80
+        name_width=$((cols/3)); ((name_width<=24)) || name_width=24; ((name_width>=10)) || name_width=10
+        width=$((cols-name_width-16)); ((width<=28)) || width=28; ((width>=4)) || width=4
+    fi
+    for repository in "${stats_paths[@]}"; do
+        cache_key="$period|$repository"; count=0
+        if [[ ${GP_STATS_VALID[$cache_key]:-1} != 0 ]]; then unavailable=$((unavailable+1)); continue; fi
+        while IFS= read -r line; do
+            if [[ "$line" =~ ^@GP:([0-9]{4}-[0-9]{2}-[0-9]{2})$ ]]; then
+                day=${BASH_REMATCH[1]}; count=$((count+1)); stats_days[$day]=$(( ${stats_days[$day]:-0}+1 ))
+            elif [[ "$line" =~ ^([0-9]+)$'\t'([0-9]+)$'\t' ]]; then
+                a=${BASH_REMATCH[1]}; d=${BASH_REMATCH[2]}; added=$((added+a)); removed=$((removed+d))
+            fi
+        done <<< "${GP_STATS_RAW[$cache_key]}"
+        stats_names+=("${repository##*/}"); stats_counts+=("$count"); total=$((total+count)); if (( count>max )); then max=$count; fi
+    done
+    info "  GPUSH  /  $SCRIPT_VERSION"
+    section "Development activity / $period days"
+    printf '  %sCommits%s  %s    %s+%s%s added    %s-%s%s removed\n\n' "$C_CYAN" "$C_RESET" "$total" "$C_GREEN" "$added" "$C_RESET" "$C_RED" "$removed" "$C_RESET"
+    printf '  %-*s  %-*s  %s\n' "$name_width" Repository "$width" Activity Commits
+    if (( ${#stats_counts[@]} )); then
+        mapfile -t stats_order < <(for i in "${!stats_counts[@]}"; do printf '%s %s\n' "${stats_counts[i]}" "$i"; done | sort -k1,1nr -k2,2n)
+    fi
+    for line in "${stats_order[@]}"; do
+        i=${line#* }; count=${stats_counts[i]}; name=${stats_names[i]//[[:cntrl:]]/?}
+        if (( count==0 )) && [[ "$show_all" != true ]]; then hidden=$((hidden+1)); continue; fi
+        filled=$((count*width/max)); if (( count>0 && filled==0 )); then filled=1; fi
+        printf '  %-*.*s  ' "$name_width" "$name_width" "$name"; workspace_block_bar "$filled" "$width"; printf '  %5d\n' "$count"
+    done
+    if ((hidden>0)); then dim "  $hidden inactive repositories hidden"; fi
+    if ((unavailable>0)); then warn "  $unavailable repositories could not be inspected (including empty histories)."; fi
+    heat_days=$((period<30?period:30)); if ((heat_days>(cols-3)/3)); then heat_days=$(((cols-3)/3)); fi
+    printf '\n  Daily activity (oldest first; last %d days)\n  ' "$heat_days"
+    for ((i=heat_days-1;i>=0;i--)); do
+        date_key=$(date -d "$i days ago" +%F); stamp=${stats_days[$date_key]:-0}
+        if [[ -n "$C_GREEN" && -t 1 ]]; then
+            if ((stamp==0)); then printf '\033[48;5;236m  '; elif ((stamp<3)); then printf '\033[48;5;22m  '; elif ((stamp<6)); then printf '\033[48;5;28m  '; else printf '\033[48;5;40m  '; fi
+            printf '%s ' "$C_RESET"
+        else printf '%d ' "$((stamp>9?9:stamp))"; fi
+    done
+    printf '\n'; dim '  Low activity -> high activity'
+    if [[ "$cache_hit" == true ]]; then dim '  Cached local statistics (up to 60 seconds old)'; fi
+    return 0
+}
+workspace_stats_screen() {
+    local -a periods=(7 30 90 365)
+    local selected=1 show_all=false refresh=false rc=0
+    while true; do
+        rc=0
+        workspace_clear_screen
+        workspace_stats "${periods[selected]}" "$show_all" "$refresh" || rc=$?
+        refresh=false
+        if ((rc==130)); then workspace_pause; return 0; fi
+        dim '  Left/Right  Range    A  Show/hide inactive    R  Refresh    Esc  Back'
+        workspace_key
+        case "$WORKSPACE_KEY" in
+            esc) return 0;;
+            left) selected=$(( (selected+3)%4 ));;
+            right) selected=$(( (selected+1)%4 ));;
+            a|A) if [[ "$show_all" == true ]]; then show_all=false; else show_all=true; fi;;
+            r|R) refresh=true;;
+            *) continue;;
+        esac
+    done
+}
+workspace_block_bar() {
+    local filled="$1" width="$2" bar rest
+    printf -v bar '%*s' "$filled" ''; printf -v rest '%*s' "$((width-filled))" ''
+    if [[ -n "$C_CYAN" && -t 1 ]]; then printf '\033[46m%s\033[48;5;236m%s%s' "$bar" "$rest" "$C_RESET"; elif [[ "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" == *[Uu][Tt][Ff]* ]]; then printf '%s%s' "${bar// /█}" "${rest// /░}"; else printf '%s%s' "${bar// /=}" "${rest// /.}"; fi
+}
+
 visual_command() {
     local action="$1"; shift
-    local repository total max=1 count day i date_key stamp added=0 removed=0 a d
     case "$action" in
         overview)
             if [[ ! -t 0 || ! -t 1 ]]; then visual_status overview; return $?; fi
@@ -3058,11 +3245,15 @@ visual_command() {
                     enter) workspace_menu_repo "$path"; overview_refresh_one "$selected";;
                     r|R) overview_load false;;
                     a|A) if confirm 'Fetch all cached repositories?'; then overview_load true; fi;;
-                    f|F) if overview_fetch "$path"; then overview_refresh_one "$selected"; else overview_refresh_one "$selected"; overview_fields[selected*8+6]="Fetch failed"; fi;;
+                    f|F) if workspace_run_operation overview_fetch "$path"; then overview_refresh_one "$selected"; else
+                        local fetch_rc=$?; overview_refresh_one "$selected"
+                        if ((fetch_rc==130)); then overview_fields[selected*8+6]="Fetch cancelled"; else overview_fields[selected*8+6]="Fetch failed"; fi
+                        workspace_pause
+                    fi;;
                     s|S) if confirm 'Synchronize selected repository (no commit)?'; then
                         local sync_allow=false
                         if confirm 'Allow pushing to protected branches as well?'; then sync_allow=true; fi
-                        bulk_sync "$path" "$sync_allow" ''; overview_refresh_one "$selected"; workspace_pause
+                        workspace_run_operation bulk_sync "$path" "$sync_allow" ''; overview_refresh_one "$selected"; workspace_pause
                     fi;;
                 esac
             done ;;
@@ -3076,19 +3267,7 @@ visual_command() {
         graph|changes) select_repo "${1:-}" || return 1
             if [[ "$action" == graph ]]; then git -C "$SELECTED" log --graph --all --decorate --oneline -n 40 "--color=$(if [[ -n "$C_CYAN" ]]; then printf auto; else printf never; fi)"
             else git -C "$SELECTED" status --short; git -C "$SELECTED" diff --stat HEAD; fi ;;
-        stats)
-            load_cache; local -a counts=(); local -A days=(); total=0
-            for repository in "${CACHED_REPOS[@]}"; do
-                count=$(git -C "$repository" rev-list --count --since='30 days ago' HEAD 2>/dev/null || printf 0); counts+=("$count"); total=$((total+count)); (( count <= max )) || max=$count
-                while IFS=$'\t' read -r a d _; do
-                    if [[ "$a" =~ ^[0-9]+$ && "$d" =~ ^[0-9]+$ ]]; then added=$((added+a)); removed=$((removed+d)); fi
-                done < <(git -C "$repository" log --since='30 days ago' --format= --numstat HEAD 2>/dev/null)
-                while IFS= read -r day; do [[ -n "$day" ]] || continue; days[$day]=$(( ${days[$day]:-0}+1 )); done < <(git -C "$repository" log --since='30 days ago' --format=%as HEAD 2>/dev/null)
-            done
-            section 'Development activity / 30 days'; kv Commits "$total"; kv 'Lines added' "$added"; kv 'Lines removed' "$removed"
-            for i in "${!CACHED_REPOS[@]}"; do repository=${CACHED_REPOS[i]}; printf '%-22.22s ' "${repository##*/}"; visual_bar "${counts[i]}" "$max"; printf '\n'; done
-            printf '\nDaily activity (oldest first):\n'
-            for ((i=29;i>=0;i--)); do date_key=$(date -d "$i days ago" +%F); stamp=${days[$date_key]:-0}; if (( stamp == 0 )); then printf '.'; elif (( stamp < 3 )); then printf 'o'; elif (( stamp < 6 )); then printf 'O'; else printf '#'; fi; done; printf '\n. 0  o 1-2  O 3-5  # 6+ commits\n' ;;
+        stats) workspace_stats "${1:-30}" ;;
     esac
 }
 

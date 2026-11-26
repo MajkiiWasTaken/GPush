@@ -178,7 +178,7 @@ If no commit message is supplied, GPush asks for it interactively.
 | `commit` | Select files, commit and optionally push |
 | `diff` / `changes` | Interactive diff viewer and change statistics |
 | `branches` | Interactive branch manager |
-| `stats` | Commit activity and development statistics |
+| `stats [7/30/90/365]` | Commit activity and development statistics by period |
 | `health` / `watch` | Workspace health and periodic status refresh |
 | `history` / `activity` | Recorded operation history |
 | `settings` | Interactive configuration editor |

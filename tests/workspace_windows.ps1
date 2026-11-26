@@ -6,7 +6,7 @@ $ast = [System.Management.Automation.Language.Parser]::ParseFile($source, [ref]$
 if ($errors.Count) { throw ($errors | Out-String) }
 
 # Load only the functions under test, without running the installed CLI.
-foreach ($name in @('Select-GPushWorkspaceRows','Get-GPushWorkspacePaths','Resolve-GPushAlias','Get-RepositoryMatches')) {
+foreach ($name in @('Select-GPushWorkspaceRows','Get-GPushWorkspacePaths','Resolve-GPushAlias','Get-RepositoryMatches','ConvertTo-GPushNativeArgument','Start-GPushNativeCapture','Stop-GPushNativeCapture','Test-GPushOperationCancelled','Invoke-GPushNativeCapture','Get-GPushStatsData')) {
     $definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
     if (-not $definition) { throw "Missing function: $name" }
     . ([scriptblock]::Create($definition.Extent.Text))
@@ -27,6 +27,8 @@ function Test-Selection {
 
 Test-Selection -Keys @('Enter') -Expected '0'
 Test-Selection -Keys @('DownArrow','Enter') -Expected '1'
+Test-Selection -Keys @('UpArrow','Enter') -Expected '2'
+Test-Selection -Keys @('UpArrow','DownArrow','Enter') -Expected '0'
 Test-Selection -Keys @('b','Enter') -Expected '1'
 Test-Selection -Keys @('z','Backspace','DownArrow','Enter') -Expected '1'
 Test-Selection -Keys @('Escape') -Expected ''
@@ -61,5 +63,21 @@ try {
     $staged = @(Get-GPushWorkspacePaths -Path $root -Mode staged)
     if ($staged.Count -ne 1 -or $staged[0] -cne $filename) { throw 'Staged filename inspection failed.' }
     Write-Host 'PASS Unicode and bracket filenames, staged and untracked.'
-} finally { [System.IO.Directory]::Delete($root,$true) }
+    $gitPath = (Get-Command git -CommandType Application | Select-Object -First 1).Source
+    $native = Invoke-GPushNativeCapture -Executable $gitPath -ArgumentVector @('-c','core.quotePath=false','-C',$root,'--literal-pathspecs','ls-files','--',$filename)
+    if ($native.ExitCode -ne 0 -or $native.Stdout.Trim() -cne $filename) { throw 'Native process literal filename handling failed.' }
+    & git -C $root -c 'user.name=GPush CI' -c 'user.email=gpush@example.invalid' commit -m 'Test activity' --quiet
+    if ($LASTEXITCODE -ne 0) { throw 'Git commit failed.' }
+    $script:TestStatsRepository = [PSCustomObject]@{Name='Stats test';Path=$root}
+    function Get-GPushCache { return $script:TestStatsRepository }
+    $first = Get-GPushStatsData -Period 30 -Refresh
+    $second = Get-GPushStatsData -Period 30
+    if ($first.Total -ne 1 -or $first.Added -ne 1 -or $first.Unavailable -ne 0 -or $first.At -ne $second.At) { throw 'Statistics calculation or cache failed.' }
+    Write-Host 'PASS Windows native process argument handling and statistics cache.' 
+} finally {
+    for ($attempt=1; $attempt -le 3; $attempt++) {
+        try { if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction Stop }; break }
+        catch { if ($attempt -eq 3) { throw }; Start-Sleep -Milliseconds (200*$attempt) }
+    }
+}
 exit 0

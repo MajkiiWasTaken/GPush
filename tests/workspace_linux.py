@@ -7,6 +7,9 @@ import os
 import pathlib
 import pty
 import select
+import signal
+import shlex
+import shutil
 import struct
 import subprocess
 import tempfile
@@ -17,11 +20,16 @@ SCRIPT = pathlib.Path(__file__).resolve().parents[1] / 'linux' / 'gp'
 
 
 class Terminal:
-    def __init__(self, args, env, cwd):
+    def __init__(self, args, env, cwd, controlling=False):
         self.master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 28, 100, 0, 0))
+        def set_controlling_terminal():
+            os.setsid()
+            fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+        self.controlling = controlling
         self.child = subprocess.Popen(['bash', str(SCRIPT), *args], stdin=slave,
-                                      stdout=slave, stderr=slave, env=env, cwd=cwd)
+                                      stdout=slave, stderr=slave, env=env, cwd=cwd,
+                                      preexec_fn=set_controlling_terminal if controlling else None)
         os.close(slave)
         self.decoder = codecs.getincrementaldecoder('utf-8')('replace')
         self.buffer = ''
@@ -62,7 +70,10 @@ class Terminal:
 
     def close(self):
         if self.child.poll() is None:
-            self.child.kill()
+            if self.controlling:
+                os.killpg(self.child.pid, signal.SIGKILL)
+            else:
+                self.child.kill()
             self.child.wait()
         os.close(self.master)
 
@@ -175,6 +186,41 @@ def test(base):
     c.send('\r'); time.sleep(0.2); c.send('\x03'); c.expect('Exit GPush?'); c.send('n'); c.send('\x1b'); c.expect('Repository / Test [project]'); c.expect('Type to filter')
     time.sleep(0.2); c.send('\x03'); c.expect('Exit GPush?'); c.send('n'); c.expect('Type to filter'); time.sleep(0.2); c.send('\x03'); c.expect('Exit GPush?'); c.send('\x03'); c.finish(expected=130)
     print('PASS aligned repository columns, persistent results, Ctrl+C cancel and exit')
+
+    c = open_menu(); c.expect('Type to filter'); c.send('\x1b[A'); c.expect('POSITION  11 / 11')
+    c.send('\x1b[B'); c.expect('POSITION  1 / 11'); c.expect('Type to filter'); c.send('\x1b'); c.finish()
+    print('PASS cyclic keyboard navigation')
+
+    result = run('bash', str(SCRIPT), 'stats', '30')
+    assert 'Commits  4' in result.stdout, result.stdout
+    assert 'Test [project]' in result.stdout and 'Other' in result.stdout, result.stdout
+    c = open_menu(); c.expect('Type to filter'); c.send('Development statistics'); c.expect('1 / 11'); c.send('\r')
+    c.expect('Development activity / 30 days'); c.expect('Left/Right  Range'); c.send('a')
+    c.expect('Cached local statistics'); c.expect('Left/Right  Range'); c.send('\x1b[D')
+    c.expect('Development activity / 7 days'); c.expect('Left/Right  Range'); c.send('\x1b'); c.expect('Type to filter'); c.send('\x1b'); c.finish()
+    print('PASS statistics totals, cached redraw and time range')
+
+    # A real controlling PTY converts Ctrl+C into SIGINT during a native operation.
+    slow_bin=base/'slow-bin'; slow_bin.mkdir()
+    slow_git=slow_bin/'git'; marker=base/'fetch-started'
+    real_git=shutil.which('git')
+    slow_git.write_text('#!/bin/sh\nfor arg in "$@"; do\n  if [ "$arg" = fetch ]; then\n    touch '+shlex.quote(str(marker))+'\n    exec sleep 30\n  fi\ndone\nexec '+shlex.quote(real_git)+' "$@"\n')
+    slow_git.chmod(0o755)
+    slow_env=dict(env,PATH=str(slow_bin)+os.pathsep+env['PATH'])
+    c=Terminal([],slow_env,base,controlling=True)
+    try:
+        c.expect('Type to filter'); c.send('Repositories'); c.expect('1 / 11'); c.send('\r')
+        c.expect('Type to filter'); c.send('Test ['); c.expect('1 / 2'); c.send('\r')
+        c.expect('Type to filter'); c.send('Fetch remote'); c.expect('1 / 12'); c.send('\r')
+        deadline=time.monotonic()+5
+        while not marker.exists() and time.monotonic()<deadline: time.sleep(0.05)
+        assert marker.exists(), 'slow fetch did not start'
+        c.send('\x03'); c.expect('Operation cancelled by user.'); c.expect('Esc  Back'); c.send('\x1b')
+        c.expect('Repository / Test [project]'); c.expect('Type to filter'); c.send('\x1b')
+        c.expect('Interactive workspace'); c.expect('Type to filter'); c.send('\x1b'); c.finish()
+    except Exception:
+        c.close(); raise
+    print('PASS Ctrl+C cancels active fetch without closing workspace')
 
     # Fake release metadata only: decline the offer before downloading any package.
     bin_dir = base/'mock-bin'; bin_dir.mkdir()

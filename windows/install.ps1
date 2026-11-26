@@ -1,9 +1,9 @@
-param(
+﻿param(
     [string[]]$SearchRoot,
     [switch]$Force
 )
 
-$InstallerVersion = "4.7.3"
+$InstallerVersion = "4.7.4"
 
 [Console]::InputEncoding  = [System.Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)

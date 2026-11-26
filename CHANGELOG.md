@@ -2,6 +2,15 @@
 
 All notable changes to GPush are documented here.
 
+## 4.7.4
+
+- Wrap keyboard selection at both ends of menus and color the exit confirmation.
+- Clear the main menu before opening an operation screen.
+- Redesigned activity charts with sorted active repositories, colored bars, selectable 7/30/90/365-day periods, up to four parallel history scans and a 60-second session cache.
+- Use byte-based transfer progress and named update phases instead of numbered pseudo-progress; require a valid checksum on both platforms.
+- Keep the interactive workspace open when supported running operations are cancelled with Ctrl+C.
+- Fix ShellCheck SC2178 and force/retry cleanup of Windows test repositories.
+
 ## 4.7.3
 
 - Aligned repository name and path columns; selection highlight matches the menu width.
