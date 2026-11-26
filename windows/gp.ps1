@@ -24,7 +24,7 @@ $OutputEncoding           = [System.Text.UTF8Encoding]::new($false)
 # CONFIG
 # ============================================================
 
-$ScriptVersion = "4.7.0"
+$ScriptVersion = "4.7.1"
 $CompletionSchemaVersion = "14"
 
 $ConfigDir  = Join-Path $env:LOCALAPPDATA "GPush"
@@ -6141,24 +6141,64 @@ function Select-GPushWorkspaceRows {
     param([string]$Title, [string[]]$Rows, [switch]$Multiple)
     if ($Rows.Count -eq 0) { return }
     $selected = 0; $query = ''; $marks = @{}
+    $firstFrame = $true
+    $previousFrameCount = 0
+    $previousWidth = 0
+    $previousHeight = 0
+    $descriptions = @('Browse cached repository status','Commit, push and manage projects','Sync or fetch multiple repositories','Find, add and refresh projects','Commits and development activity','Inspect synchronization health','Review recent GPush operations','Configure remotes and safety rules','Check, install or roll back updates','View classic command syntax','Return to your terminal')
     while ($true) {
         $visible = @(for ($i=0; $i -lt $Rows.Count; $i++) {
             if ($Rows[$i].IndexOf($query,[StringComparison]::OrdinalIgnoreCase) -ge 0) { $i }
         })
         if ($selected -ge $visible.Count) { $selected = 0 }
-        $limit = [Math]::Max(1,[Math]::Min(18,[Console]::WindowHeight-8))
+        $width = [Math]::Max(1,[Math]::Min(110,[Console]::WindowWidth-1))
+        $contentWidth = [Math]::Max(1,$width-4)
+        $limit = [Math]::Max(1,[Console]::WindowHeight-11)
         $start = [int]([Math]::Floor($selected / $limit) * $limit)
-        Clear-Host; Write-Section $Title; Write-Dim "Search: $query"
-        for ($i=$start; $i -lt [Math]::Min($start+$limit,$visible.Count); $i++) {
-            $index = $visible[$i]
-            $prefix = if ($i -eq $selected) {'> '} else {'  '}
-            $mark = if ($Multiple) { if ($marks[$index]) {'[x] '} else {'[ ] '} } else {''}
-            $line = Limit-GPushTableText -Text ($prefix+$mark+($Rows[$index] -replace '[\x00-\x1f\x7f]','?')) -Width ([Math]::Max(1,[Console]::WindowWidth-1))
-            if ($i -eq $selected) { Write-Host $line -ForegroundColor Black -BackgroundColor Cyan } else { Write-Host $line }
+        $rule = [string][char]0x2500 * $width
+        if ($firstFrame -or $previousWidth -ne [Console]::WindowWidth -or $previousHeight -ne [Console]::WindowHeight) {
+            Clear-Host; $firstFrame=$false; $previousFrameCount=0
+            $previousWidth=[Console]::WindowWidth; $previousHeight=[Console]::WindowHeight
         }
-        Write-Dim 'Up/Down: select | Enter: accept | Esc: back | /: search'
-        if (-not $Multiple) { Write-Dim 'Type to filter | Backspace: erase' }
-        if ($Multiple) { Write-Dim 'Space: toggle | A: select all | X: clear' }
+        else { try { [Console]::SetCursorPosition(0,0) } catch { Clear-Host } }
+        $frame = New-Object 'System.Collections.Generic.List[object]'
+        $frame.Add(@{Text="  GPUSH  /  $ScriptVersion"; Color='Cyan'})
+        $screenTitle = if ($Title.EndsWith(' / Main menu')) { 'Interactive workspace' } else { $Title }
+        $frame.Add(@{Text=('  '+($screenTitle -replace '[\x00-\x1f\x7f]','?')); Color='White'})
+        $frame.Add(@{Text=$rule; Color='DarkGray'})
+        $filterText = if ($query) { $query } else { 'type to search' }
+        $frame.Add(@{Text="  FILTER  $filterText    |    $($visible.Count) / $($Rows.Count)"; Color='DarkGray'})
+        $frame.Add(@{Text='';Color='White'})
+        for ($i=$start; $i -lt [Math]::Min($start+$limit,$visible.Count); $i++) {
+            $index=$visible[$i]
+            $mark=if ($Multiple) { if ($marks[$index]) {'[x] '} else {'[ ] '} } else {''}
+            $line=$mark+($Rows[$index] -replace '[\x00-\x1f\x7f]','?')
+            if ($Title.EndsWith(' / Main menu') -and $width -ge 76) {
+                $line=('{0,-34} {1}' -f (Limit-GPushTableText $line 34),$descriptions[$index])
+            }
+            $line=Limit-GPushTableText $line $contentWidth
+            if ($i -eq $selected) { $frame.Add(@{Text=('  > '+$line);Color='Black';Selected=$true}) }
+            else { $frame.Add(@{Text=('    '+$line);Color='White'}) }
+        }
+        if (-not $visible.Count) { $frame.Add(@{Text='  No matching items.';Color='Yellow'}) }
+        $frame.Add(@{Text='';Color='White'})
+        $frame.Add(@{Text=$rule;Color='DarkGray'})
+        $positionText=if ($visible.Count) { "  SELECTED  $($selected+1) / $($visible.Count)" } else { '' }
+        $frame.Add(@{Text=$positionText;Color='Cyan'})
+        $frame.Add(@{Text='  Up/Down  Navigate    Enter  Select    Esc  Back';Color='DarkGray'})
+        $hint=if ($Multiple) {'  Space  Toggle    A  All    X  Clear    /  Search'} else {'  Type to filter    Backspace  Clear character'}
+        $frame.Add(@{Text=$hint;Color='DarkGray'})
+        $paintWidth=[Math]::Max(1,[Console]::WindowWidth-1)
+        foreach ($entry in $frame) {
+            $text=(Limit-GPushTableText $entry.Text $width).PadRight($paintWidth)
+            if ($entry.Selected) { Write-Host $text -ForegroundColor Black -BackgroundColor Cyan }
+            else { Write-Host $text -ForegroundColor $entry.Color }
+        }
+        # Erase rows left behind by a shorter filtered list without clearing the screen.
+        if ($null -ne $previousFrameCount) {
+            for ($j=$frame.Count; $j -lt $previousFrameCount; $j++) { Write-Host (' ' * $paintWidth) }
+        }
+        $previousFrameCount=$frame.Count
         $key = [Console]::ReadKey($true)
         switch ($key.Key) {
             Escape { return }
@@ -6174,7 +6214,7 @@ function Select-GPushWorkspaceRows {
                     if ($chosen.Count) { return $chosen }
                 } elseif ($visible.Count) { return $visible[$selected] }
             }
-            default { if ($key.KeyChar -eq '/') { $query=[string](Read-Host 'Search (empty resets)'); $selected=0 } elseif (-not $Multiple -and -not [char]::IsControl($key.KeyChar)) { $query+=$key.KeyChar; $selected=0 } }
+            default { if ($key.KeyChar -eq '/') { $query=[string](Read-Host 'Search (empty resets)'); $selected=0; $firstFrame=$true } elseif (-not $Multiple -and -not [char]::IsControl($key.KeyChar)) { $query+=$key.KeyChar; $selected=0 } }
         }
     }
 }

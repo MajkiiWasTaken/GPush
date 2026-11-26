@@ -2,6 +2,12 @@
 
 All notable changes to GPush are documented here.
 
+## 4.7.1
+
+- Redesigned shared keyboard menus with a branded header, contextual descriptions, full-row selection, filter counts and keyboard hints.
+- In-place menu redraws reduce screen clearing during navigation.
+- Preserved existing CLI routing and cached repository operations.
+
 ## 4.7.0
 
 - Bare `gp` opens a searchable, keyboard-driven main menu; classic project shortcuts are unchanged.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-SCRIPT_VERSION="4.7.0"
+SCRIPT_VERSION="4.7.1"
 AUTHOR="Michal Švrček"
 GITHUB="https://github.com/MajkiiWasTaken"
 
@@ -2566,10 +2566,19 @@ workspace_key() {
 workspace_pick() {
     local title="$1" multiple="$2"; shift 2
     local -a rows=("$@") marks=()
-    local selected=0 i start limit query='' key height width line
-    local -a visible=()
+    local selected=0 i start limit query='' key height width line desc bar content_width left_width screen_title
+    local accent='' highlight='' muted="$C_GRAY" first_frame=true
+    local -a visible=() descriptions=(
+        'Browse cached repository status' 'Commit, push and manage projects' 'Sync or fetch multiple repositories'
+        'Find, add and refresh projects' 'Commits and development activity' 'Inspect synchronization health'
+        'Review recent GPush operations' 'Configure remotes and safety rules' 'Check, install or roll back updates'
+        'View classic command syntax' 'Return to your terminal'
+    )
+    screen_title="$title"
+    if [[ "$title" == *' / Main menu' ]]; then screen_title='Interactive workspace'; fi
     WORKSPACE_SELECTION=()
     (( ${#rows[@]} )) || return 1
+    if [[ -n "$C_CYAN" ]]; then accent=$'\033[1;36m'; highlight=$'\033[30;46m'; fi
     while true; do
         visible=()
         for i in "${!rows[@]}"; do
@@ -2580,24 +2589,46 @@ workspace_pick() {
         width=$(tput cols 2>/dev/null || printf 80)
         [[ "$height" =~ ^[0-9]+$ ]] || height=24
         [[ "$width" =~ ^[0-9]+$ ]] || width=80
-        limit=$((height>10?height-10:1))
+        width=$((width>110?110:width-1)); ((width>=1)) || width=1
+        content_width=$((width>6?width-4:1))
+        limit=$((height>11?height-11:1))
         start=$((selected / limit * limit))
-        printf '\033[H\033[2J'; section "$title"
-        printf 'Search: %s  |  %s items\n\n' "$query" "${#visible[@]}"
+        printf -v bar '%*s' "$width" ''; bar=${bar// /─}
+        if [[ "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" != *[Uu][Tt][Ff]* ]]; then bar=${bar//─/-}; fi
+        if [[ "$first_frame" == true ]]; then printf '\033[H\033[2J'; first_frame=false; else printf '\033[H'; fi
+        printf '\033[2K%s%.*s%s\n' "$accent" "$width" "  GPUSH  /  $SCRIPT_VERSION" "$C_RESET"
+        printf '\033[2K%.*s\n' "$width" "  ${screen_title//[[:cntrl:]]/?}"
+        printf '\033[2K%s%s%s\n' "$muted" "$bar" "$C_RESET"
+        printf '\033[2K%s%.*s%s\n' "$muted" "$width" "  FILTER  ${query:-type to search}    |    ${#visible[@]} / ${#rows[@]}" "$C_RESET"
+        printf '\033[2K\n'
         for ((i=start; i<start+limit && i<${#visible[@]}; i++)); do
-            key=${visible[i]}
-            if (( i == selected )); then
-                if [[ -n "$C_CYAN" ]]; then printf '\033[30;46m> '; else printf '> '; fi
-            else printf '  '; fi
+            key=${visible[i]}; line=${rows[key]//[[:cntrl:]]/?}
             if [[ "$multiple" == true ]]; then
-                if [[ ${marks[key]:-0} == 1 ]]; then printf '[x] '; else printf '[ ] '; fi
+                if [[ ${marks[key]:-0} == 1 ]]; then line="[x] $line"; else line="[ ] $line"; fi
             fi
-            line=${rows[key]//[[:cntrl:]]/?}
-            printf '%.*s%s\n' "$((width>8?width-7:1))" "$line" "$C_RESET"
+            if [[ "$title" == *' / Main menu' ]] && ((width>=76)); then
+                desc=${descriptions[key]:-}; left_width=34
+                printf -v line '%-*.*s %s' "$left_width" "$left_width" "$line" "$desc"
+            fi
+            printf '\033[2K'
+            if (( i == selected )); then
+                printf '  %s> %-*.*s%s\n' "$highlight" "$content_width" "$content_width" "$line" "$C_RESET"
+            else
+                printf '    %.*s\n' "$content_width" "$line"
+            fi
         done
-        dim 'Up/Down: select | Enter: accept | Esc: back | /: search'
-        if [[ "$multiple" != true ]]; then dim 'Type to filter | Backspace: erase'; fi
-        if [[ "$multiple" == true ]]; then dim 'Space: toggle | A: select all | X: clear'; fi
+        if (( ${#visible[@]} == 0 )); then printf '\033[2K  No matching items.\n'; fi
+        printf '\033[2K\n\033[2K%s%s%s\n' "$muted" "$bar" "$C_RESET"
+        if (( ${#visible[@]} )); then
+            printf '\033[2K%s%.*s%s\n' "$accent" "$width" "  SELECTED  $((selected+1)) / ${#visible[@]}" "$C_RESET"
+        else printf '\033[2K\n'; fi
+        printf '\033[2K%s%.*s%s\n' "$muted" "$width" '  Up/Down  Navigate    Enter  Select    Esc  Back' "$C_RESET"
+        if [[ "$multiple" == true ]]; then
+            printf '\033[2K%s%.*s%s\n' "$muted" "$width" '  Space  Toggle    A  All    X  Clear    /  Search' "$C_RESET"
+        else
+            printf '\033[2K%s%.*s%s\n' "$muted" "$width" '  Type to filter    Backspace  Clear character' "$C_RESET"
+        fi
+        printf '\033[J'
         workspace_key
         case "$WORKSPACE_KEY" in
             esc) return 1;;
