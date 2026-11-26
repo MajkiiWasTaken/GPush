@@ -1130,24 +1130,28 @@ save_config_settings() {
     local tmp="$CONFIG_FILE.tmp"
     : > "$tmp" || return 1
 
-    printf '# GPush 4.x Linux configuration\n' >> "$tmp"
-    printf '# This file is managed by gp config add/remove/set/reset.\n\n' >> "$tmp"
-
     local item
-    for item in "${SEARCH_ROOTS[@]}"; do
-        printf 'search_root=%s\n' "$item" >> "$tmp"
-    done
-    for item in "${PROTECTED_BRANCHES[@]}"; do
-        printf 'protected_branch=%s\n' "$item" >> "$tmp"
-    done
-    for item in "${IGNORED_DIRS[@]}"; do
-        printf 'ignored_directory=%s\n' "$item" >> "$tmp"
-    done
 
-    printf 'default_remote=%s\n' "$DEFAULT_REMOTE" >> "$tmp"
-    printf 'large_file_mb=%s\n' "$LARGE_FILE_MB" >> "$tmp"
-    printf 'theme=%s\nlogo=%s\nworkers=%s\nlayout=%s\nrestart=%s\n' "$GP_THEME" "$GP_LOGO" "$GP_WORKERS" "$GP_LAYOUT" "$GP_RESTART" >> "$tmp"
-    printf 'clone_branch=%s\nstats_period=%s\nshow_inactive=%s\n' "$GP_CLONE_BRANCH" "$GP_STATS_PERIOD" "$GP_SHOW_INACTIVE" >> "$tmp"
+    {
+        printf '# GPush 4.x Linux configuration\n'
+        printf '# This file is managed by gp config add/remove/set/reset.\n\n'
+
+        for item in "${SEARCH_ROOTS[@]}"; do
+            printf 'search_root=%s\n' "$item"
+        done
+        for item in "${PROTECTED_BRANCHES[@]}"; do
+            printf 'protected_branch=%s\n' "$item"
+        done
+        for item in "${IGNORED_DIRS[@]}"; do
+            printf 'ignored_directory=%s\n' "$item"
+        done
+
+        printf 'default_remote=%s\n' "$DEFAULT_REMOTE"
+        printf 'large_file_mb=%s\n' "$LARGE_FILE_MB"
+        printf 'theme=%s\nlogo=%s\nworkers=%s\nlayout=%s\nrestart=%s\n' "$GP_THEME" "$GP_LOGO" "$GP_WORKERS" "$GP_LAYOUT" "$GP_RESTART"
+        printf 'clone_branch=%s\nstats_period=%s\nshow_inactive=%s\n' "$GP_CLONE_BRANCH" "$GP_STATS_PERIOD" "$GP_SHOW_INACTIVE"
+    } >> "$tmp" || return 1
+
     mv "$tmp" "$CONFIG_FILE"
 }
 
