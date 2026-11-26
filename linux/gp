@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-SCRIPT_VERSION="4.7.4"
+SCRIPT_VERSION="4.7.5"
 AUTHOR="Michal Švrček"
 GITHUB="https://github.com/MajkiiWasTaken"
 
@@ -2542,19 +2542,82 @@ overview_refresh_one() {
     if (( ${#row[@]} != 8 )); then row=("${path##*/}" - - - - - 'Inspection failed' "$path"); fi
     for ((i=0;i<8;i++)); do overview_fields[index*8+i]=${row[i]}; done
 }
-overview_load() {
-    local fetch="$1" i total=${#overview_paths[@]} filled j bar label='Loading local status'
-    [[ "$fetch" != true ]] || label='Fetching repositories'
-    for ((i=0;i<total;i++)); do
-        filled=$((i*24/total)); bar=''
-        for ((j=0;j<24;j++)); do if ((j<filled)); then bar+='━'; else bar+='─'; fi; done
-        printf '\r\033[2K%s %s%s%s %d/%d  %.30s' "$label" "$C_CYAN" "$bar" "$C_RESET" "$i" "$total" "${overview_paths[i]##*/}"
-        local fetch_failed=false
-        if [[ "$fetch" == true ]]; then overview_fetch "${overview_paths[i]}" true || fetch_failed=true; fi
-        overview_refresh_one "$i"
-        if [[ "$fetch_failed" == true ]]; then overview_fields[i*8+6]="Fetch failed"; fi
+# Shared local snapshot, atomically written; explicit refresh never fetches.
+overview_cache_read() {
+    local file="$CACHE_DIR/workspace-status" i
+    [[ -f "$file" ]] || return 1
+    mapfile -d '' -t overview_fields < "$file"
+    (( ${#overview_fields[@]} == ${#overview_paths[@]} * 8 )) || return 1
+    for i in "${!overview_paths[@]}"; do
+        [[ "${overview_fields[i*8+7]}" == "${overview_paths[i]}" ]] || return 1
     done
-    printf '\r\033[2K%s %s%s%s %d/%d\n' "$label" "$C_GREEN" '━━━━━━━━━━━━━━━━━━━━━━━━' "$C_RESET" "$total" "$total"
+}
+overview_cache_write() {
+    local file
+    ensure_dirs
+    file=$(mktemp "$CACHE_DIR/workspace-status.XXXXXX") || return 1
+    printf '%s\0' "${overview_fields[@]}" > "$file" && mv -f -- "$file" "$CACHE_DIR/workspace-status"
+}
+overview_load() {
+    local fetch="$1" i j total=${#overview_paths[@]} label='Refreshing local status' tmp rc completed=0 interrupted=false previous_trap
+    local -a jobs=() row=() fresh=()
+    [[ "$fetch" != true ]] || label='Fetching repositories'
+    tmp=$(mktemp -d) || return 1
+    previous_trap=$(trap -p INT)
+    trap 'interrupted=true; for job_pid in "${jobs[@]}"; do kill "$job_pid" 2>/dev/null || true; done' INT
+    if [[ -t 1 ]]; then
+        printf '\r\033[2K%s%s%s  ' "$C_CYAN" "$label" "$C_RESET"
+        workspace_block_bar 0 24; printf '    0%%'
+    fi
+    for ((i=0;i<total;i+=4)); do
+        jobs=()
+        for ((j=i;j<total && j<i+4;j++)); do
+            (
+                if [[ "$fetch" == true ]] && ! overview_fetch "${overview_paths[j]}" true > /dev/null 2>&1; then
+                    printf '%s\0' "${overview_paths[j]##*/}" - - - - - 'Fetch failed' "${overview_paths[j]}"
+                else visual_snapshot "${overview_paths[j]}"; fi
+            ) > "$tmp/$j" 2>/dev/null &
+            jobs+=("$!")
+        done
+        for j in "${!jobs[@]}"; do
+            rc=0; wait "${jobs[j]}" || rc=$?
+            [[ "$interrupted" != true ]] || break
+            row=(); mapfile -d '' -t row < "$tmp/$((i+j))"
+            if ((rc!=0 || ${#row[@]}!=8)); then row=("${overview_paths[i+j]##*/}" - - - - - 'Inspection failed' "${overview_paths[i+j]}"); fi
+            fresh+=("${row[@]}"); completed=$((completed+1))
+            if [[ -t 1 ]]; then
+                printf '\r\033[2K%s%s%s  ' "$C_CYAN" "$label" "$C_RESET"
+                workspace_block_bar "$((completed*24/total))" 24
+                printf '  %3d%%' "$((completed*100/total))"
+            fi
+        done
+        [[ "$interrupted" != true ]] || break
+    done
+    if [[ -n "$previous_trap" ]]; then eval "$previous_trap"; else trap - INT; fi
+    rm -rf -- "$tmp"
+    if [[ -t 1 ]]; then printf '\r\033[2K'; fi
+    if [[ "$interrupted" == true ]]; then warn 'Operation cancelled by user.'; return 130; fi
+    overview_fields=("${fresh[@]}"); overview_cache_write
+}
+workspace_health_screen() {
+    local -a overview_paths=() overview_fields=() labels=() targets=()
+    local i clean total choice
+    load_cache; overview_paths=("${CACHED_REPOS[@]}"); total=${#overview_paths[@]}
+    if ((total==0)); then warn 'No cached repositories.'; return; fi
+    overview_cache_read || overview_load false || return
+    while true; do
+        clean=0; labels=(); targets=()
+        for i in "${!overview_paths[@]}"; do
+            if [[ "${overview_fields[i*8+6]}" == 'Up to date' && "${overview_fields[i*8+5]}" == 0 ]]; then clean=$((clean+1)); continue; fi
+            labels+=("${overview_fields[i*8]}  |  ${overview_fields[i*8+6]} / ${overview_fields[i*8+5]} changed"); targets+=("$i")
+        done
+        labels+=('Refresh local status' 'Back')
+        workspace_pick "Workspace health / $clean of $total synchronized" false "${labels[@]}" || return 0
+        choice=${WORKSPACE_SELECTION[0]}
+        if ((choice==${#targets[@]}+1)); then return; fi
+        if ((choice==${#targets[@]})); then workspace_clear_screen; overview_load false || true; continue; fi
+        i=${targets[choice]}; workspace_menu_repo "${overview_paths[i]}"; overview_refresh_one "$i"; overview_cache_write
+    done
 }
 overview_frame() {
     local cols lines page first last i n marker rw bw cw clean=0
@@ -2567,9 +2630,9 @@ overview_frame() {
     bw=$((cols/6)); ((bw<=18)) || bw=18; ((bw>=8)) || bw=8
     cw=$((cols-rw-bw-32)); ((cw>=8)) || cw=8
     for ((i=0;i<${#overview_paths[@]};i++)); do n=$((i*8)); if [[ "${overview_fields[n+6]}" == 'Up to date' && "${overview_fields[n+5]}" == 0 ]]; then clean=$((clean+1)); fi; done
-    printf '\033[H\033[2J'; banner
+    printf '\033[H\033[2J'; info "  GPUSH / $SCRIPT_VERSION"
     printf 'Workspace overview | %d repositories | %d clean and synchronized\n' "${#overview_paths[@]}" "$clean"
-    dim 'Local snapshot (F/A fetch remote references; R refresh local status)'
+    dim 'Saved local snapshot | R refresh | F/A fetch remote references'
     printf '  %-*s %-*s %-*s %6s | %-5s %s\n' "$rw" Repository "$bw" Branch "$cw" 'Last commit' Behind Ahead Worktree
     for ((i=first;i<last;i++)); do
         n=$((i*8)); marker=' '
@@ -2944,13 +3007,19 @@ workspace_activity() {
 # Main workspace: no Git or network operations while navigating menus.
 workspace_choose_repo() {
     load_cache
-    local -a paths=("${CACHED_REPOS[@]}") labels=()
+    local -a paths=() labels=() others=()
     local path
+    for path in "${CACHED_REPOS[@]}"; do
+        if [[ -f "$FAVORITES_FILE" ]] && grep -Fxq -- "$path" "$FAVORITES_FILE"; then paths+=("$path"); else others+=("$path"); fi
+    done
+    paths+=("${others[@]}")
     if (( ${#paths[@]} == 0 )); then
         warn 'No cached repositories. Open Repository cache > Refresh first.'
         workspace_pause; return 1
     fi
-    for path in "${paths[@]}"; do labels+=("${path##*/}  |  $path"); done
+    for path in "${paths[@]}"; do
+        if [[ -f "$FAVORITES_FILE" ]] && grep -Fxq -- "$path" "$FAVORITES_FILE"; then labels+=("★ ${path##*/}  |  $path"); else labels+=("${path##*/}  |  $path"); fi
+    done
     workspace_pick 'Select repository' false "${labels[@]}" || return 1
     MENU_REPO=${paths[WORKSPACE_SELECTION[0]]}
 }
@@ -3041,8 +3110,47 @@ workspace_menu_bulk() {
     done
     return 0
 }
+workspace_favorites() {
+    local -a paths=() labels=()
+    local path choice
+    while true; do
+        load_cache; paths=("${CACHED_REPOS[@]}"); labels=()
+        for path in "${paths[@]}"; do
+            if [[ -f "$FAVORITES_FILE" ]] && grep -Fxq -- "$path" "$FAVORITES_FILE"; then labels+=("[★] ${path##*/}"); else labels+=("[ ] ${path##*/}"); fi
+        done
+        labels+=('Back')
+        workspace_pick 'Favorites / Enter toggles, saved immediately' false "${labels[@]}" || return
+        choice=${WORKSPACE_SELECTION[0]}; ((choice<${#paths[@]})) || return 0
+        path=${paths[choice]}; ensure_dirs
+        if [[ -f "$FAVORITES_FILE" ]] && grep -Fxq -- "$path" "$FAVORITES_FILE"; then
+            grep -Fxv -- "$path" "$FAVORITES_FILE" > "$FAVORITES_FILE.tmp" || true
+        else { if [[ -f "$FAVORITES_FILE" ]]; then cat "$FAVORITES_FILE"; fi; printf '%s\n' "$path"; } | sort -u > "$FAVORITES_FILE.tmp"; fi
+        mv -f -- "$FAVORITES_FILE.tmp" "$FAVORITES_FILE"
+    done
+}
+workspace_search_roots() {
+    local -a candidates=() labels=() paths=()
+    local path choice
+    load_cache
+    candidates=("$HOME/Projects" "$HOME/Documents/Project" "$HOME/source/repos" "$HOME/dev" "$HOME/code")
+    for path in "${CACHED_REPOS[@]}"; do candidates+=("${path%/*}"); done
+    while IFS= read -r path; do
+        [[ -d "$path" && "$path" != / && "$path" != "$HOME" ]] || continue
+        local root covered=false
+        for root in "${SEARCH_ROOTS[@]}"; do if [[ "$path" == "$root" || "$path" == "$root/"* ]]; then covered=true; fi; done
+        [[ "$covered" == false ]] || continue
+        paths+=("$path"); labels+=("Add suggested root  |  $path")
+    done < <(printf '%s\n' "${candidates[@]}" | sort -u)
+    labels+=('Enter custom directory' 'Back')
+    workspace_pick 'Search roots / suggestions' false "${labels[@]}" || return
+    choice=${WORKSPACE_SELECTION[0]}
+    if ((choice==${#paths[@]}+1)); then return; fi
+    if ((choice==${#paths[@]})); then read -r -p 'Directory: ' path || return; else path=${paths[choice]}; fi
+    [[ -d "$path" ]] || { warn 'Directory not found.'; return 1; }
+    if confirm "Add search root $path?"; then handle_config_edit add search-root "$path"; fi
+}
 workspace_menu_cache() {
-    local -a labels=('List repositories' 'Refresh cache (scan search roots)' 'Add repository path' 'Recent repositories' 'Favorites' 'Clone repository' 'Back')
+    local -a labels=('List repositories' 'Refresh cache (scan search roots)' 'Add repository path' 'Recent repositories' 'Favorites' 'Clone repository' 'Search roots' 'Back')
     local path
     while workspace_pick 'Repository cache' false "${labels[@]}"; do
         workspace_clear_screen
@@ -3051,9 +3159,10 @@ workspace_menu_cache() {
             1) if confirm 'Scan configured search roots?'; then workspace_run_operation handle_cache refresh; fi;;
             2) read -r -p 'Repository path (empty cancels): ' path || return 0; if [[ -n "$path" ]]; then handle_cache add "$path"; fi;;
             3) handle_recent;;
-            4) handle_favorite list;;
+            4) workspace_favorites; continue;;
             5) read -r -p 'Clone URL (empty cancels): ' path || return 0; if [[ -n "$path" && "$path" != -* ]] && confirm 'Clone repository?'; then workspace_run_operation handle_clone "$path"; fi;;
-            6) return 0;;
+            6) workspace_search_roots;;
+            7) return 0;;
         esac
         workspace_pause
     done
@@ -3084,7 +3193,7 @@ workspace_menu() {
             2) workspace_menu_bulk;;
             3) workspace_menu_cache;;
             4) workspace_stats_screen;;
-            5) visual_command health; workspace_pause;;
+            5) workspace_health_screen;;
             6) workspace_activity; workspace_pause;;
             7) workspace_settings;;
             8) workspace_menu_update;;
@@ -3100,17 +3209,26 @@ workspace_menu() {
 declare -A GP_STATS_RAW=() GP_STATS_AT=() GP_STATS_VALID=()
 workspace_stats() {
     local period="${1:-30}" show_all="${2:-false}" refresh="${3:-false}" repository line day a d count total=0 added=0 removed=0 max=1 i date_key stamp hidden=0 unavailable=0 name filled width=28 name_width=24 cols=80 heat_days cache_key cache_hit=true
-    local tmp='' previous_trap cancelled=false completed=0 pid j batch_end rc now
+    local tmp='' previous_trap cancelled=false completed=0 pid j batch_end rc now fingerprint raw_file git_identity
+    local -A stats_files=()
     local -A stats_days=()
     local -a stats_counts=() stats_names=() stats_order=() stats_paths=() stats_pids=() stats_pending=()
     case "$period" in 7|30|90|365) ;; *) err 'Use gp stats [7|30|90|365].'; return 2;; esac
+    : "$refresh"
     load_cache
     stats_paths=("${CACHED_REPOS[@]}"); now=$(date +%s)
+    ensure_dirs; mkdir -p "$CACHE_DIR/activity"
+    git_identity=$(git config --global --get user.name 2>/dev/null || printf unknown)
     for repository in "${stats_paths[@]}"; do
         cache_key="$period|$repository"
-        if [[ "$refresh" == true || -z "${GP_STATS_AT[$cache_key]:-}" ]] || (( now - ${GP_STATS_AT[$cache_key]:-0} >= 60 )); then
-            stats_pending+=("$repository"); cache_hit=false
-        fi
+        fingerprint=$(git -C "$repository" rev-parse --verify HEAD 2>/dev/null || printf empty)
+        raw_file="$CACHE_DIR/activity/$(printf '%s\n' "$repository" "$fingerprint" "$period" "$(date +%F)" | git hash-object --stdin)"
+        stats_files[$repository]=$raw_file
+        if [[ -f "$raw_file" ]]; then
+            GP_STATS_RAW[$cache_key]=$(<"$raw_file"); GP_STATS_VALID[$cache_key]=0; GP_STATS_AT[$cache_key]=$now
+        elif [[ "$fingerprint" == empty ]]; then
+            GP_STATS_RAW[$cache_key]=''; GP_STATS_VALID[$cache_key]=0; GP_STATS_AT[$cache_key]=$now
+        else stats_pending+=("$repository"); cache_hit=false; fi
     done
     if (( ${#stats_pending[@]} )); then
         tmp=$(mktemp -d) || return 1
@@ -3134,6 +3252,7 @@ workspace_stats() {
                 cache_key="$period|${stats_pending[i+j]}"
                 GP_STATS_RAW[$cache_key]=$(<"$tmp/$((i+j))")
                 GP_STATS_VALID[$cache_key]=$rc; GP_STATS_AT[$cache_key]=$now
+                if ((rc==0)); then cp -- "$tmp/$((i+j))" "${stats_files[${stats_pending[i+j]}]}.tmp.$$" && mv -f -- "${stats_files[${stats_pending[i+j]}]}.tmp.$$" "${stats_files[${stats_pending[i+j]}]}"; fi
                 completed=$((completed+1))
                 if [[ -t 1 ]]; then
                     printf '\r\033[2K%sLoading activity%s  ' "$C_CYAN" "$C_RESET"
@@ -3170,6 +3289,7 @@ workspace_stats() {
     done
     info "  GPUSH  /  $SCRIPT_VERSION"
     section "Development activity / $period days"
+    dim "  Workspace: $git_identity | All authors (local HEAD histories)"
     printf '  %sCommits%s  %s    %s+%s%s added    %s-%s%s removed\n\n' "$C_CYAN" "$C_RESET" "$total" "$C_GREEN" "$added" "$C_RESET" "$C_RED" "$removed" "$C_RESET"
     printf '  %-*s  %-*s  %s\n' "$name_width" Repository "$width" Activity Commits
     if (( ${#stats_counts[@]} )); then
@@ -3182,7 +3302,7 @@ workspace_stats() {
         printf '  %-*.*s  ' "$name_width" "$name_width" "$name"; workspace_block_bar "$filled" "$width"; printf '  %5d\n' "$count"
     done
     if ((hidden>0)); then dim "  $hidden inactive repositories hidden"; fi
-    if ((unavailable>0)); then warn "  $unavailable repositories could not be inspected (including empty histories)."; fi
+    if ((unavailable>0)); then warn "  $unavailable repositories could not be inspected."; fi
     heat_days=$((period<30?period:30)); if ((heat_days>(cols-3)/3)); then heat_days=$(((cols-3)/3)); fi
     printf '\n  Daily activity (oldest first; last %d days)\n  ' "$heat_days"
     for ((i=heat_days-1;i>=0;i--)); do
@@ -3193,7 +3313,7 @@ workspace_stats() {
         else printf '%d ' "$((stamp>9?9:stamp))"; fi
     done
     printf '\n'; dim '  Low activity -> high activity'
-    if [[ "$cache_hit" == true ]]; then dim '  Cached local statistics (up to 60 seconds old)'; fi
+    if [[ "$cache_hit" == true ]]; then dim '  Cached local statistics (matching HEAD and calendar date)'; fi
     return 0
 }
 workspace_stats_screen() {
@@ -3232,8 +3352,8 @@ visual_command() {
             local -a overview_fields=() overview_paths=()
             load_cache; overview_paths=("${CACHED_REPOS[@]}")
             if (( ${#overview_paths[@]} == 0 )); then warn 'Run gp cache refresh first.'; return 1; fi
-            printf '\033[H\033[2J'; banner
-            overview_load false
+            workspace_clear_screen
+            overview_cache_read || overview_load false || return
             while true; do
                 overview_frame
                 path=${overview_paths[selected]}
@@ -3242,10 +3362,10 @@ visual_command() {
                     q|Q|esc) return 0;;
                     up) selected=$(( (selected+${#overview_paths[@]}-1)%${#overview_paths[@]} ));;
                     down) selected=$(( (selected+1)%${#overview_paths[@]} ));;
-                    enter) workspace_menu_repo "$path"; overview_refresh_one "$selected";;
-                    r|R) overview_load false;;
-                    a|A) if confirm 'Fetch all cached repositories?'; then overview_load true; fi;;
-                    f|F) if workspace_run_operation overview_fetch "$path"; then overview_refresh_one "$selected"; else
+                    enter) workspace_menu_repo "$path"; overview_refresh_one "$selected"; overview_cache_write;;
+                    r|R) overview_load false || true;;
+                    a|A) if confirm 'Fetch all cached repositories?'; then overview_load true || true; fi;;
+                    f|F) if workspace_run_operation overview_fetch "$path"; then overview_refresh_one "$selected"; overview_cache_write; else
                         local fetch_rc=$?; overview_refresh_one "$selected"
                         if ((fetch_rc==130)); then overview_fields[selected*8+6]="Fetch cancelled"; else overview_fields[selected*8+6]="Fetch failed"; fi
                         workspace_pause
@@ -3253,7 +3373,7 @@ visual_command() {
                     s|S) if confirm 'Synchronize selected repository (no commit)?'; then
                         local sync_allow=false
                         if confirm 'Allow pushing to protected branches as well?'; then sync_allow=true; fi
-                        workspace_run_operation bulk_sync "$path" "$sync_allow" ''; overview_refresh_one "$selected"; workspace_pause
+                        workspace_run_operation bulk_sync "$path" "$sync_allow" ''; overview_refresh_one "$selected"; overview_cache_write; workspace_pause
                     fi;;
                 esac
             done ;;
@@ -3261,7 +3381,7 @@ visual_command() {
         menu) workspace_menu ;;
         settings) workspace_settings ;;
         activity) workspace_activity ;;
-        health) visual_status health ;;
+        health) if [[ -t 0 && -t 1 ]]; then workspace_health_screen; else visual_status health; fi ;;
         watch) local interval="${1:-10}"; [[ "$interval" =~ ^[1-9][0-9]*$ ]] || return 2; [[ -t 1 ]] || { visual_status overview; return; }; while true; do printf '\033[H\033[2J'; visual_status overview; sleep "$interval"; done ;;
         history) if [[ -f "$CONFIG_DIR/history.log" ]]; then tail -n 30 "$CONFIG_DIR/history.log"; else dim "No bulk operations recorded yet."; fi ;;
         graph|changes) select_repo "${1:-}" || return 1

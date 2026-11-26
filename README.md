@@ -173,13 +173,13 @@ If no commit message is supplied, GPush asks for it interactively.
 | `clone` | Clone and cache a repository |
 | `recent` | Show recently used repositories |
 | `update` | Check, install or roll back GPush updates (SHA-256 verified) |
-| `menu` / `overview` | Interactive workspace menu and repository dashboard |
+| `menu` / `overview` | Interactive workspace menu and cached repository dashboard |
 | `detail` | Repository status, recent commits and actions |
 | `commit` | Select files, commit and optionally push |
 | `diff` / `changes` | Interactive diff viewer and change statistics |
 | `branches` | Interactive branch manager |
-| `stats [7/30/90/365]` | Commit activity and development statistics by period |
-| `health` / `watch` | Workspace health and periodic status refresh |
+| `stats [7/30/90/365]` | Cached commit activity and development statistics by period |
+| `health` / `watch` | Cached workspace health and periodic status refresh |
 | `history` / `activity` | Recorded operation history |
 | `settings` | Interactive configuration editor |
 | `github` | Issues, PRs, releases and CI via GitHub CLI (`gh`) |

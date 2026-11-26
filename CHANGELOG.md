@@ -2,6 +2,15 @@
 
 All notable changes to GPush are documented here.
 
+## 4.7.5
+
+- Share a persistent local workspace snapshot between interactive Overview and Health; refresh on demand with bounded parallel inspection and a live progress indicator.
+- Show repositories requiring attention in Health, with direct access to repository actions.
+- Add a Favorites toggle manager and prioritize favorites in repository selection.
+- Suggest additional search roots from common development directories and cached repository parents, with confirmation.
+- Display the configured Git identity and clearly label statistics as all-author local HEAD activity. Cache statistics on disk (Linux: per repository HEAD, period and date; Windows: aggregate with 60-second expiry).
+- Improve activity chart contrast on Windows.
+
 ## 4.7.4
 
 - Wrap keyboard selection at both ends of menus and color the exit confirmation.

@@ -24,7 +24,7 @@ $OutputEncoding           = [System.Text.UTF8Encoding]::new($false)
 # CONFIG
 # ============================================================
 
-$ScriptVersion = "4.7.4"
+$ScriptVersion = "4.7.5"
 $CompletionSchemaVersion = "14"
 
 $ConfigDir  = Join-Path $env:LOCALAPPDATA "GPush"
@@ -6172,31 +6172,110 @@ function Get-GPushOverviewLocalState {
 }
 
 # Overview snapshots are loaded only on startup or an explicit action.
-function Get-GPushOverviewStates {
-    param([object[]]$Repositories, [switch]$Fetch)
-    $ProgressPreference = 'Continue'
-    $activity = if ($Fetch) { 'Fetching repositories' } else { 'Loading local repository status' }
-    $i = 0
+function Save-GPushWorkspaceSnapshot {
+    param([object[]]$States)
+    $file=Join-Path $CacheDir 'workspace-status.json'
+    $temp="$file.$PID.tmp"
     try {
-        foreach ($repository in $Repositories) {
-            $percent = [int](100 * $i / [Math]::Max(1, $Repositories.Count))
-            Write-Progress -Id 42 -Activity $activity -Status ("{0}/{1} - {2}" -f ($i+1), $Repositories.Count, $repository.Name) -PercentComplete $percent
-            try {
-                if ($Fetch) { Get-GPushRepositorySnapshot -Repository $repository -Fetch }
-                else { Get-GPushOverviewLocalState -Repository $repository }
-            } catch {
-                if ($_.Exception -is [OperationCanceledException]) { throw }
-                [PSCustomObject]@{ Repository=$repository.Name; Path=$repository.Path; Branch='-'; LastCommit='-'; Compared=$false; Ahead=0; Behind=0; DirtyCount=0; Worktree='unknown'; Sync='Inspection failed' }
+        $States | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $temp -Encoding UTF8 -ErrorAction Stop
+        Move-Item -LiteralPath $temp -Destination $file -Force -ErrorAction Stop
+    } catch { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue }
+}
+function Get-GPushSavedWorkspaceSnapshot {
+    param([object[]]$Repositories)
+    try {
+        $rows=@(Get-Content -LiteralPath (Join-Path $CacheDir 'workspace-status.json') -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop)
+        if ($rows.Count -ne $Repositories.Count) { return }
+        for ($i=0; $i -lt $rows.Count; $i++) { if ($rows[$i].Path -ne $Repositories[$i].Path) { return } }
+        return $rows
+    } catch { return }
+}
+function Get-GPushOverviewStates {
+    param([object[]]$Repositories, [switch]$Fetch, [switch]$UseCache)
+    if ($UseCache -and -not $Fetch) {
+        $saved=@(Get-GPushSavedWorkspaceSnapshot $Repositories)
+        if ($saved.Count -eq $Repositories.Count -and $saved.Count) { return $saved }
+    }
+    $ProgressPreference='Continue'
+    $activity=if ($Fetch) {'Fetching repositories'} else {'Refreshing local repository status'}
+    $states=New-Object 'System.Collections.Generic.List[object]'
+    $git=(Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+    $interactive=-not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected
+    $previous=$false; $jobs=@(); $completed=0
+    try {
+        if ($interactive) { $previous=[Console]::TreatControlCAsInput; [Console]::TreatControlCAsInput=$true }
+        if ($interactive) { Write-Progress -Id 42 -Activity $activity -Status 'Starting local inspection' -PercentComplete 0 }
+        for ($i=0; $i -lt $Repositories.Count; $i+=4) {
+            $jobs=@()
+            for ($j=$i; $j -lt [Math]::Min($i+4,$Repositories.Count); $j++) {
+                $repo=$Repositories[$j]
+                if ($Fetch) {
+                    $states.Add((Get-GPushRepositorySnapshot -Repository $repo -Fetch)); $completed++
+                    if ($interactive) { Write-Progress -Id 42 -Activity $activity -Status "$completed / $($Repositories.Count)" -PercentComplete ([int](100*$completed/$Repositories.Count)) }
+                    continue
+                }
+                $state=[PSCustomObject]@{Repository=$repo.Name;Path=$repo.Path;Branch='-';LastCommit='-';Compared=$false;Ahead=0;Behind=0;DirtyCount=0;Worktree='unknown';Sync='Inspection failed'}
+                $states.Add($state)
+                $status=$null; $log=$null
+                try {
+                    $status=Start-GPushNativeCapture -Executable $git -ArgumentVector @('-C',[string]$repo.Path,'--no-optional-locks','status','--porcelain=v2','--branch','--untracked-files=all')
+                    $log=Start-GPushNativeCapture -Executable $git -ArgumentVector @('-C',[string]$repo.Path,'log','-1','--format=%s')
+                    $jobs+= [PSCustomObject]@{State=$state;Status=$status;Log=$log;Done=$false}
+                } catch { Stop-GPushNativeCapture $status; Stop-GPushNativeCapture $log; $completed++ }
             }
-            $i++
+            while (@($jobs | Where-Object {-not $_.Done}).Count) {
+                if ($interactive -and (Test-GPushOperationCancelled)) { throw [OperationCanceledException]::new('Operation cancelled by user.') }
+                if ($interactive) { Write-Progress -Id 42 -Activity $activity -Status "$completed / $($Repositories.Count) repositories" -PercentComplete ([int](100*$completed/[Math]::Max(1,$Repositories.Count))) -CurrentOperation 'Ctrl+C: cancel' }
+                foreach ($job in $jobs) {
+                    if ($job.Done -or -not $job.Status.Process.HasExited -or -not $job.Log.Process.HasExited -or -not $job.Status.OutputTask.IsCompleted -or -not $job.Log.OutputTask.IsCompleted) { continue }
+                    $st=$job.State; $unborn=$false; $upstream=$false
+                    if ($job.Status.Process.ExitCode -eq 0) {
+                        foreach ($line in ($job.Status.OutputTask.GetAwaiter().GetResult() -split "`r?`n")) {
+                            if ($line -match '^# branch\.head (.*)$') {$st.Branch=$Matches[1]}
+                            elseif ($line -match '^# branch\.oid \(initial\)$') {$unborn=$true}
+                            elseif ($line -match '^# branch\.upstream ') {$upstream=$true}
+                            elseif ($line -match '^# branch\.ab \+(\d+) -(\d+)$') {$st.Ahead=[int]$Matches[1];$st.Behind=[int]$Matches[2];$st.Compared=$true}
+                            elseif ($line -match '^[12u?] ') {$st.DirtyCount++}
+                        }
+                        $st.Worktree=if ($st.DirtyCount) {"dirty ($($st.DirtyCount))"} else {'clean'}
+                        $st.Sync=if ($unborn) {'No commits'} elseif ($st.Branch -eq '(detached)') {'Detached HEAD'} elseif (-not $upstream) {'No tracking upstream'} elseif (-not $st.Compared) {'Unknown upstream status'} elseif ($st.Ahead -eq 0 -and $st.Behind -eq 0) {'Up to date'} else {"$($st.Ahead) ahead / $($st.Behind) behind"}
+                        if ($job.Log.Process.ExitCode -eq 0) {$st.LastCommit=$job.Log.OutputTask.GetAwaiter().GetResult().Trim()}
+                    }
+                    $job.Done=$true; $completed++; Stop-GPushNativeCapture $job.Status; Stop-GPushNativeCapture $job.Log
+                }
+                if (@($jobs | Where-Object {-not $_.Done}).Count) {Start-Sleep -Milliseconds 40}
+            }
         }
-    } finally { Write-Progress -Id 42 -Activity $activity -Completed }
+    } finally {
+        foreach ($job in $jobs) {if (-not $job.Done) {Stop-GPushNativeCapture $job.Status; Stop-GPushNativeCapture $job.Log}}
+        if ($interactive) {Write-Progress -Id 42 -Activity $activity -Completed; [Console]::TreatControlCAsInput=$previous}
+    }
+    return $states.ToArray()
+}
+function Show-GPushHealthScreen {
+    $repos=@(Get-GPushCache | Sort-Object Name,Path)
+    if (-not $repos.Count) {Write-Warn 'No cached repositories.';return}
+    $states=@(Get-GPushOverviewStates -Repositories $repos -UseCache)
+    Save-GPushWorkspaceSnapshot $states
+    while ($true) {
+        $issues=@($states | Where-Object {$_.Sync -ne 'Up to date' -or $_.Worktree -ne 'clean'})
+        $clean=$states.Count-$issues.Count
+        $labels=@(foreach ($issue in $issues) {"$($issue.Repository)  |  $($issue.Sync) / $($issue.Worktree)"}) + @('Refresh local status','Back')
+        $choice=@(Select-GPushWorkspaceRows -Title "Workspace health / $clean of $($states.Count) synchronized" -Rows $labels)
+        if (-not $choice.Count -or $choice[0] -eq $issues.Count+1) {return}
+        if ($choice[0] -eq $issues.Count) {Clear-Host;$states=@(Get-GPushOverviewStates -Repositories $repos)}
+        else {
+            $path=$issues[$choice[0]].Path
+            for ($i=0;$i -lt $repos.Count;$i++) {if ($repos[$i].Path -eq $path) {Show-GPushMenuRepository $repos[$i] | Out-Host; $states[$i]=Get-GPushOverviewLocalState $repos[$i];break}}
+        }
+        Save-GPushWorkspaceSnapshot $states
+    }
 }
 
 function Show-GPushOverviewFrame {
     param([object[]]$States, [int]$Selected)
     Clear-Host
-    Show-Banner
+    Write-Info "  GPUSH / $ScriptVersion"
     $width = 100; $height = 25
     try { $width = [Console]::WindowWidth; $height = [Console]::WindowHeight } catch {}
     $page = [Math]::Max(1, $height - 12)
@@ -6204,7 +6283,7 @@ function Show-GPushOverviewFrame {
     $last = [Math]::Min($States.Count, $first + $page)
     $clean = @($States | Where-Object { $_.Sync -eq 'Up to date' -and $_.Worktree -eq 'clean' }).Count
     Write-Info ("Workspace overview | {0} repositories | {1} clean and synchronized" -f $States.Count, $clean)
-    Write-Dim 'Local snapshot (F/A fetch remote references; R refresh local status)'
+    Write-Dim 'Saved local snapshot | R refresh | F/A fetch remote references'
     $rw = [Math]::Max(8, [Math]::Min(24, [int]($width / 4)))
     $bw = [Math]::Max(8, [Math]::Min(18, [int]($width / 6)))
     $cw = [Math]::Max(8, $width - $rw - $bw - 32)
@@ -6617,13 +6696,13 @@ function Show-GPushWorkspaceActivity {
     }
 }
 function Select-GPushMenuRepository {
-    $repositories = @(Get-GPushCache | Sort-Object Name, Path)
+    $repositories = @(Get-GPushCache | Sort-Object @{Expression={if ($FavoriteRepositories -contains $_.Path) {0} else {1}}},Name,Path)
     if (-not $repositories.Count) {
         Write-Warn 'No cached repositories. Open Repository cache > Refresh first.'
         Wait-GPushWorkspace
         return
     }
-    $labels = @($repositories | ForEach-Object { "$($_.Name)  |  $($_.Path)" })
+    $labels = @($repositories | ForEach-Object { $mark=if ($FavoriteRepositories -contains $_.Path) {[string][char]0x2605+' '} else {''}; "$mark$($_.Name)  |  $($_.Path)" })
     $picked = @(Select-GPushWorkspaceRows -Title 'Select repository' -Rows $labels)
     if ($picked.Count) { return $repositories[$picked[0]] }
 }
@@ -6750,11 +6829,38 @@ function Show-GPushMenuBulk {
         Wait-GPushWorkspace
     }
 }
+function Show-GPushFavoritesManager {
+    while ($true) {
+        $repos=@(Get-GPushCache | Sort-Object Name,Path)
+        $labels=@(foreach ($repo in $repos) {if ($FavoriteRepositories -contains $repo.Path) {"[x] $($repo.Name)  |  $($repo.Path)"} else {"[ ] $($repo.Name)  |  $($repo.Path)"}}) + @('Back')
+        $picked=@(Select-GPushWorkspaceRows -Title 'Favorites / Enter toggles, saved immediately' -Rows $labels)
+        if (-not $picked.Count -or $picked[0] -ge $repos.Count) {return}
+        $path=$repos[$picked[0]].Path
+        if ($FavoriteRepositories -contains $path) {$script:FavoriteRepositories=@($FavoriteRepositories | Where-Object {$_ -ne $path})}
+        else {$script:FavoriteRepositories=@($FavoriteRepositories)+@($path)}
+        Save-GPushConfig
+    }
+}
+function Show-GPushSearchRoots {
+    $candidates=@((Join-Path $HOME 'Projects'),(Join-Path $HOME 'Documents/Project'),(Join-Path $HOME 'source/repos'),(Join-Path $HOME 'dev'),(Join-Path $HOME 'code'))
+    $candidates+=@(Get-GPushCache | ForEach-Object {Split-Path -Parent $_.Path})
+    $paths=@(foreach ($path in ($candidates | Sort-Object -Unique)) {
+        if (-not $path -or $path -eq $HOME -or -not (Test-Path -LiteralPath $path -PathType Container)) {continue}
+        $covered=$false
+        foreach ($root in $SearchRoots) {if ($path -eq $root -or $path.StartsWith($root.TrimEnd('\','/')+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)) {$covered=$true}}
+        if (-not $covered) {$path}
+    })
+    $labels=@($paths | ForEach-Object {"Add suggested root  |  $_"})+@('Enter custom directory','Back')
+    $picked=@(Select-GPushWorkspaceRows -Title 'Search roots / suggestions' -Rows $labels)
+    if (-not $picked.Count -or $picked[0] -eq $paths.Count+1) {return}
+    $path=if ($picked[0] -eq $paths.Count) {Read-Host 'Directory'} else {$paths[$picked[0]]}
+    if ($path -and (Test-Path -LiteralPath $path -PathType Container) -and (Confirm-GPushAction -Prompt "Add search root $path?")) {$null=Invoke-GPushConfigEdit -Action add -Key search-root -Value $path}
+}
 function Show-GPushMenuCache {
-    $labels = @('List repositories','Refresh cache (scan search roots)','Add repository path','Recent repositories','Favorites','Clone repository','Back')
+    $labels = @('List repositories','Refresh cache (scan search roots)','Add repository path','Recent repositories','Favorites','Clone repository','Search roots','Back')
     while ($true) {
         $picked = @(Select-GPushWorkspaceRows -Title 'Repository cache' -Rows $labels)
-        if (-not $picked.Count -or $picked[0] -eq 6) { return }
+        if (-not $picked.Count -or $picked[0] -eq 7) { return }
         Clear-Host
         try {
         switch ($picked[0]) {
@@ -6762,8 +6868,9 @@ function Show-GPushMenuCache {
             1 { if (Confirm-GPushAction -Prompt 'Scan configured search roots?') { & $PSCommandPath cache refresh } }
             2 { $path = Read-Host 'Repository path (empty cancels)'; if ($path) { & $PSCommandPath cache add $path } }
             3 { & $PSCommandPath recent }
-            4 { & $PSCommandPath favorite list }
+            4 { Show-GPushFavoritesManager; continue }
             5 { $url = Read-Host 'Clone URL (empty cancels)'; if ($url -and -not $url.StartsWith('-') -and (Confirm-GPushAction -Prompt 'Clone repository?')) { & $PSCommandPath clone $url } }
+            6 { Show-GPushSearchRoots }
         }
         } catch {
             if ($_.Exception -is [OperationCanceledException]) { Write-Warn 'Operation cancelled by user.' } else { Write-Err $_.Exception.Message }
@@ -6795,7 +6902,7 @@ function Show-GPushWorkspaceMenu {
                 2 { Show-GPushMenuBulk }
                 3 { Show-GPushMenuCache }
                 4 { Show-GPushStatsScreen }
-                5 { Show-GPushVisualStatus 'health'; Wait-GPushWorkspace }
+                5 { Show-GPushHealthScreen }
                 6 { Show-GPushWorkspaceActivity; Wait-GPushWorkspace }
                 7 { Show-GPushWorkspaceSettings }
                 8 { Show-GPushMenuUpdate }
@@ -6834,8 +6941,14 @@ function Get-GPushStatsData {
     param([ValidateSet('7','30','90','365')][int]$Period=30,[switch]$Refresh)
     $repositories = @(Get-GPushCache)
     $signature = ($repositories.Path -join '|')
+    $statsDirectory=Join-Path $CacheDir 'activity'
+    New-Item -ItemType Directory -Path $statsDirectory -Force | Out-Null
+    $identity=(& git config --global --get user.name 2>$null) -join ''
+    if (-not $identity) {$identity='unknown'}
     if ($null -eq $script:GPushStatsCache) { $script:GPushStatsCache = @{} }
     $cached = $script:GPushStatsCache[$Period]
+    $statsFile=Join-Path $statsDirectory "summary-$Period.clixml"
+    if (-not $cached -and -not $Refresh) {try {$cached=Import-Clixml -LiteralPath $statsFile -ErrorAction Stop} catch {}}
     if (-not $Refresh -and $cached -and $cached.Signature -ceq $signature -and ((Get-Date)-$cached.At).TotalSeconds -lt 60) { return $cached }
     $counts = New-Object 'System.Collections.Generic.List[object]'
     $days = @{}; $total=0; $added=0L; $removed=0L; $unavailable=0; $completed=0
@@ -6880,7 +6993,8 @@ function Get-GPushStatsData {
         Write-Progress -Id 43 -Activity 'Loading development activity' -Completed
         if ($interactive) { [Console]::TreatControlCAsInput=$previous }
     }
-    $data=[PSCustomObject]@{ Signature=$signature; At=(Get-Date); Counts=@($counts.ToArray()); Days=$days; Total=$total; Added=$added; Removed=$removed; Unavailable=$unavailable }
+    $data=[PSCustomObject]@{ Signature=$signature; At=(Get-Date); Counts=@($counts.ToArray()); Days=$days; Total=$total; Added=$added; Removed=$removed; Unavailable=$unavailable; Identity=$identity }
+    try {$data | Export-Clixml -LiteralPath $statsFile -ErrorAction Stop} catch {}
     $script:GPushStatsCache[$Period]=$data
     return $data
 }
@@ -6894,6 +7008,7 @@ function Show-GPushStats {
     $barWidth=[Math]::Max(4,[Math]::Min(28,$cols-$nameWidth-16))
     Write-Host "  GPUSH  /  $ScriptVersion" -ForegroundColor Cyan
     Write-Section "  Development activity / $Period days"
+    Write-Dim "  Workspace: $($data.Identity) | All authors (local HEAD histories)"
     Write-Dim ('  '+([string][char]0x2500 * [Math]::Max(1,[Math]::Min(100,$cols-3))))
     Write-Host ('  Commits  {0:N0}    ' -f $data.Total) -ForegroundColor Cyan -NoNewline
     Write-Host ('+{0:N0} added    ' -f $data.Added) -ForegroundColor Green -NoNewline
@@ -6909,7 +7024,7 @@ function Show-GPushStats {
             Write-Host (([string][char]0x2588 * $filled)+([string][char]0x2591 * ($barWidth-$filled))) -NoNewline
         } else {
             if ($filled -gt 0) { Write-Host (' ' * $filled) -BackgroundColor DarkCyan -NoNewline }
-            if ($filled -lt $barWidth) { Write-Host (' ' * ($barWidth-$filled)) -BackgroundColor DarkGray -NoNewline }
+            if ($filled -lt $barWidth) { Write-Host (' ' * ($barWidth-$filled)) -BackgroundColor Black -NoNewline }
         }
         Write-Host ('  {0,5}' -f $item.Count)
     }
@@ -6924,7 +7039,7 @@ function Show-GPushStats {
         else { $color=if ($n -eq 0) {'DarkGray'} elseif ($n -lt 3) {'DarkGreen'} elseif ($n -lt 6) {'Green'} else {'Cyan'}; Write-Host '  ' -BackgroundColor $color -NoNewline; Write-Host ' ' -NoNewline }
     }
     Write-Host ''; Write-Dim '  Low activity -> high activity'
-    Write-Dim ("  Local snapshot: {0:HH:mm:ss} (60s session cache)" -f $data.At)
+    Write-Dim ("  Local snapshot: {0:HH:mm:ss} (60s persistent cache)" -f $data.At)
 }
 
 function Show-GPushStatsScreen {
@@ -6969,7 +7084,8 @@ function Invoke-GPushVisualCommand {
             if ($repositories.Count -eq 0) { Write-Warn 'Run gp cache refresh first.'; return 1 }
             Clear-Host
             Show-Banner
-            $states = @(Get-GPushOverviewStates -Repositories $repositories)
+            $states = @(Get-GPushOverviewStates -Repositories $repositories -UseCache)
+            Save-GPushWorkspaceSnapshot $states
             $selected = 0
             while ($true) {
                 Show-GPushOverviewFrame -States $states -Selected $selected
@@ -7008,12 +7124,14 @@ function Invoke-GPushVisualCommand {
                         }
                     }
                 }
+                if ($key -in @('R','A','F','S','Enter')) { Save-GPushWorkspaceSnapshot $states }
                 } catch {
                     if ($_.Exception -is [OperationCanceledException]) { Write-Warn 'Operation cancelled by user.'; Wait-GPushWorkspace }
                     else { throw }
                 }
             }
         }
+        'health' { if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) { Show-GPushVisualStatus 'health' } else { Show-GPushHealthScreen } }
         'history' {
             $historyFile = Join-Path $ConfigDir 'history.log'
             if (Test-Path $historyFile) { Get-Content $historyFile -Tail 30 } else { Write-Dim 'No bulk operations recorded yet.' }
