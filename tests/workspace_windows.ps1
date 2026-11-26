@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $source = Join-Path (Split-Path -Parent $PSScriptRoot) 'windows/gp.ps1'
 $tokens = $null
 $errors = $null
@@ -6,11 +6,19 @@ $ast = [System.Management.Automation.Language.Parser]::ParseFile($source, [ref]$
 if ($errors.Count) { throw ($errors | Out-String) }
 
 # Load only the functions under test, without running the installed CLI.
-foreach ($name in @('Select-GPushWorkspaceRows','Get-GPushWorkspacePaths','Resolve-GPushAlias','Get-RepositoryMatches','ConvertTo-GPushNativeArgument','Start-GPushNativeCapture','Stop-GPushNativeCapture','Test-GPushOperationCancelled','Invoke-GPushNativeCapture','Get-GPushStatsData','Limit-GPushTableText','Get-GPushBulkLine')) {
+foreach ($name in @('Select-GPushWorkspaceRows','Get-GPushWorkspacePaths','Resolve-GPushAlias','Get-RepositoryMatches','ConvertTo-GPushNativeArgument','Start-GPushNativeCapture','Stop-GPushNativeCapture','Test-GPushOperationCancelled','Invoke-GPushNativeCapture','Get-GPushStatsData','Limit-GPushTableText','Get-GPushBulkLine','Get-GPushHeatColor')) {
     $definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
     if (-not $definition) { throw "Missing function: $name" }
     . ([scriptblock]::Create($definition.Extent.Text))
 }
+$expectedPalette = @('DarkGray', 'DarkGreen', 'DarkGreen', 'Green', 'Green', 'Green', 'Cyan')
+for ($count = 0; $count -lt $expectedPalette.Count; $count++) {
+    if ((Get-GPushHeatColor -Count $count) -ne $expectedPalette[$count]) {
+        throw "Invalid heatmap palette for $count commits."
+    }
+}
+Write-Host 'PASS calendar and legend palette.'
+
 $RepositoryAliases = @{}
 foreach ($width in @(20,39,54,55,79,100,139)) {
     $line = Get-GPushBulkLine 'Very long repository name' 'feature/long-branch-name' 'Long commit subject' '12' '3' 'clean' 'Up to date' 'OK fetched' $width

@@ -2,6 +2,18 @@
 
 All notable changes to GPush are documented here.
 
+## 4.7.11
+
+- Show update success with a five-second restart countdown and Enter to restart immediately.
+- Highlight Git identity and match calendar legend colors to calendar cells.
+- Keep new code in readable multi-line functions.
+
+## 4.7.10
+
+- Clarify Git identity and all-author statistics scope.
+- Add date range, day labels and commit-count legend to daily activity, with wrapping for narrow terminals.
+- Include Linux ShellCheck SC2129 configuration-write fix.
+
 ## 4.7.9
 
 - Restart into the new main menu after successful interactive updates; keep CLI update commands non-interactive after installation.

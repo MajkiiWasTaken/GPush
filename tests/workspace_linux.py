@@ -254,7 +254,7 @@ def test(base):
     shutil.copy2(SCRIPT, installed)
     installed.chmod(0o755)
     new_script = update_dir / 'gp'
-    new_script.write_text(SCRIPT.read_text().replace('SCRIPT_VERSION="4.7.9"', 'SCRIPT_VERSION="99.0.0"', 1))
+    new_script.write_text(SCRIPT.read_text().replace('SCRIPT_VERSION="4.7.11"', 'SCRIPT_VERSION="99.0.0"', 1))
     new_script.chmod(0o755)
     package = update_dir / 'GPush-99.0.0-linux.tar.gz'
     with tarfile.open(package, 'w:gz') as archive:
@@ -275,17 +275,39 @@ def test(base):
         '  -o) shift; output="$1";;\n' +
         'esac; shift; done\n' +
         'if [ -n "$output" ]; then cp "$source" "$output"; else cat "$source"; fi\n')
-    c = open_menu()
-    try:
-        c.expect('Type to filter'); c.send('Software update'); c.expect('1 / 11'); c.send('\r')
-        c.expect('Check for updates'); c.expect('Type to filter'); c.send('\r')
-        c.expect('Download and install v99.0.0?'); c.send('y\n')
-        c.expect('Restarting GPush automatically'); c.expect('99.0.0'); c.expect('Interactive workspace'); c.expect('Type to filter')
-        c.send('\x1b'); c.finish()
-    except Exception:
-        c.close(); raise
-    assert '99.0.0' in run(str(installed), 'version').stdout
-    print('PASS verified update restarts into the new main menu')
+    for immediate in (False, True):
+        shutil.copy2(SCRIPT, installed)
+        installed.chmod(0o755)
+        c = open_menu()
+        try:
+            c.expect('Type to filter')
+            c.send('Software update')
+            c.expect('1 / 11')
+            c.send('\r')
+            c.expect('Check for updates')
+            c.expect('Type to filter')
+            c.send('\r')
+            c.expect('Download and install v99.0.0?')
+            c.send('y\n')
+            c.expect('Update installed successfully!')
+            c.expect('Restarting GPush automatically')
+            started = time.monotonic()
+            if immediate:
+                c.send('\r')
+            c.expect('Interactive workspace')
+            elapsed = time.monotonic() - started
+            if immediate:
+                assert elapsed < 4, elapsed
+            else:
+                assert elapsed >= 3.8, elapsed
+            c.expect('Type to filter')
+            c.send('\x1b')
+            c.finish()
+        except Exception:
+            c.close()
+            raise
+        assert '99.0.0' in run(str(installed), 'version').stdout
+    print('PASS verified update restarts after countdown or Enter')
 
     result = run('bash', str(SCRIPT), 'all', 'status', check=False)
     assert result.returncode == 1 and 'Test [project]' in result.stdout  # Other has no remote.

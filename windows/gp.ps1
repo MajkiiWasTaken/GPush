@@ -28,7 +28,7 @@ $OutputEncoding           = [System.Text.UTF8Encoding]::new($false)
 # CONFIG
 # ============================================================
 
-$ScriptVersion = "4.7.9"
+$ScriptVersion = "4.7.11"
 $CompletionSchemaVersion = "14"
 
 $ConfigDir  = Join-Path $env:LOCALAPPDATA "GPush"
@@ -7742,6 +7742,43 @@ function Show-GPushMenuCache {
         Wait-GPushWorkspace
     }
 }
+# Keep the installation result visible until Enter or the deadline.
+function Show-GPushUpdateRestartNotice {
+    Write-Host ''
+    Write-Ok 'Update installed successfully!'
+    Write-Dim '  Enter: restart now'
+
+    if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) {
+        return
+    }
+
+    $clock = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($clock.Elapsed.TotalSeconds -lt 5) {
+        $remaining = [Math]::Max(0, 5 - $clock.Elapsed.TotalSeconds)
+        $width = [Math]::Max(1, [Console]::WindowWidth - 1)
+        $label = 'Restarting GPush automatically... '
+        if ($width -lt 52) {
+            $label = 'Restart: '
+        }
+        $suffix = ' {0}s' -f [Math]::Ceiling($remaining)
+        $barWidth = [Math]::Max(0, [Math]::Min(20, $width - $label.Length - $suffix.Length))
+        $filled = [int][Math]::Ceiling($remaining * $barWidth / 5)
+        Write-Host "`r$label" -ForegroundColor Cyan -NoNewline
+        Write-Host ([string][char]0x2588 * $filled) -ForegroundColor Cyan -NoNewline
+        Write-Host ([string][char]0x2591 * ($barWidth - $filled)) -ForegroundColor DarkGray -NoNewline
+        Write-Host $suffix -NoNewline
+
+        if ([Console]::KeyAvailable) {
+            $key = [Console]::ReadKey($true)
+            if ($key.Key -eq [ConsoleKey]::Enter) {
+                break
+            }
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    Write-Host ''
+}
+
 function Show-GPushMenuUpdate {
     while ($true) {
         $picked = @(Select-GPushWorkspaceRows -Title 'Software update' -Rows @('Check for updates','Install update','Restore previous version','Back'))
@@ -7757,7 +7794,7 @@ function Show-GPushMenuUpdate {
             exit 0
         }
         if ($script:GPushInstalledUpdate) {
-            Write-Info 'Restarting GPush automatically...'
+            Show-GPushUpdateRestartNotice
             & $PSCommandPath
             exit $LASTEXITCODE
         }
@@ -7953,6 +7990,22 @@ function Get-GPushStatsData {
     return $data
 }
 
+# Shared palette for the calendar and its legend.
+function Get-GPushHeatColor {
+    param([int]$Count)
+
+    if ($Count -eq 0) {
+        return 'DarkGray'
+    }
+    if ($Count -lt 3) {
+        return 'DarkGreen'
+    }
+    if ($Count -lt 6) {
+        return 'Green'
+    }
+    return 'Cyan'
+}
+
 function Show-GPushStats {
     param([int]$Period=30,[switch]$ShowAll,[switch]$Refresh)
     $data=Get-GPushStatsData -Period $Period -Refresh:$Refresh
@@ -7962,9 +8015,12 @@ function Show-GPushStats {
     }
     $nameWidth=[Math]::Max(10,[Math]::Min(24,[int][Math]::Floor($cols/3)))
     $barWidth=[Math]::Max(4,[Math]::Min(28,$cols-$nameWidth-16))
+    $statsOwner = if ($data.Identity) { $data.Identity } else { 'unknown' }
     Write-Host "  GPUSH  /  $ScriptVersion" -ForegroundColor Cyan
     Write-Section "  Development activity / $Period days"
-    Write-Dim "  Workspace: $($data.Identity) | All authors (local HEAD histories)"
+    Write-Host '  Git identity:  ' -ForegroundColor DarkGray -NoNewline
+    Write-Host $statsOwner -ForegroundColor Cyan
+    Write-Dim "  Authors: All (local HEAD histories)"
     Write-Dim ('  '+([string][char]0x2500 * [Math]::Max(1,[Math]::Min(100,$cols-3))))
     Write-Host ('  Commits  {0:N0}    ' -f $data.Total) -ForegroundColor Cyan -NoNewline
     Write-Host ('+{0:N0} added    ' -f $data.Added) -ForegroundColor Green -NoNewline
@@ -7997,31 +8053,53 @@ function Show-GPushStats {
     if ($data.Unavailable -gt 0) {
         Write-Warn "  $($data.Unavailable) repositories could not be inspected (including empty histories)."
     }
-    $heatDays=[Math]::Min([Math]::Min(30,$Period),[Math]::Max(1,[int][Math]::Floor(($cols-3)/3)))
+    $heatDays = [Math]::Min(30, $Period)
+    $heatEnd = (Get-Date).Date
+    $heatStart = $heatEnd.AddDays(-($heatDays - 1))
+    $heatColumns = [Math]::Max(1, [int][Math]::Floor(($cols - 3) / 3))
     Write-Host ''
-    Write-Dim "  Daily activity (oldest first; last $heatDays days)"
-    Write-Host '  ' -NoNewline
-    for ($i=$heatDays-1; $i -ge 0; $i--) {
-        $n=[int]$data.Days[(Get-Date).AddDays(-$i).ToString('yyyy-MM-dd')]
-        if ($script:GPushNoColor -or $env:NO_COLOR -or [Console]::IsOutputRedirected) {
-            Write-Host "$([Math]::Min(9,$n)) " -NoNewline
+    Write-Dim ("  Daily activity: {0:dd.MM.yyyy} - {1:dd.MM.yyyy}" -f $heatStart, $heatEnd)
+    for ($offset = 0; $offset -lt $heatDays; $offset += $heatColumns) {
+        $end = [Math]::Min($heatDays, $offset + $heatColumns)
+        Write-Host '  ' -NoNewline
+        for ($i = $offset; $i -lt $end; $i++) {
+            Write-Host ($heatStart.AddDays($i).ToString('dd') + ' ') -NoNewline
         }
-        else {
-            $color=if ($n -eq 0) {
-                'DarkGray'
-            } elseif ($n -lt 3) {
-                'DarkGreen'
-            } elseif ($n -lt 6) {
-                'Green'
+        Write-Host ''
+        Write-Host '  ' -NoNewline
+        for ($i = $offset; $i -lt $end; $i++) {
+            $day = $heatStart.AddDays($i).ToString('yyyy-MM-dd')
+            $n = [int]$data.Days[$day]
+            if ($script:GPushNoColor -or $env:NO_COLOR -or [Console]::IsOutputRedirected) {
+                Write-Host ('{0,2} ' -f [Math]::Min(99, $n)) -NoNewline
             } else {
-                'Cyan'
+                $color = Get-GPushHeatColor -Count $n
+                Write-Host '  ' -BackgroundColor $color -NoNewline
+                Write-Host ' ' -NoNewline
             }
-            Write-Host '  ' -BackgroundColor $color -NoNewline
-            Write-Host ' ' -NoNewline
         }
+        Write-Host ''
     }
-    Write-Host ''
-    Write-Dim '  Low activity -> high activity'
+    if ($script:GPushNoColor -or $env:NO_COLOR -or [Console]::IsOutputRedirected) {
+        Write-Dim '  Commits per day: 0 | 1-2 | 3-5 | 6+'
+    } else {
+        Write-Host '  Commits per day: ' -ForegroundColor DarkGray -NoNewline
+        $legend = @(
+            @{ Count = 0; Label = '0' }
+            @{ Count = 1; Label = '1-2' }
+            @{ Count = 3; Label = '3-5' }
+            @{ Count = 6; Label = '6+' }
+        )
+        for ($i = 0; $i -lt $legend.Count; $i++) {
+            $entry = $legend[$i]
+            Write-Host '  ' -BackgroundColor (Get-GPushHeatColor -Count $entry.Count) -NoNewline
+            Write-Host (' ' + $entry.Label) -NoNewline
+            if ($i -lt $legend.Count - 1) {
+                Write-Host ' | ' -ForegroundColor DarkGray -NoNewline
+            }
+        }
+        Write-Host ''
+    }
     Write-Dim ("  Local snapshot: {0:HH:mm:ss} (60s persistent cache)" -f $data.At)
 }
 

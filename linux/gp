@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-SCRIPT_VERSION="4.7.9"
+SCRIPT_VERSION="4.7.11"
 AUTHOR="Michal Švrček"
 GITHUB="https://github.com/MajkiiWasTaken"
 
@@ -4529,23 +4529,65 @@ workspace_menu_cache() {
     done
     return 0
 }
+# Keep the verified installation result visible before restarting.
+workspace_update_restart_notice() {
+    local remaining key cols width label
+    local start_time=$SECONDS
+
+    cols=$(tput cols 2>/dev/null || printf 80)
+    [[ "$cols" =~ ^[0-9]+$ ]] || cols=80
+    label='Restarting GPush automatically'
+    if (( cols < 58 )); then
+        label='Restart'
+    fi
+    width=$((cols - ${#label} - 7))
+    (( width <= 20 )) || width=20
+    (( width >= 1 )) || width=1
+
+    printf '\n'
+    ok 'Update installed successfully!'
+    dim '  Enter: restart now'
+    while (( SECONDS - start_time < 5 )); do
+        remaining=$((5 - (SECONDS - start_time)))
+        printf '\r\033[2K%s%s%s  ' "$C_CYAN" "$label" "$C_RESET"
+        workspace_block_bar "$((remaining * width / 5))" "$width"
+        printf '  %ds' "$remaining"
+        if IFS= read -rsn1 -t 0.1 key; then
+            if [[ -z "$key" || "$key" == $'\r' ]]; then
+                break
+            fi
+        fi
+    done
+    printf '\r\033[2K\n'
+}
+
 workspace_menu_update() {
     local -a labels=('Check for updates' 'Install update' 'Restore previous version' 'Back')
     while workspace_pick 'Software update' false "${labels[@]}"; do
         workspace_clear_screen
         local rc=0
         case "${WORKSPACE_SELECTION[0]}" in
-            0) GP_INTERACTIVE_UPDATE=true WORKSPACE_OFFER_UPDATE=true workspace_run_operation handle_update check || rc=$?;;
-            1) GP_INTERACTIVE_UPDATE=true workspace_run_operation handle_update install || rc=$?;;
-            2) workspace_run_operation handle_update rollback || rc=$?;;
-            3) return 0;;
+            0)
+                GP_INTERACTIVE_UPDATE=true WORKSPACE_OFFER_UPDATE=true \
+                    workspace_run_operation handle_update check || rc=$?
+                ;;
+            1)
+                GP_INTERACTIVE_UPDATE=true \
+                    workspace_run_operation handle_update install || rc=$?
+                ;;
+            2)
+                workspace_run_operation handle_update rollback || rc=$?
+                ;;
+            3)
+                return 0
+                ;;
         esac
         if ((rc==75)); then
             if [[ "$GP_RESTART" != on ]]; then
                 info 'Update installed. Run gp again to open the new version.'
                 exit 0
             fi
-            info 'Restarting GPush automatically...'
+            workspace_update_restart_notice
             local installed
             installed=$(command -v gp 2>/dev/null || true)
             [[ -n "$installed" ]] || installed="$HOME/.local/bin/gp"
@@ -4586,6 +4628,21 @@ workspace_menu() {
 # One history walk per repository; commit markers and numstat share the same stream.
 # Activity cache lives only in this GPush process; R forces a fresh history scan.
 declare -A GP_STATS_RAW=() GP_STATS_VALID=()
+# Shared palette for the calendar and its legend.
+workspace_heat_cell() {
+    local count="$1" color
+    if (( count == 0 )); then
+        color=236
+    elif (( count < 3 )); then
+        color=22
+    elif (( count < 6 )); then
+        color=28
+    else
+        color=40
+    fi
+    printf '\033[48;5;%sm  %s' "$color" "$C_RESET"
+}
+
 workspace_stats() {
     local period="${1:-30}" show_all="${2:-false}" refresh="${3:-false}" repository line day a d count total=0 added=0 removed=0 max=1 i date_key stamp hidden=0 unavailable=0 name filled width=28 name_width=24 cols=80 heat_days cache_key cache_hit=true
     local tmp='' previous_trap cancelled=false completed=0 pid j batch_end rc fingerprint raw_file git_identity
@@ -4720,7 +4777,9 @@ workspace_stats() {
     done
     info "  GPUSH  /  $SCRIPT_VERSION"
     section "Development activity / $period days"
-    dim "  Workspace: $git_identity | All authors (local HEAD histories)"
+    printf '  %sGit identity:%s  %s%s%s\n' \
+        "$C_GRAY" "$C_RESET" "$C_CYAN" "$git_identity" "$C_RESET"
+    dim "  Authors: All (local HEAD histories)"
     printf '  %sCommits%s  %s    %s+%s%s added    %s-%s%s removed\n\n' "$C_CYAN" "$C_RESET" "$total" "$C_GREEN" "$added" "$C_RESET" "$C_RED" "$removed" "$C_RESET"
     printf '  %-*s  %-*s  %s\n' "$name_width" Repository "$width" Activity Commits
     if (( ${#stats_counts[@]} )); then
@@ -4749,28 +4808,44 @@ workspace_stats() {
         warn "  $unavailable repositories could not be inspected."
     fi
     heat_days=$((period<30?period:30))
-    if ((heat_days>(cols-3)/3)); then
-        heat_days=$(((cols-3)/3))
-    fi
-    printf '\n  Daily activity (oldest first; last %d days)\n  ' "$heat_days"
-    for ((i=heat_days-1;i>=0;i--)); do
-        date_key=$(date -d "$i days ago" +%F)
-        stamp=${stats_days[$date_key]:-0}
-        if [[ -n "$C_GREEN" && -t 1 ]]; then
-            if ((stamp==0)); then
-                printf '\033[48;5;236m  '
-            elif ((stamp<3)); then
-                printf '\033[48;5;22m  '
-            elif ((stamp<6)); then
-                printf '\033[48;5;28m  '
+    local heat_start heat_end heat_offset heat_label
+    heat_start=$(date -d "$((heat_days-1)) days ago" +%d.%m.%Y)
+    heat_end=$(date +%d.%m.%Y)
+    printf '\n  Daily activity: %s - %s\n' "$heat_start" "$heat_end"
+    local heat_columns=$(( (cols-3)/3 ))
+    ((heat_columns >= 1)) || heat_columns=1
+    for ((heat_offset=0;heat_offset<heat_days;heat_offset+=heat_columns)); do
+        printf '  '
+        for ((i=heat_offset;i<heat_days && i<heat_offset+heat_columns;i++)); do
+            heat_label=$(date -d "$((heat_days-1-i)) days ago" +%d)
+            printf '%s ' "$heat_label"
+        done
+        printf '\n  '
+        for ((i=heat_offset;i<heat_days && i<heat_offset+heat_columns;i++)); do
+            date_key=$(date -d "$((heat_days-1-i)) days ago" +%F)
+            stamp=${stats_days[$date_key]:-0}
+            if [[ -n "$C_GREEN" && -t 1 ]]; then
+                workspace_heat_cell "$stamp"
+                printf ' '
             else
-                printf '\033[48;5;40m  '
+                printf '%2d ' "$((stamp>99?99:stamp))"
             fi
-            printf '%s ' "$C_RESET"
-        else printf '%d ' "$((stamp>9?9:stamp))"; fi
+        done
+        printf '\n'
     done
-    printf '\n'
-    dim '  Low activity -> high activity'
+    if [[ -n "$C_GREEN" && -t 1 ]]; then
+        printf '  Commits per day: '
+        workspace_heat_cell 0
+        printf ' 0 | '
+        workspace_heat_cell 1
+        printf ' 1-2 | '
+        workspace_heat_cell 3
+        printf ' 3-5 | '
+        workspace_heat_cell 6
+        printf ' 6+\n'
+    else
+        dim '  Commits per day: 0 | 1-2 | 3-5 | 6+'
+    fi
     if [[ "$cache_hit" == true ]]; then
         dim '  Cached local statistics (matching HEAD and calendar date)'
     fi
