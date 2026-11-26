@@ -23,21 +23,6 @@ GPush is a small Git helper for quickly working with repositories without manual
 
 ---
 
-### Interactive main menu (4.7.1)
-
-Run `gp` with no arguments (or `gp menu`) to open the keyboard-driven workspace. Use Up/Down, Enter and Escape; type to filter a menu. The shared menu renderer includes a branded header, contextual descriptions, a full-row selection highlight, filter count and keyboard hints. Navigation redraws in place. No repository scan or fetch is performed by opening the main menu. Choose **Workspace overview** for cached local status, or **Repositories / commit and push** to select a repository and open its actions. Enter in the overview opens the same repository menu.
-
-The repository menu includes selected-file commits, safe synchronization/push, explicit fetch, diff, branches, graph, GitHub, tags, remotes, stash and project tools. The main menu also offers bulk operations, cache management, statistics, health, activity, settings and updates. The synchronization menus ask separately before allowing protected branch pushes. Existing CLI commands remain available:
-
-```sh
-gp V2X "Fix communication"
-gp overview
-gp all status
-gp update
-```
-
-When input or output is redirected, bare `gp` prints help instead of waiting for keyboard input. After installing an update from the menu, exit and restart GPush to use the new script.
-
 ### Install
 
 #### Windows
@@ -124,13 +109,13 @@ The installer places `gp` in:
 
 ### Usage
 
-Quick repository picker:
+Interactive workspace:
 
 ```text
 gp
 ```
 
-Shows up to 5 recent repositories and your favorites.
+Use arrow keys, Enter and Esc to navigate; type to filter. Repository status is loaded locally, with fetch available on demand.
 
 Classic shortcut:
 
@@ -152,7 +137,6 @@ gp stash push MyProject
 gp favorite add MyProject
 gp fav list
 gp all fetch
-gp all
 gp all push "Update projects"
 gp clone <url>
 ```
@@ -176,7 +160,7 @@ If no commit message is supplied, GPush asks for it interactively.
 | Command | Purpose |
 |---|---|
 | `repo` | Status, diff, log, fetch, pull and sync |
-| `branch` | List, create, switch, delete and prune branches |
+| `branch` | List, create, switch, delete, prune and graph branches |
 | `tag` | Tags and safe release workflow |
 | `remote` | Manage Git remotes |
 | `stash` | Push, list and pop stash entries |
@@ -184,11 +168,21 @@ If no commit message is supplied, GPush asks for it interactively.
 | `config` | Configuration and diagnostics |
 | `alias` | Repository aliases |
 | `favorite` / `fav` | Favorite repositories |
-| `all` | Status, fetch, sync or commit/push cached repositories |
+| `all` | Bulk status, fetch, sync, commit/push and dry-run |
 | `project` | Project info, build, test, run, open and shell |
 | `clone` | Clone and cache a repository |
 | `recent` | Show recently used repositories |
-| `update` | Check, install or roll back GPush updates |
+| `update` | Check, install or roll back GPush updates (SHA-256 verified) |
+| `menu` / `overview` | Interactive workspace menu and repository dashboard |
+| `detail` | Repository status, recent commits and actions |
+| `commit` | Interactive file selection and commit |
+| `diff` / `changes` | Interactive diff viewer and change statistics |
+| `branches` | Interactive branch manager |
+| `stats` | Commit activity and development statistics |
+| `health` / `watch` | Workspace health and periodic status refresh |
+| `history` / `activity` | Recorded operation history |
+| `settings` | Interactive configuration editor |
+| `github` | Issues, PRs, releases and CI via GitHub CLI (`gh`) |
 
 Run:
 
@@ -196,7 +190,7 @@ Run:
 gp --help
 ```
 
-for the complete command and option list.
+for the complete command and option list. Use `gp all status --dirty`, `--ahead`, `--behind` or `--json` to filter or export status (JSON on Linux requires Python 3). Use `--no-color` for plain output.
 
 ---
 
@@ -226,56 +220,3 @@ git rebase --abort
 **Michal Švrček**
 
 Distributed under the MIT License.
-
-### Bulk repository synchronization
-
-`gp all status` displays repository, branch, last commit, behind/ahead counts, and working tree state. Counts use locally cached remote refs; `gp all fetch` refreshes them first. A dash means no reliable comparison is available.
-
-`gp all` (or `gp all sync`) fetches and synchronizes cached repositories without creating commits. `gp all push "Update projects"` additionally commits local changes after confirmation. Use `--allow-protected` to permit pushes to protected branches. Dirty repositories are skipped in sync mode; diverged histories and risky files in bulk commit mode require manual attention. No automatic force push or rebase is performed. Run `gp cache refresh` first if the cache is empty.
-
-### Updating GPush
-
-Use `gp update check` to check for releases, `gp update` (or `gp update install`) to install, and `gp update rollback` to restore a backup. On Windows, `gp --update` remains a compatible legacy alias.
-
-## Visual Experience (4.5.0)
-
-| Command | Description |
-|---|---|
-| `gp overview` | Interactive cached workspace dashboard (arrows, Enter, F, A, R, S, Q); static when redirected |
-| `gp health` | Clean/synchronized ratio and cached status |
-| `gp watch [seconds]` | Refresh cached status periodically; Ctrl+C to stop |
-| `gp stats` | Current-branch commits, added/deleted lines and daily activity over 30 days |
-| `gp changes [project]` | Working tree and Git diff statistics |
-| `gp branch graph [project]` | Decorated commit graph (up to 40 commits) |
-| `gp history` | Last 30 bulk operation records |
-| `gp all status --json` | Cached state as JSON (Linux requires python3) |
-| `gp all status --dirty` | Dirty repositories |
-| `gp all status --ahead` | Repositories with local commits ahead |
-| `gp all status --behind` | Repositories behind their upstream |
-| `gp all dry-run` | Read-only, local-ref synchronization candidates; no fetch/commit/push |
-| `gp --no-color overview` | Disable GPush output colors |
-
-Visual previews do not contact remotes unless Fetch or Sync is explicitly selected. Sync preserves protected-branch checks. Stats include all authors on each repository's current branch; shared commits may be counted across repositories. ASCII bars are used for compatibility. Bulk progress advances per completed repository; updater progress advances per milestone. History records local paths and operation results, not commit contents.
-
-### Windows update reliability (4.5.1)
-
-The updater prefers `curl.exe`, falls back to `Invoke-WebRequest`, bypasses HTTP caches and retries failed downloads up to three times. A matching published SHA-256 is required before installation. Older clients affected by stale downloads may need a one-time manual upgrade using a verified release archive.
-
-### Overview navigation (4.5.2)
-
-Overview loads local Git state once. Arrow keys only redraw cached rows. `R` refreshes local state, `F` fetches the selected repository, `A` fetches all after confirmation, and `S` synchronizes the selected repository after confirmation. Remote counts are based on the last fetch.
-
-### Interactive workspace (4.6.1)
-
-| Command | Description |
-|---|---|
-| `gp menu` | Interactive main menu with search |
-| `gp detail Project` | Local status and recent commits, repository actions |
-| `gp commit Project` | Select files with arrows and Space, commit locally, optionally synchronize |
-| `gp diff Project` | Choose a tracked file and scroll its colored diff against HEAD |
-| `gp branches Project` | List, create, switch and safely delete merged branches |
-| `gp activity` | Recent recorded operations |
-| `gp settings` | Edit remote, large-file threshold, search roots, protected branches and ignored directories |
-| `gp github Project` | Issues, PRs, releases and workflow runs via authenticated `gh` |
-
-Enter in overview opens repository detail. No remote fetch is performed on opening detail or navigating overview. The commit manager requires an empty staging area and skips risky files; optional synchronization retains protected-branch safeguards. The keyboard picker supports Up/Down, Enter, Esc, direct typing to filter single-selection lists, Backspace, and / to enter a search filter. Multi-select uses Space, A (select visible), and X (clear). Branch actions and confirmations retain simple prompts. Untracked file contents are not included in the diff. GitHub commands require network access and `gh auth login`.
