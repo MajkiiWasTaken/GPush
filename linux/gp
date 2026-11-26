@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-SCRIPT_VERSION="4.7.1"
+SCRIPT_VERSION="4.7.2"
 AUTHOR="Michal Švrček"
 GITHUB="https://github.com/MajkiiWasTaken"
 
@@ -88,13 +88,13 @@ banner() {
 
 confirm() {
     local answer
-    read -r -p "$1 [y/N] " answer
+    read -r -p "$1 [y/N] " answer || return 1
     [[ "$answer" =~ ^([yY]|[yY][eE][sS])$ ]]
 }
 
 confirm_default_yes() {
     local answer
-    read -r -p "$1 [Y/n] " answer
+    read -r -p "$1 [Y/n] " answer || return 1
     [[ -z "$answer" || "$answer" =~ ^([yY]|[yY][eE][sS])$ ]]
 }
 
@@ -403,11 +403,8 @@ select_repo() {
     local query
     query="$(alias_resolve "$1")"
 
-    get_repos
-
-    if [[ ${#REPOS[@]} -eq 0 ]]; then
-        err "No Git repositories found."
-        return 1
+    if [[ -n "$query" && -d "$query" ]]; then
+        if SELECTED=$(git -C "$query" rev-parse --show-toplevel 2>/dev/null); then return 0; fi
     fi
 
     if [[ -z "$query" ]]; then
@@ -419,8 +416,14 @@ select_repo() {
             return 0
         fi
 
-        read -r -p "Project: " query
+        if [[ -t 0 && -t 1 ]]; then
+            workspace_choose_repo || return 1
+            SELECTED=$MENU_REPO; return 0
+        fi
+        err "Specify a repository name or path."; return 1
     fi
+    get_repos
+    if [[ ${#REPOS[@]} -eq 0 ]]; then err "No Git repositories found."; return 1; fi
 
     local -a exact_matches=()
     local -a prefix_matches=()
@@ -448,7 +451,7 @@ select_repo() {
         fi
     done
 
-    repository_matches=("${prefix_matches[@]}")
+    if (( ${#exact_matches[@]} > 1 )); then repository_matches=("${exact_matches[@]}"); else repository_matches=("${prefix_matches[@]}"); fi
 
     if [[ ${#repository_matches[@]} -eq 0 ]]; then
         for repository in "${REPOS[@]}"; do
@@ -471,28 +474,16 @@ select_repo() {
         return 1
     fi
 
-    warn "Multiple repositories found:"
+    if [[ -t 0 && -t 1 ]]; then
+        local -a choices=()
+        for repository in "${repository_matches[@]}"; do choices+=("${repository##*/}  |  $repository"); done
+        workspace_pick 'Select repository' false "${choices[@]}" || return 1
+        SELECTED=${repository_matches[WORKSPACE_SELECTION[0]]}; return 0
+    fi
+    err 'Ambiguous repository. Specify the exact path.'
+    return 1
 
-    local index
-    for ((index = 0; index < ${#repository_matches[@]}; index++)); do
-        printf '  [%d] %s  %s%s%s\n' \
-            "$((index + 1))" \
-            "$(repo_name "${repository_matches[$index]}")" \
-            "$C_GRAY" \
-            "${repository_matches[$index]}" \
-            "$C_RESET"
-    done
 
-    local selection
-    while true; do
-        read -r -p "Select repository: " selection
-
-        if [[ "$selection" =~ ^[0-9]+$ ]] && \
-            ((selection >= 1 && selection <= ${#repository_matches[@]})); then
-            SELECTED="${repository_matches[$((selection - 1))]}"
-            return 0
-        fi
-    done
 }
 
 remember_recent() {
@@ -1495,7 +1486,7 @@ handle_favorite() {
 
 # Bulk operations use the cache only and run each repository in isolation.
 bulk_sync() (
-    local repository="$1" allow="$2" message="$3"
+    local repository="$1" allow="$2" message="$3" push_only="${4:-false}"
     cd "$repository" || return 1
     local branch remote upstream target counts ahead=0 behind=0 dirty marker path name
     branch="$(git symbolic-ref --quiet --short HEAD)" || { warn "SKIP detached: $repository"; return 1; }
@@ -1524,15 +1515,16 @@ bulk_sync() (
         read -r ahead behind <<< "$counts"
     fi
     if (( ahead > 0 && behind > 0 )); then warn "SKIP diverged: $repository"; return 1; fi
-    if [[ -n "$dirty" && ( -z "$message" || "$behind" -gt 0 ) ]]; then
+    if [[ "$push_only" == true ]] && (( behind > 0 )); then warn "SKIP behind: $repository"; return 1; fi
+    if [[ "$push_only" != true && -n "$dirty" && ( -z "$message" || "$behind" -gt 0 ) ]]; then
         warn "SKIP dirty: $repository"; return 1
     fi
-    if [[ -n "$dirty" || "$ahead" -gt 0 || -z "$upstream" ]]; then
+    if [[ ( "$push_only" != true && -n "$dirty" ) || "$ahead" -gt 0 || -z "$upstream" ]]; then
         if [[ "$allow" != true ]] && { protected_branch "$branch" || protected_branch "${target#refs/heads/}"; }; then
             warn "SKIP protected: $repository"; return 1
         fi
     fi
-    if [[ -n "$dirty" ]]; then
+    if [[ "$push_only" != true && -n "$dirty" ]]; then
         local changed
         changed="$(mktemp)" || return 1
         trap 'rm -f -- "$changed"' EXIT
@@ -2501,9 +2493,10 @@ print(json.dumps(rows,ensure_ascii=False,indent=2))' )
 # Overview uses Bash's dynamically scoped local arrays owned by visual_command.
 overview_fetch() {
     local path="$1" remote
-    remote=$(git -C "$path" config --get "branch.$(git -C "$path" symbolic-ref --quiet --short HEAD 2>/dev/null).remote" 2>/dev/null || (cd "$path" && current_remote)) || return 1
-    [[ -n "$remote" && "$remote" != . ]] || return 1
-    git -C "$path" fetch --prune "$remote" >/dev/null
+    remote=$(git -C "$path" config --get "branch.$(git -C "$path" symbolic-ref --quiet --short HEAD 2>/dev/null).remote" 2>/dev/null || (cd "$path" && current_remote)) || { warn "No remote: $path"; return 1; }
+    [[ -n "$remote" && "$remote" != . ]] || { warn "No supported remote: $path"; return 1; }
+    git -C "$path" fetch --prune "$remote" >/dev/null || return 1
+    if [[ "${2:-false}" != true ]]; then ok "Fetched ${path##*/}"; fi
 }
 overview_refresh_one() {
     local index="$1" path="${overview_paths[$1]}" i
@@ -2520,7 +2513,7 @@ overview_load() {
         for ((j=0;j<24;j++)); do if ((j<filled)); then bar+='━'; else bar+='─'; fi; done
         printf '\r\033[2K%s %s%s%s %d/%d  %.30s' "$label" "$C_CYAN" "$bar" "$C_RESET" "$i" "$total" "${overview_paths[i]##*/}"
         local fetch_failed=false
-        if [[ "$fetch" == true ]]; then overview_fetch "${overview_paths[i]}" || fetch_failed=true; fi
+        if [[ "$fetch" == true ]]; then overview_fetch "${overview_paths[i]}" true || fetch_failed=true; fi
         overview_refresh_one "$i"
         if [[ "$fetch_failed" == true ]]; then overview_fields[i*8+6]="Fetch failed"; fi
     done
@@ -2556,18 +2549,24 @@ workspace_pause() { if [[ -t 0 && -t 1 ]]; then read -r -p 'Press Enter to retur
 workspace_log() { mkdir -p "$CONFIG_DIR"; printf '%s %s %s\n' "$(date -Iseconds)" "$1" "$2" >> "$CONFIG_DIR/history.log"; }
 # Shared keyboard picker: navigation uses only the supplied in-memory rows.
 workspace_key() {
-    local suffix=''
+    local suffix='' next=''
     IFS= read -rsn1 WORKSPACE_KEY || { WORKSPACE_KEY=esc; return; }
     if [[ "$WORKSPACE_KEY" == $'\033' ]]; then
-        IFS= read -rsn2 -t 0.12 suffix || true
-        case "$suffix" in '[A') WORKSPACE_KEY=up;; '[B') WORKSPACE_KEY=down;; *) WORKSPACE_KEY=esc;; esac
+        IFS= read -rsn1 -t 0.15 suffix || true
+        if [[ "$suffix" == '[' || "$suffix" == O ]]; then
+            while IFS= read -rsn1 -t 0.15 next; do
+                suffix+=$next
+                [[ "$next" == [@-~] ]] && break
+            done
+        fi
+        case "$suffix" in '['*A|OA) WORKSPACE_KEY=up;; '['*B|OB) WORKSPACE_KEY=down;; '') WORKSPACE_KEY=esc;; *) WORKSPACE_KEY=ignored;; esac
     elif [[ -z "$WORKSPACE_KEY" ]]; then WORKSPACE_KEY=enter; fi
 }
 workspace_pick() {
     local title="$1" multiple="$2"; shift 2
     local -a rows=("$@") marks=()
     local selected=0 i start limit query='' key height width line desc bar content_width left_width screen_title
-    local accent='' highlight='' muted="$C_GRAY" first_frame=true
+    local accent='' highlight='' muted="$C_GRAY" first_frame=true marked=0
     local -a visible=() descriptions=(
         'Browse cached repository status' 'Commit, push and manage projects' 'Sync or fetch multiple repositories'
         'Find, add and refresh projects' 'Commits and development activity' 'Inspect synchronization health'
@@ -2620,11 +2619,16 @@ workspace_pick() {
         if (( ${#visible[@]} == 0 )); then printf '\033[2K  No matching items.\n'; fi
         printf '\033[2K\n\033[2K%s%s%s\n' "$muted" "$bar" "$C_RESET"
         if (( ${#visible[@]} )); then
-            printf '\033[2K%s%.*s%s\n' "$accent" "$width" "  SELECTED  $((selected+1)) / ${#visible[@]}" "$C_RESET"
+            line="  POSITION  $((selected+1)) / ${#visible[@]}"
+            if [[ "$multiple" == true ]]; then
+                marked=0; for key in "${!marks[@]}"; do marked=$((marked+marks[key])); done
+                line+="    |    MARKED  $marked"
+            fi
+            printf '\033[2K%s%.*s%s\n' "$accent" "$width" "$line" "$C_RESET"
         else printf '\033[2K\n'; fi
         printf '\033[2K%s%.*s%s\n' "$muted" "$width" '  Up/Down  Navigate    Enter  Select    Esc  Back' "$C_RESET"
         if [[ "$multiple" == true ]]; then
-            printf '\033[2K%s%.*s%s\n' "$muted" "$width" '  Space  Toggle    A  All    X  Clear    /  Search' "$C_RESET"
+            printf '\033[2K%s%.*s%s\n' "$muted" "$width" '  Space Mark  A All visible  X Clear  / Search  Enter Confirm' "$C_RESET"
         else
             printf '\033[2K%s%.*s%s\n' "$muted" "$width" '  Type to filter    Backspace  Clear character' "$C_RESET"
         fi
@@ -2641,6 +2645,7 @@ workspace_pick() {
             enter) if [[ "$multiple" == true ]]; then
                 for i in "${!rows[@]}"; do if [[ ${marks[i]:-0} == 1 ]]; then WORKSPACE_SELECTION+=("$i"); fi; done
             elif (( ${#visible[@]} )); then WORKSPACE_SELECTION=("${visible[selected]}"); fi
+            if (( ${#WORKSPACE_SELECTION[@]} == 0 && ${#visible[@]} > 0 )); then WORKSPACE_SELECTION=("${visible[selected]}"); fi
             if (( ${#WORKSPACE_SELECTION[@]} )); then return 0; fi;;
             $'\177'|$'\b') query=${query%?}; selected=0;;
             *) if [[ "$multiple" != true && "$WORKSPACE_KEY" == [[:print:]] ]]; then query+="$WORKSPACE_KEY"; selected=0; fi;;
@@ -2667,53 +2672,105 @@ workspace_view_lines() {
         esac
     done
 }
-workspace_diff() {
-    local path="$1" color=never file
-    local -a files=() lines=()
-    local diff_text
+workspace_diff() (
+    local path="$1" color=never file temp diff_text part rc flag name
+    local -a files=() lines=() staged=() tracked=() untracked=() rows=()
+    cd "$path" || return 1
     if [[ -n "$C_CYAN" ]]; then color=always; fi
     if [[ ! -t 0 || ! -t 1 ]]; then
-        git -C "$path" --no-pager diff "--color=$color" HEAD -- || return 1
-        git -C "$path" ls-files --others --exclude-standard
+        git --no-pager diff --no-ext-diff --no-textconv "--color=$color" --cached -- || return 1
+        git --no-pager diff --no-ext-diff --no-textconv "--color=$color" -- || return 1
+        git ls-files --others --exclude-standard
         return
     fi
-    if ! git -C "$path" rev-parse --verify HEAD >/dev/null 2>&1; then err 'No commits yet.'; return 1; fi
-    mapfile -d '' -t files < <(git -C "$path" diff --no-renames --name-only -z HEAD --)
-    if (( ${#files[@]} == 0 )); then ok 'No tracked changes.'; git -C "$path" ls-files --others --exclude-standard; return; fi
-    while workspace_pick "Diff / ${path##*/}" false "${files[@]}"; do
-        file=${files[WORKSPACE_SELECTION[0]]}
-        diff_text=$(git -C "$path" --literal-pathspecs --no-pager diff "--color=$color" HEAD -- "$file") || return 1
-        mapfile -t lines <<< "$diff_text"
+    temp=$(mktemp) || return 1
+    trap 'rm -f -- "$temp"' EXIT
+    git diff --cached --no-renames --name-only -z -- > "$temp" || return 1
+    mapfile -d '' -t staged < "$temp"
+    git diff --no-renames --name-only -z -- > "$temp" || return 1
+    mapfile -d '' -t tracked < "$temp"
+    git ls-files --others --exclude-standard -z > "$temp" || return 1
+    mapfile -d '' -t untracked < "$temp"
+    if (( ${#staged[@]} + ${#tracked[@]} + ${#untracked[@]} == 0 )); then ok 'No changes.'; workspace_pause; return 0; fi
+    mapfile -d '' -t files < <(printf '%s\0' "${staged[@]}" "${tracked[@]}" "${untracked[@]}" | sort -zu)
+    for file in "${files[@]}"; do
+        flag=''; for name in "${staged[@]}"; do if [[ "$file" == "$name" ]]; then flag=S; break; fi; done
+        for name in "${tracked[@]}"; do if [[ "$file" == "$name" ]]; then flag+=M; break; fi; done
+        for name in "${untracked[@]}"; do if [[ "$file" == "$name" ]]; then flag='?'; break; fi; done
+        rows+=("[$flag] $file")
+    done
+    while workspace_pick "Diff / ${path##*/}" false "${rows[@]}"; do
+        file=${files[WORKSPACE_SELECTION[0]]}; diff_text=''; flag=''
+        for name in "${untracked[@]}"; do if [[ "$file" == "$name" ]]; then flag='?'; break; fi; done
+        if [[ "$flag" == '?' ]]; then
+            rc=0; diff_text=$(git --no-pager diff --no-index --no-ext-diff --no-textconv "--color=$color" -- /dev/null "./$file") || rc=$?
+            if ((rc > 1)); then err 'Cannot read untracked file.'; workspace_pause; continue; fi
+        else
+            part=$(git --literal-pathspecs --no-pager diff --no-ext-diff --no-textconv "--color=$color" --cached -- "$file") || { err 'Cannot read staged diff.'; workspace_pause; continue; }
+            if [[ -n "$part" ]]; then diff_text=$'--- Staged changes ---\n'"$part"$'\n'; fi
+            part=$(git --literal-pathspecs --no-pager diff --no-ext-diff --no-textconv "--color=$color" -- "$file") || { err 'Cannot read working tree diff.'; workspace_pause; continue; }
+            if [[ -n "$part" ]]; then diff_text+=$'--- Working tree changes ---\n'"$part"; fi
+        fi
+        mapfile -t lines <<< "${diff_text:-No changes remain in this file. Reopen the diff to refresh.}"
         workspace_view_lines "Diff / ${file//[[:cntrl:]]/?}" "${lines[@]}"
     done
-}
+)
 workspace_commit() (
-    local path="$1" message index file name marker
-    local -a files=() chosen=()
+    local path="$1" message index file name marker marker_path index_before index_now temp allow=false
+    local -a files=() chosen=() untracked=() new_files=() staged=() tracked=() rows=()
+    local flag
     cd "$path" || return 1
     [[ -t 0 && -t 1 ]] || { err 'Interactive terminal required.'; return 2; }
     for marker in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply sequencer BISECT_START; do
-        [[ ! -e "$(git rev-parse --git-path "$marker")" ]] || { err 'Git operation in progress.'; return 1; }
+        marker_path=$(git rev-parse --git-path "$marker") || return 1
+        [[ ! -e "$marker_path" ]] || { err 'Git operation in progress.'; return 1; }
     done
     git symbolic-ref --quiet HEAD >/dev/null || return 1
-    if ! git diff --cached --quiet; then err 'Commit manager requires an empty staging area. Commit or unstage existing changes first.'; return 1; fi
-    mapfile -d '' -t files < <(git diff --no-renames --name-only -z; git ls-files --others --exclude-standard -z)
+    index_before=$(git write-tree) || return 1
+    temp=$(mktemp) || return 1
+    trap 'rm -f -- "$temp"' EXIT
+    { git diff --no-renames --name-only -z && git diff --cached --no-renames --name-only -z && git ls-files --others --exclude-standard -z; } > "$temp" || return 1
+    mapfile -d '' -t files < <(sort -zu "$temp")
+    git ls-files --others --exclude-standard -z > "$temp" || return 1
+    mapfile -d '' -t untracked < "$temp"
+    git diff --cached --no-renames --name-only -z -- > "$temp" || return 1
+    mapfile -d '' -t staged < "$temp"
+    git diff --no-renames --name-only -z -- > "$temp" || return 1
+    mapfile -d '' -t tracked < "$temp"
     (( ${#files[@]} > 0 )) || { ok 'No changes.'; return 0; }
-    workspace_pick "Commit manager / ${path##*/}" true "${files[@]}" || return 0
+    for file in "${files[@]}"; do
+        flag=''; for name in "${staged[@]}"; do if [[ "$file" == "$name" ]]; then flag=S; break; fi; done
+        for name in "${tracked[@]}"; do if [[ "$file" == "$name" ]]; then flag+=M; break; fi; done
+        for name in "${untracked[@]}"; do if [[ "$file" == "$name" ]]; then flag='?'; break; fi; done
+        rows+=("[$flag] $file")
+    done
+    workspace_pick "Commit manager / ${path##*/}" true "${rows[@]}" || return 0
     for index in "${WORKSPACE_SELECTION[@]}"; do chosen+=("${files[index]}"); done
     for file in "${chosen[@]}"; do
         name=${file##*/}; name=${name,,}
         case "$name" in .env.example|.env.sample|.env.template) ;; .env|.env.*|*.pem|*.key|*.pfx|*.p12|id_rsa|id_ed25519|id_ecdsa|id_dsa|secrets*|credentials*|service-account*.json) err "Risky file: $file"; return 1;; esac
         if [[ -f "$file" ]] && (( $(wc -c < "$file") >= LARGE_FILE_MB * 1048576 )); then err "Large file: $file"; return 1; fi
     done
+    section "Selected files (${#chosen[@]})"
+    for file in "${chosen[@]}"; do printf '  %s\n' "${file//[[:cntrl:]]/?}"; done
     read -r -p 'Commit message: ' message || return 0
-    [[ -n "$message" ]] || return 2
-    confirm 'Stage selected files and commit locally?' || return 0
-    if ! git diff --cached --quiet; then err 'Staging area changed. Restart commit manager.'; return 1; fi
-    git --literal-pathspecs add -A -- "${chosen[@]}" || return 1
+    [[ -n "${message//[[:space:]]/}" ]] || return 0
+    confirm 'Commit selected working-tree versions? Other staged files stay staged.' || return 0
+    index_now=$(git write-tree) || return 1
+    if [[ "$index_now" != "$index_before" ]]; then err 'Staging area changed. Restart commit manager.'; return 1; fi
+    for file in "${chosen[@]}"; do
+        for name in "${untracked[@]}"; do
+            if [[ "$file" == "$name" ]]; then new_files+=("$file"); break; fi
+        done
+    done
+    if (( ${#new_files[@]} )); then git --literal-pathspecs add -- "${new_files[@]}" || return 1; fi
     git --literal-pathspecs commit --only -m "$message" -- "${chosen[@]}" || return 1
     workspace_log commit "$path"
-    if confirm 'Synchronize and push (protected branches remain protected)?'; then bulk_sync "$path" false '' || return 1; workspace_log sync "$path"; fi
+    if confirm 'Push committed changes now (leave other files untouched)?'; then
+        if confirm 'Allow pushing to protected branches? (main/master/release)'; then allow=true; fi
+        bulk_sync "$path" "$allow" '' true || return 1
+        workspace_log push "$path"
+    fi
 )
 workspace_branches() (
     local path="$1" action branch
@@ -2761,7 +2818,7 @@ workspace_detail() {
         workspace_key; action=$WORKSPACE_KEY
         case "${action,,}" in
             c) workspace_commit "$path"; workspace_pause;;
-            d) workspace_diff "$path"; workspace_pause;;
+            d) workspace_diff "$path";;
             b) workspace_branches "$path";;
             f) overview_fetch "$path" && workspace_log fetch "$path"; workspace_pause;;
             s) if confirm 'Synchronize repository?'; then bulk_sync "$path" false '' && workspace_log sync "$path"; fi; workspace_pause;;
@@ -2841,7 +2898,7 @@ workspace_menu_repo_tools() {
 }
 workspace_menu_repo() {
     local path="$1" action
-    local -a labels=('Commit selected files' 'Sync / push existing commits' 'Fetch remote references' 'Status and recent commits' 'Browse diff' 'Manage branches' 'Commit graph' 'GitHub information' 'Open repository folder' 'More repository tools' 'Back')
+    local -a labels=('Commit selected files' 'Sync / push existing commits' 'Fetch remote references' 'Status and recent commits' 'Browse diff' 'Manage branches' 'Commit graph' 'GitHub information' 'Open repository folder' 'More repository tools' 'Push committed changes only' 'Back')
     while workspace_pick "Repository / ${path##*/}" false "${labels[@]}"; do
         action=${WORKSPACE_SELECTION[0]}
         case "$action" in
@@ -2859,7 +2916,12 @@ workspace_menu_repo() {
             7) workspace_github "$path";;
             8) (handle_repo open "$path");;
             9) workspace_menu_repo_tools "$path"; continue;;
-            10) return 0;;
+            10) if confirm 'Push existing commits without changing working tree?'; then
+                    local push_allow=false
+                    if confirm 'Allow pushing to protected branches?'; then push_allow=true; fi
+                    bulk_sync "$path" "$push_allow" '' true && workspace_log push "$path"
+                fi;;
+            11) return 0;;
         esac
         workspace_pause
     done
@@ -2953,15 +3015,20 @@ visual_command() {
             while true; do
                 overview_frame
                 path=${overview_paths[selected]}
-                IFS= read -rsn1 key || return 0
+                workspace_key; key=$WORKSPACE_KEY
                 case "$key" in
-                    q|Q) return 0;;
-                    $'\033') IFS= read -rsn2 -t 0.2 key || true; case "$key" in '') return 0;; '[A') selected=$(( (selected+${#overview_paths[@]}-1)%${#overview_paths[@]} ));; '[B') selected=$(( (selected+1)%${#overview_paths[@]} ));; esac;;
-                    '') workspace_menu_repo "$path"; overview_refresh_one "$selected";;
+                    q|Q|esc) return 0;;
+                    up) selected=$(( (selected+${#overview_paths[@]}-1)%${#overview_paths[@]} ));;
+                    down) selected=$(( (selected+1)%${#overview_paths[@]} ));;
+                    enter) workspace_menu_repo "$path"; overview_refresh_one "$selected";;
                     r|R) overview_load false;;
                     a|A) if confirm 'Fetch all cached repositories?'; then overview_load true; fi;;
                     f|F) if overview_fetch "$path"; then overview_refresh_one "$selected"; else overview_refresh_one "$selected"; overview_fields[selected*8+6]="Fetch failed"; fi;;
-                    s|S) if confirm 'Synchronize selected repository (no commit)?'; then bulk_sync "$path" false ''; overview_refresh_one "$selected"; read -r -p 'Press Enter to continue...' key; fi;;
+                    s|S) if confirm 'Synchronize selected repository (no commit)?'; then
+                        local sync_allow=false
+                        if confirm 'Allow pushing to protected branches as well?'; then sync_allow=true; fi
+                        bulk_sync "$path" "$sync_allow" ''; overview_refresh_one "$selected"; workspace_pause
+                    fi;;
                 esac
             done ;;
         detail|commit|diff|branches|github) select_repo "${1:-}" || return 1; "workspace_$action" "$SELECTED" ;;

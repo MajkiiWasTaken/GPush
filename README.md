@@ -175,7 +175,7 @@ If no commit message is supplied, GPush asks for it interactively.
 | `update` | Check, install or roll back GPush updates (SHA-256 verified) |
 | `menu` / `overview` | Interactive workspace menu and repository dashboard |
 | `detail` | Repository status, recent commits and actions |
-| `commit` | Interactive file selection and commit |
+| `commit` | Select files, commit and optionally push |
 | `diff` / `changes` | Interactive diff viewer and change statistics |
 | `branches` | Interactive branch manager |
 | `stats` | Commit activity and development statistics |

@@ -2,6 +2,15 @@
 
 All notable changes to GPush are documented here.
 
+## 4.7.2
+
+- Fixed repository selection, literal path matching, terminal arrow-key decoding and submenu navigation.
+- Enter selects the focused file if nothing is marked; Space marks files, A marks visible files, X clears marks. The selected file list is shown before confirmation.
+- Commit manager includes staged, modified and untracked files; unrelated staged/working-tree changes are preserved.
+- Added a separate push-only action that does not stage, merge or modify other files and still checks protected branches and upstream history.
+- Diff viewer distinguishes staged and working-tree changes and supports untracked files and repositories without an initial commit.
+- Corrected fetch status reporting and added keyboard/selected-file regression tests.
+
 ## 4.7.1
 
 - Redesigned shared keyboard menus with a branded header, contextual descriptions, full-row selection, filter counts and keyboard hints.

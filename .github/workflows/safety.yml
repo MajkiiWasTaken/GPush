@@ -190,6 +190,14 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $output -notmatch 'interactive main menu') { throw "Main menu fallback failed: $output" }
           exit 0
 
+      - name: Workspace selection regression tests (PowerShell 5.1)
+        shell: powershell
+        run: ./tests/workspace_windows.ps1
+
+      - name: Workspace selection regression tests (PowerShell 7)
+        shell: pwsh
+        run: ./tests/workspace_windows.ps1
+
       - name: Install PSScriptAnalyzer
         shell: pwsh
         run: |
@@ -457,6 +465,10 @@ jobs:
           set -euo pipefail
           output=$(bash "$LINUX_GP" </dev/null)
           grep -q 'Open interactive main menu' <<< "$output"
+
+      - name: Test interactive workspace in Linux PTY
+        shell: bash
+        run: python3 tests/workspace_linux.py
 
       - name: Run ShellCheck
         shell: bash

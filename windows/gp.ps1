@@ -24,7 +24,7 @@ $OutputEncoding           = [System.Text.UTF8Encoding]::new($false)
 # CONFIG
 # ============================================================
 
-$ScriptVersion = "4.7.1"
+$ScriptVersion = "4.7.2"
 $CompletionSchemaVersion = "14"
 
 $ConfigDir  = Join-Path $env:LOCALAPPDATA "GPush"
@@ -4946,8 +4946,8 @@ function Get-GPushCache {
             $cached | Where-Object {
                 $_.Name -and
                 $_.Path -and
-                (Test-Path $_.Path) -and
-                (Test-Path (Join-Path $_.Path ".git"))
+                (Test-Path -LiteralPath $_.Path) -and
+                (Test-Path -LiteralPath (Join-Path $_.Path ".git"))
             } | Sort-Object Name, Path
         )
     }
@@ -5037,33 +5037,19 @@ function Get-Repositories {
 }
 
 function Get-RepositoryMatches {
-    param(
-        $Repos,
-        [string]$Search
-    )
-
-    if ([string]::IsNullOrWhiteSpace($Search)) {
-        return @()
-    }
-
+    param($Repos, [string]$Search)
+    if ([string]::IsNullOrWhiteSpace($Search)) { return @() }
     $Search = Resolve-GPushAlias -Search $Search
-
-    $repoMatches = @($Repos | Where-Object { $_.Name -ieq $Search })
-    if ($repoMatches.Count -gt 0) {
-        return $repoMatches
-    }
-
-    $repoMatches = @($Repos | Where-Object { $_.Name -ilike "$Search*" })
-    if ($repoMatches.Count -gt 0) {
-        return $repoMatches
-    }
-
-    $repoMatches = @($Repos | Where-Object { $_.Name -ilike "*$Search*" })
-    if ($repoMatches.Count -gt 0) {
-        return $repoMatches
-    }
-
-    return @($Repos | Where-Object { $_.Path -ilike "*$Search*" })
+    $comparison = [System.StringComparison]::OrdinalIgnoreCase
+    $repoMatches = @($Repos | Where-Object { [string]::Equals([string]$_.Path, $Search, $comparison) })
+    if ($repoMatches.Count) { return $repoMatches }
+    $repoMatches = @($Repos | Where-Object { [string]::Equals([string]$_.Name, $Search, $comparison) })
+    if ($repoMatches.Count) { return $repoMatches }
+    $repoMatches = @($Repos | Where-Object { ([string]$_.Name).StartsWith($Search, $comparison) })
+    if ($repoMatches.Count) { return $repoMatches }
+    $repoMatches = @($Repos | Where-Object { ([string]$_.Name).IndexOf($Search, $comparison) -ge 0 })
+    if ($repoMatches.Count) { return $repoMatches }
+    return @($Repos | Where-Object { ([string]$_.Path).IndexOf($Search, $comparison) -ge 0 })
 }
 
 function Select-Repository {
@@ -5190,32 +5176,15 @@ function Select-Repository {
         return $repoMatches[0]
     }
 
-    Write-Host ""
-    Write-Warn "Multiple repositories found:"
-    Write-Host ""
-
-    for ($i = 0; $i -lt $repoMatches.Count; $i++) {
-        Write-Host "[$($i + 1)] " -NoNewline -ForegroundColor DarkGray
-        Write-Host "$($repoMatches[$i].Name)" -ForegroundColor White
-        Write-Dim "    $($repoMatches[$i].Path)"
+    if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) {
+        Write-Err 'Ambiguous repository. Specify the exact path.'
+        return $null
     }
+    $labels = @($repoMatches | ForEach-Object { "$($_.Name)  |  $($_.Path)" })
+    $picked = @(Select-GPushWorkspaceRows -Title 'Select repository' -Rows $labels)
+    if ($picked.Count) { return $repoMatches[$picked[0]] }
+    return $null
 
-    Write-Host ""
-
-    while ($true) {
-        $selection = Read-Host "Select repository"
-        $number = 0
-
-        if ([int]::TryParse($selection, [ref]$number)) {
-            $index = $number - 1
-
-            if ($index -ge 0 -and $index -lt $repoMatches.Count) {
-                return $repoMatches[$index]
-            }
-        }
-
-        Write-Err "Invalid selection."
-    }
 }
 
 
@@ -5492,7 +5461,8 @@ function Invoke-GPushAllSync {
         [Parameter(Mandatory = $true)]
         $Repository,
         [switch]$AllowProtectedBranches,
-        [string]$CommitMessage = ""
+        [string]$CommitMessage = "",
+        [switch]$PushOnly
     )
 
     $state = Get-GPushRepositorySnapshot -Repository $Repository -Fetch
@@ -5517,7 +5487,11 @@ function Invoke-GPushAllSync {
         return [PSCustomObject]@{ Snapshot = $state; Result = "FAIL unknown state" }
     }
 
-    if ($state.DirtyCount -gt 0 -and -not $CommitMessage) {
+    if ($PushOnly -and $state.Behind -gt 0) {
+        return [PSCustomObject]@{ Snapshot = $state; Result = "SKIP behind; synchronize first" }
+    }
+
+    if ($state.DirtyCount -gt 0 -and -not $CommitMessage -and -not $PushOnly) {
         return [PSCustomObject]@{ Snapshot = $state; Result = "SKIP dirty" }
     }
 
@@ -5526,7 +5500,7 @@ function Invoke-GPushAllSync {
     }
 
     $requiresPush = (
-        $state.Ahead -gt 0 -or $state.DirtyCount -gt 0 -or
+        $state.Ahead -gt 0 -or ($state.DirtyCount -gt 0 -and -not $PushOnly) -or
         $state.Sync -eq "New remote branch"
     )
 
@@ -5549,7 +5523,7 @@ function Invoke-GPushAllSync {
         if (-not $conflicts.Success -or $conflicts.Text.Trim()) {
             return [PSCustomObject]@{ Snapshot = $state; Result = "SKIP conflicts" }
         }
-        if ($state.DirtyCount -gt 0) {
+        if ($state.DirtyCount -gt 0 -and -not $PushOnly) {
             if ($state.Behind -gt 0) {
                 return [PSCustomObject]@{ Snapshot = $state; Result = "MANUAL dirty/behind" }
             }
@@ -6138,68 +6112,75 @@ function Wait-GPushWorkspace {
 }
 # Shared keyboard picker; all rows are cached for the lifetime of the screen.
 function Select-GPushWorkspaceRows {
-    param([string]$Title, [string[]]$Rows, [switch]$Multiple)
+    param([string]$Title, [string[]]$Rows, [switch]$Multiple, [scriptblock]$TestKeyReader)
     if ($Rows.Count -eq 0) { return }
+    if (-not $TestKeyReader -and ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected)) { Write-Warn 'Interactive selection requires a terminal.'; return }
     $selected = 0; $query = ''; $marks = @{}
     $firstFrame = $true
     $previousFrameCount = 0
     $previousWidth = 0
     $previousHeight = 0
+    $frameTop = 0
     $descriptions = @('Browse cached repository status','Commit, push and manage projects','Sync or fetch multiple repositories','Find, add and refresh projects','Commits and development activity','Inspect synchronization health','Review recent GPush operations','Configure remotes and safety rules','Check, install or roll back updates','View classic command syntax','Return to your terminal')
     while ($true) {
         $visible = @(for ($i=0; $i -lt $Rows.Count; $i++) {
             if ($Rows[$i].IndexOf($query,[StringComparison]::OrdinalIgnoreCase) -ge 0) { $i }
         })
         if ($selected -ge $visible.Count) { $selected = 0 }
-        $width = [Math]::Max(1,[Math]::Min(110,[Console]::WindowWidth-1))
-        $contentWidth = [Math]::Max(1,$width-4)
-        $limit = [Math]::Max(1,[Console]::WindowHeight-11)
-        $start = [int]([Math]::Floor($selected / $limit) * $limit)
-        $rule = [string][char]0x2500 * $width
-        if ($firstFrame -or $previousWidth -ne [Console]::WindowWidth -or $previousHeight -ne [Console]::WindowHeight) {
-            Clear-Host; $firstFrame=$false; $previousFrameCount=0
-            $previousWidth=[Console]::WindowWidth; $previousHeight=[Console]::WindowHeight
-        }
-        else { try { [Console]::SetCursorPosition(0,0) } catch { Clear-Host } }
-        $frame = New-Object 'System.Collections.Generic.List[object]'
-        $frame.Add(@{Text="  GPUSH  /  $ScriptVersion"; Color='Cyan'})
-        $screenTitle = if ($Title.EndsWith(' / Main menu')) { 'Interactive workspace' } else { $Title }
-        $frame.Add(@{Text=('  '+($screenTitle -replace '[\x00-\x1f\x7f]','?')); Color='White'})
-        $frame.Add(@{Text=$rule; Color='DarkGray'})
-        $filterText = if ($query) { $query } else { 'type to search' }
-        $frame.Add(@{Text="  FILTER  $filterText    |    $($visible.Count) / $($Rows.Count)"; Color='DarkGray'})
-        $frame.Add(@{Text='';Color='White'})
-        for ($i=$start; $i -lt [Math]::Min($start+$limit,$visible.Count); $i++) {
-            $index=$visible[$i]
-            $mark=if ($Multiple) { if ($marks[$index]) {'[x] '} else {'[ ] '} } else {''}
-            $line=$mark+($Rows[$index] -replace '[\x00-\x1f\x7f]','?')
-            if ($Title.EndsWith(' / Main menu') -and $width -ge 76) {
-                $line=('{0,-34} {1}' -f (Limit-GPushTableText $line 34),$descriptions[$index])
+        if (-not $TestKeyReader) {
+            $width = [Math]::Max(1,[Math]::Min(110,[Console]::WindowWidth-1))
+            $contentWidth = [Math]::Max(1,$width-4)
+            $limit = [Math]::Max(1,[Console]::WindowHeight-12)
+            $start = [int]([Math]::Floor($selected / $limit) * $limit)
+            $rule = [string][char]0x2500 * $width
+            if ($firstFrame -or $previousWidth -ne [Console]::WindowWidth -or $previousHeight -ne [Console]::WindowHeight) {
+                Clear-Host; $firstFrame=$false; $previousFrameCount=0
+                $previousWidth=[Console]::WindowWidth; $previousHeight=[Console]::WindowHeight
+                $frameTop=[Console]::CursorTop
             }
-            $line=Limit-GPushTableText $line $contentWidth
-            if ($i -eq $selected) { $frame.Add(@{Text=('  > '+$line);Color='Black';Selected=$true}) }
-            else { $frame.Add(@{Text=('    '+$line);Color='White'}) }
+            else { try { [Console]::SetCursorPosition(0,$frameTop) } catch { Clear-Host; $frameTop=[Console]::CursorTop; $previousFrameCount=0 } }
+            $frame = New-Object 'System.Collections.Generic.List[object]'
+            $frame.Add(@{Text="  GPUSH  /  $ScriptVersion"; Color='Cyan'})
+            $screenTitle = if ($Title.EndsWith(' / Main menu')) { 'Interactive workspace' } else { $Title }
+            $frame.Add(@{Text=('  '+($screenTitle -replace '[\x00-\x1f\x7f]','?')); Color='White'})
+            $frame.Add(@{Text=$rule; Color='DarkGray'})
+            $filterText = if ($query) { $query } else { 'type to search' }
+            $frame.Add(@{Text="  FILTER  $filterText    |    $($visible.Count) / $($Rows.Count)"; Color='DarkGray'})
+            $frame.Add(@{Text='';Color='White'})
+            for ($i=$start; $i -lt [Math]::Min($start+$limit,$visible.Count); $i++) {
+                $index=$visible[$i]
+                $mark=if ($Multiple) { if ($marks[$index]) {'[x] '} else {'[ ] '} } else {''}
+                $line=$mark+($Rows[$index] -replace '[\x00-\x1f\x7f]','?')
+                if ($Title.EndsWith(' / Main menu') -and $width -ge 76) {
+                    $line=('{0,-34} {1}' -f (Limit-GPushTableText $line 34),$descriptions[$index])
+                }
+                $line=Limit-GPushTableText $line $contentWidth
+                if ($i -eq $selected) { $frame.Add(@{Text=('  > '+$line);Color='Black';Selected=$true}) }
+                else { $frame.Add(@{Text=('    '+$line);Color='White'}) }
+            }
+            if (-not $visible.Count) { $frame.Add(@{Text='  No matching items.';Color='Yellow'}) }
+            $frame.Add(@{Text='';Color='White'})
+            $frame.Add(@{Text=$rule;Color='DarkGray'})
+            $positionText=if ($visible.Count) { "  POSITION  $($selected+1) / $($visible.Count)" } else { '  No matches' }
+            if ($Multiple) { $positionText += "    |    MARKED  $(@($marks.Values | Where-Object { $_ }).Count)" }
+            $frame.Add(@{Text=$positionText;Color='Cyan'})
+            $frame.Add(@{Text='  Up/Down  Navigate    Enter  Select    Esc  Back';Color='DarkGray'})
+            $hint=if ($Multiple) {'  Space Mark  A All visible  X Clear  / Search  Enter Confirm'} else {'  Type to filter    Backspace  Clear character'}
+            $frame.Add(@{Text=$hint;Color='DarkGray'})
+            $paintWidth=[Math]::Max(1,[Console]::WindowWidth-1)
+            foreach ($entry in $frame) {
+                $text=(Limit-GPushTableText $entry.Text $width).PadRight($paintWidth)
+                if ($entry.Selected) { Write-Host $text -ForegroundColor Black -BackgroundColor Cyan }
+                else { Write-Host $text -ForegroundColor $entry.Color }
+            }
+            # Erase rows left behind by a shorter filtered list without clearing the screen.
+            if ($null -ne $previousFrameCount) {
+                for ($j=$frame.Count; $j -lt $previousFrameCount; $j++) { Write-Host (' ' * $paintWidth) }
+            }
+            $previousFrameCount=$frame.Count
         }
-        if (-not $visible.Count) { $frame.Add(@{Text='  No matching items.';Color='Yellow'}) }
-        $frame.Add(@{Text='';Color='White'})
-        $frame.Add(@{Text=$rule;Color='DarkGray'})
-        $positionText=if ($visible.Count) { "  SELECTED  $($selected+1) / $($visible.Count)" } else { '' }
-        $frame.Add(@{Text=$positionText;Color='Cyan'})
-        $frame.Add(@{Text='  Up/Down  Navigate    Enter  Select    Esc  Back';Color='DarkGray'})
-        $hint=if ($Multiple) {'  Space  Toggle    A  All    X  Clear    /  Search'} else {'  Type to filter    Backspace  Clear character'}
-        $frame.Add(@{Text=$hint;Color='DarkGray'})
-        $paintWidth=[Math]::Max(1,[Console]::WindowWidth-1)
-        foreach ($entry in $frame) {
-            $text=(Limit-GPushTableText $entry.Text $width).PadRight($paintWidth)
-            if ($entry.Selected) { Write-Host $text -ForegroundColor Black -BackgroundColor Cyan }
-            else { Write-Host $text -ForegroundColor $entry.Color }
-        }
-        # Erase rows left behind by a shorter filtered list without clearing the screen.
-        if ($null -ne $previousFrameCount) {
-            for ($j=$frame.Count; $j -lt $previousFrameCount; $j++) { Write-Host (' ' * $paintWidth) }
-        }
-        $previousFrameCount=$frame.Count
-        $key = [Console]::ReadKey($true)
+        $key = if ($TestKeyReader) { & $TestKeyReader } else { [Console]::ReadKey($true) }
+        if ($null -eq $key) { return }
         switch ($key.Key) {
             Escape { return }
             UpArrow { if ($selected -gt 0) { $selected-- } }
@@ -6212,6 +6193,7 @@ function Select-GPushWorkspaceRows {
                 if ($Multiple) {
                     $chosen = @(for ($i=0; $i -lt $Rows.Count; $i++) { if ($marks[$i]) { $i } })
                     if ($chosen.Count) { return $chosen }
+                    if ($visible.Count) { return $visible[$selected] }
                 } elseif ($visible.Count) { return $visible[$selected] }
             }
             default { if ($key.KeyChar -eq '/') { $query=[string](Read-Host 'Search (empty resets)'); $selected=0; $firstFrame=$true } elseif (-not $Multiple -and -not [char]::IsControl($key.KeyChar)) { $query+=$key.KeyChar; $selected=0 } }
@@ -6236,23 +6218,78 @@ function Show-GPushWorkspaceLines {
         }
     }
 }
+# Read exact Git filenames, not display-quoted names or newline-separated text.
+function Get-GPushWorkspacePaths {
+    param([string]$Path, [ValidateSet('staged','tracked','untracked')][string]$Mode)
+    $arguments = switch ($Mode) {
+        'staged' { 'diff --cached --no-renames --name-only -z --' }
+        'tracked' { 'diff --no-renames --name-only -z --' }
+        'untracked' { 'ls-files --others --exclude-standard -z' }
+    }
+    $git = Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1
+    $info = New-Object System.Diagnostics.ProcessStartInfo
+    $info.FileName = $git.Source
+    $info.Arguments = $arguments
+    $info.WorkingDirectory = $Path
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $info.StandardOutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $info
+    try {
+        if (-not $process.Start()) { throw 'Cannot start Git.' }
+        $errorTask = $process.StandardError.ReadToEndAsync()
+        $raw = $process.StandardOutput.ReadToEnd()
+        $process.WaitForExit()
+        $errorText = $errorTask.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0) { throw "Cannot inspect ${Mode} files: $errorText" }
+        foreach ($file in $raw.Split([char]0)) { if ($file.Length -gt 0) { $file } }
+    } finally { $process.Dispose() }
+}
 function Show-GPushWorkspaceDiff {
     param($Repository)
     $color = if ($script:GPushNoColor -or $env:NO_COLOR -or [Console]::IsOutputRedirected) {'never'} else {'always'}
+    $staged = @(Get-GPushWorkspacePaths -Path $Repository.Path -Mode staged)
+    $tracked = @(Get-GPushWorkspacePaths -Path $Repository.Path -Mode tracked)
+    $untracked = @(Get-GPushWorkspacePaths -Path $Repository.Path -Mode untracked)
+    $files = @($staged + $tracked + $untracked | Sort-Object -Unique -CaseSensitive)
     if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) {
-        & git -C $Repository.Path --no-pager diff "--color=$color" HEAD -- | ForEach-Object { Write-Host $_ }
-        & git -C $Repository.Path ls-files --others --exclude-standard | ForEach-Object { Write-Host "Untracked: $_" }
+        & git -C $Repository.Path --no-pager diff --no-ext-diff --no-textconv "--color=$color" --cached -- | ForEach-Object { Write-Host $_ }
+        & git -C $Repository.Path --no-pager diff --no-ext-diff --no-textconv "--color=$color" -- | ForEach-Object { Write-Host $_ }
+        $untracked | ForEach-Object { Write-Host "Untracked: $_" }
         return
     }
-    $files = @(& git -C $Repository.Path -c core.quotePath=false diff --no-renames --name-only HEAD --)
-    if ($LASTEXITCODE -ne 0) { Write-Err 'Cannot inspect diff.'; return }
-    if (-not $files.Count) { Write-Ok 'No tracked changes.'; return }
+    if (-not $files.Count) { Write-Ok 'No changes.'; Wait-GPushWorkspace; return }
+    $rows = @(foreach ($file in $files) {
+        $flag = if ($untracked -ccontains $file) { '?' } elseif (($staged -ccontains $file) -and ($tracked -ccontains $file)) { 'S+M' } elseif ($staged -ccontains $file) { 'S' } else { 'M' }
+        "[$flag] $file"
+    })
     while ($true) {
-        $picked = @(Select-GPushWorkspaceRows -Title "Diff / $($Repository.Name)" -Rows $files)
+        $picked = @(Select-GPushWorkspaceRows -Title "Diff / $($Repository.Name)" -Rows $rows)
         if (-not $picked.Count) { return }
         $file = $files[$picked[0]]
-        $lines = @(& git -C $Repository.Path --literal-pathspecs --no-pager diff "--color=$color" HEAD -- $file)
-        if ($LASTEXITCODE -ne 0) { Write-Err 'Cannot read diff.'; Wait-GPushWorkspace; continue }
+        $lines = @()
+        if ($untracked -ccontains $file) {
+            $empty = [System.IO.Path]::GetTempFileName()
+            try {
+                $lines = @(& git -C $Repository.Path --no-pager diff --no-index --no-ext-diff --no-textconv "--color=$color" -- $empty (Join-Path $Repository.Path $file))
+                if ($LASTEXITCODE -gt 1) { Write-Err 'Cannot read untracked file.'; Wait-GPushWorkspace; continue }
+            } finally { [System.IO.File]::Delete($empty) }
+        } else {
+            if ($staged -ccontains $file) {
+                $lines += '--- Staged changes ---'
+                $lines += @(& git -C $Repository.Path --literal-pathspecs --no-pager diff --no-ext-diff --no-textconv "--color=$color" --cached -- $file)
+                if ($LASTEXITCODE -ne 0) { Write-Err 'Cannot read staged diff.'; Wait-GPushWorkspace; continue }
+            }
+            if ($tracked -ccontains $file) {
+                $lines += '--- Working tree changes ---'
+                $lines += @(& git -C $Repository.Path --literal-pathspecs --no-pager diff --no-ext-diff --no-textconv "--color=$color" -- $file)
+                if ($LASTEXITCODE -ne 0) { Write-Err 'Cannot read working tree diff.'; Wait-GPushWorkspace; continue }
+            }
+        }
+        if (-not $lines.Count) { $lines = @('No changes remain in this file. Return and reopen the diff to refresh.') }
         Show-GPushWorkspaceLines -Title "Diff / $file" -Lines $lines
     }
 }
@@ -6267,15 +6304,18 @@ function Invoke-GPushWorkspaceCommit {
         }
         & git symbolic-ref --quiet HEAD | Out-Null
         if ($LASTEXITCODE -ne 0) { Write-Err 'Detached HEAD.'; return }
-        & git diff --cached --quiet
-        if ($LASTEXITCODE -ne 0) { Write-Err 'Commit manager requires an empty staging area. Commit or unstage existing changes first.'; return }
-        $tracked = @(& git -c core.quotePath=false diff --no-renames --name-only --)
-        if ($LASTEXITCODE -ne 0) { Write-Err 'Cannot inspect tracked changes.'; return }
-        $untracked = @(& git -c core.quotePath=false ls-files --others --exclude-standard)
-        if ($LASTEXITCODE -ne 0) { Write-Err 'Cannot inspect untracked changes.'; return }
-        $files = @($tracked + $untracked | Sort-Object -Unique)
+        $indexBefore = (& git write-tree) -join ''
+        if ($LASTEXITCODE -ne 0) { Write-Err 'Cannot inspect staging area.'; return }
+        $staged = @(Get-GPushWorkspacePaths -Path $Repository.Path -Mode staged)
+        $tracked = @(Get-GPushWorkspacePaths -Path $Repository.Path -Mode tracked)
+        $untracked = @(Get-GPushWorkspacePaths -Path $Repository.Path -Mode untracked)
+        $files = @($tracked + $staged + $untracked | Sort-Object -Unique -CaseSensitive)
         if ($files.Count -eq 0) { Write-Ok 'No changes.'; return }
-        $picked = @(Select-GPushWorkspaceRows -Title "Commit manager / $($Repository.Name)" -Rows $files -Multiple)
+        $rows = @(foreach ($file in $files) {
+            $flag = if ($untracked -ccontains $file) { '?' } elseif (($staged -ccontains $file) -and ($tracked -ccontains $file)) { 'S+M' } elseif ($staged -ccontains $file) { 'S' } else { 'M' }
+            "[$flag] $file"
+        })
+        $picked = @(Select-GPushWorkspaceRows -Title "Commit manager / $($Repository.Name)" -Rows $rows -Multiple)
         if (-not $picked.Count) { return }
         $chosen = @($picked | ForEach-Object { $files[$_] })
         foreach ($file in $chosen) {
@@ -6284,18 +6324,24 @@ function Invoke-GPushWorkspaceCommit {
                 if ((Get-Item -LiteralPath $file).Length -ge ([long]$LargeFileThresholdMB * 1MB)) { Write-Err "Large file: $file"; return }
             }
         }
+        Write-Section "Selected files ($($chosen.Count))"
+        foreach ($file in $chosen) { Write-Host ('  ' + ($file -replace '[\x00-\x1f\x7f]','?')) }
         $message = Read-Host 'Commit message'
         if ([string]::IsNullOrWhiteSpace($message)) { return }
-        if (-not (Confirm-GPushAction -Prompt 'Stage selected files and commit locally?')) { return }
-        & git diff --cached --quiet
-        if ($LASTEXITCODE -ne 0) { Write-Err 'Staging area changed. Restart commit manager.'; return }
-        & git --literal-pathspecs add -A -- @chosen | ForEach-Object { Write-Host $_ }
-        if ($LASTEXITCODE -ne 0) { return }
+        if (-not (Confirm-GPushAction -Prompt 'Commit selected working-tree versions? Other staged files stay staged.')) { return }
+        $indexNow = (& git write-tree) -join ''
+        if ($LASTEXITCODE -ne 0 -or $indexNow -ne $indexBefore) { Write-Err 'Staging area changed. Restart commit manager.'; return }
+        $newFiles = @($chosen | Where-Object { $untracked -ccontains $_ })
+        if ($newFiles.Count) {
+            & git --literal-pathspecs add -- @newFiles | ForEach-Object { Write-Host $_ }
+            if ($LASTEXITCODE -ne 0) { return }
+        }
         & git --literal-pathspecs commit --only -m $message -- @chosen | ForEach-Object { Write-Host $_ }
         if ($LASTEXITCODE -ne 0) { return }
         Write-GPushWorkspaceHistory commit $Repository.Path
-        if (Confirm-GPushAction -Prompt 'Synchronize and push (protected branches remain protected)?') {
-            $result = Invoke-GPushAllSync -Repository $Repository
+        if (Confirm-GPushAction -Prompt 'Push committed changes now (leave other files untouched)?') {
+            $allow = Confirm-GPushAction -Prompt 'Allow pushing to protected branches? (main/master/release)'
+            $result = Invoke-GPushAllSync -Repository $Repository -PushOnly -AllowProtectedBranches:$allow
             Write-GPushAllRow -Snapshot $result.Snapshot -Result $result.Result
             Write-GPushWorkspaceHistory "sync $($result.Result)" $Repository.Path
         }
@@ -6361,9 +6407,15 @@ function Show-GPushWorkspaceDetail {
         $action = [string]$key.KeyChar
         switch ($action) {
             'c' { Invoke-GPushWorkspaceCommit $Repository; Wait-GPushWorkspace }
-            'd' { Show-GPushWorkspaceDiff $Repository; Wait-GPushWorkspace }
+            'd' { Show-GPushWorkspaceDiff $Repository }
             'b' { Show-GPushWorkspaceBranches $Repository }
-            'f' { $null = @(Get-GPushOverviewStates -Repositories @($Repository) -Fetch); Wait-GPushWorkspace }
+            'f' {
+                $state = @(Get-GPushOverviewStates -Repositories @($Repository) -Fetch)[0]
+                $result = if (-not $state.Valid) { 'FAIL inspection' } elseif ($state.Remote -eq '-') { 'SKIP no remote' } elseif ($state.FetchOk) { 'OK fetched' } else { 'FAIL fetch' }
+                Write-GPushAllRow -Snapshot $state -Result $result
+                Write-GPushWorkspaceHistory "fetch $result" $Repository.Path
+                Wait-GPushWorkspace
+            }
             's' { if (Confirm-GPushAction -Prompt 'Synchronize repository?') { $result = Invoke-GPushAllSync -Repository $Repository; Write-GPushAllRow -Snapshot $result.Snapshot -Result $result.Result; Write-GPushWorkspaceHistory "sync $($result.Result)" $Repository.Path }; Wait-GPushWorkspace }
             'g' { Show-GPushWorkspaceGitHub $Repository; Wait-GPushWorkspace }
             { $_ -in @('q','') } { return }
@@ -6456,8 +6508,8 @@ function Show-GPushMenuRepositoryTools {
 }
 function Show-GPushMenuRepository {
     param($Repository)
-    $labels = @('Commit selected files','Sync / push existing commits','Fetch remote references','Status and recent commits','Browse diff','Manage branches','Commit graph','GitHub information','Open repository folder','More repository tools','Back')
-    while ($true) {
+    $labels = @('Commit selected files','Sync / push existing commits','Fetch remote references','Status and recent commits','Browse diff','Manage branches','Commit graph','GitHub information','Open repository folder','More repository tools','Push committed changes only','Back')
+    :repositoryMenu while ($true) {
         $picked = @(Select-GPushWorkspaceRows -Title "Repository / $($Repository.Name)" -Rows $labels)
         if (-not $picked.Count) { return }
         switch ($picked[0]) {
@@ -6472,18 +6524,26 @@ function Show-GPushMenuRepository {
             }
             2 {
                 $state = @(Get-GPushOverviewStates -Repositories @($Repository) -Fetch)[0]
-                $result = if ($state.FetchOk) { 'OK fetched' } else { 'FAIL fetch' }
+                $result = if (-not $state.Valid) { 'FAIL inspection' } elseif ($state.Remote -eq '-') { 'SKIP no remote' } elseif ($state.FetchOk) { 'OK fetched' } else { 'FAIL fetch' }
                 Write-GPushAllRow -Snapshot $state -Result $result
                 Write-GPushWorkspaceHistory "fetch $result" $Repository.Path
             }
-            3 { Show-GPushWorkspaceDetail $Repository; continue }
-            4 { Show-GPushWorkspaceDiff $Repository; continue }
-            5 { Show-GPushWorkspaceBranches $Repository; continue }
+            3 { Show-GPushWorkspaceDetail $Repository; continue repositoryMenu }
+            4 { Show-GPushWorkspaceDiff $Repository; continue repositoryMenu }
+            5 { Show-GPushWorkspaceBranches $Repository; continue repositoryMenu }
             6 { & git -C $Repository.Path --no-pager log --graph --all --decorate --oneline -n 40 | ForEach-Object { Write-Host $_ } }
             7 { Show-GPushWorkspaceGitHub $Repository }
             8 { Invoke-Item -LiteralPath $Repository.Path }
-            9 { Show-GPushMenuRepositoryTools $Repository }
-            10 { return }
+            9 { Show-GPushMenuRepositoryTools $Repository; continue repositoryMenu }
+            10 {
+                if (Confirm-GPushAction -Prompt 'Push existing commits without changing working tree?') {
+                    $allow = Confirm-GPushAction -Prompt 'Allow pushing to protected branches?'
+                    $result = Invoke-GPushAllSync -Repository $Repository -PushOnly -AllowProtectedBranches:$allow
+                    Write-GPushAllRow -Snapshot $result.Snapshot -Result $result.Result
+                    Write-GPushWorkspaceHistory "push $($result.Result)" $Repository.Path
+                }
+            }
+            11 { return }
         }
         Wait-GPushWorkspace
     }
@@ -6559,12 +6619,27 @@ function Show-GPushWorkspaceMenu {
 function Resolve-GPushWorkspaceRepository {
     param([string[]]$Tail)
     $query = $Tail -join ' '
-    if (-not $query) { $query = (& git rev-parse --show-toplevel 2>$null) -join '' }
-    if (-not $query -and -not [Console]::IsInputRedirected) { $query = Read-Host 'Cached repository name' }
+    if (-not $query) {
+        $query = (& git rev-parse --show-toplevel 2>$null) -join ''
+        if (-not $query) { return Select-GPushMenuRepository }
+    }
     $query = Resolve-GPushAlias -Search $query
-    $matches = @(Get-GPushCache | Where-Object { $_.Name -eq $query -or $_.Path -eq $query })
+    if (Test-Path -LiteralPath $query -PathType Container) {
+        $root = (& git -C $query rev-parse --show-toplevel 2>$null) -join ''
+        if ($LASTEXITCODE -eq 0 -and $root) {
+            return [PSCustomObject]@{Name=(Split-Path -Leaf $root);Path=$root}
+        }
+    }
+    $repositories = @(Get-GPushCache)
+    $matches = @(Get-RepositoryMatches -Repos $repositories -Search $query)
     if ($matches.Count -eq 1) { return $matches[0] }
-    Write-Err 'Specify one exact cached repository name or path.'
+    if ($matches.Count -gt 1 -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected) {
+        $labels = @($matches | ForEach-Object { "$($_.Name)  |  $($_.Path)" })
+        $picked = @(Select-GPushWorkspaceRows -Title 'Select repository' -Rows $labels)
+        if ($picked.Count) { return $matches[$picked[0]] }
+        return
+    }
+    Write-Err 'Specify one cached repository name or path.'
 }
 
 function Invoke-GPushVisualCommand {
@@ -6619,7 +6694,8 @@ function Invoke-GPushVisualCommand {
                     'S' {
                         if (Confirm-GPushAction -Prompt 'Synchronize selected repository (no commit)?') {
                             try {
-                                $result = Invoke-GPushAllSync -Repository $repository
+                                $allow = Confirm-GPushAction -Prompt 'Allow pushing to protected branches as well?'
+                                $result = Invoke-GPushAllSync -Repository $repository -AllowProtectedBranches:$allow
                                 Write-GPushAllRow -Snapshot $result.Snapshot -Result $result.Result
                             } catch { Write-Warn $_.Exception.Message }
                             $states[$selected] = @(Get-GPushOverviewStates -Repositories @($repository))[0]
