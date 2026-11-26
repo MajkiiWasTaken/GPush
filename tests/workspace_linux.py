@@ -239,6 +239,48 @@ def test(base):
     assert 'main' in run('bash', str(SCRIPT), 'repo', 'status', str(repo)).stdout
     print('PASS classic CLI status and bulk dashboard')
 
+    # Real two-repository bulk sync: verify exactly one fetch per repository.
+    clean_config=base/'bulk-config'; clean_cache=base/'bulk-cache'
+    bulk_env=dict(env, XDG_CONFIG_HOME=str(clean_config), XDG_CACHE_HOME=str(clean_cache))
+    bulk_repos=[]
+    for index in range(2):
+        local=base/f'Bulk project {index}'
+        bare=base/f'bulk-{index}.git'
+        git('init', '--bare', str(bare))
+        git('init', '-b', 'main', str(local))
+        git('config', 'user.email', 'test@example.invalid', cwd=local)
+        git('config', 'user.name', 'Test', cwd=local)
+        (local/'tracked.txt').write_text('initial\n')
+        git('add', '.', cwd=local); git('commit', '-m', 'Initial', cwd=local)
+        git('remote', 'add', 'origin', str(bare), cwd=local)
+        git('push', '-u', 'origin', 'main', cwd=local)
+        (local/'tracked.txt').write_text('changed\n')
+        git('commit', '-am', 'Local update', cwd=local)
+        subprocess.run(['bash',str(SCRIPT),'cache','add',str(local)],env=bulk_env,check=True,stdout=subprocess.DEVNULL)
+        bulk_repos.append((local,bare))
+    count_bin=base/'count-bin';count_bin.mkdir()
+    count_log=base/'fetch-count'
+    count_git=count_bin/'git'
+    count_git.write_text('#!/bin/sh\nfor arg in "$@"; do\n  if [ "$arg" = fetch ]; then printf "%s\\n" "$PWD" >> '+shlex.quote(str(count_log))+'; fi\ndone\nexec '+shlex.quote(real_git)+' "$@"\n')
+    count_git.chmod(0o755)
+    bulk_env['PATH']=str(count_bin)+os.pathsep+env['PATH']
+    result=subprocess.run(['bash',str(SCRIPT),'all','sync','--allow-protected'],env=bulk_env,check=True,text=True,capture_output=True)
+    assert len(count_log.read_text().splitlines())==2, count_log.read_text()
+    for local,bare in bulk_repos:
+        assert git('rev-parse','HEAD',cwd=local)==git('--git-dir',str(bare),'rev-parse','main')
+    print('PASS parallel fetch stage, one fetch per repository, sequential safe push')
+
+    # Exercise the exact width-aware table function at multiple terminal widths.
+    script_text=SCRIPT.read_text()
+    function=script_text.split('bulk_table_line() {',1)[1].split('\n}',1)[0]
+    for width in (20, 39, 54, 55, 79, 100, 139):
+        cmd='bulk_table_line() {'+function+'\n}\nbulk_width='+str(width)+"\nbulk_table_line 'Very long repository name' 'feature/long-branch-name' 'Long commit subject' 12 3 clean 'Up to date' 'OK fetched'"
+        line=run('bash','-c',cmd).stdout.rstrip('\n')
+        assert len(line)<=width,(width,line)
+        assert 'OK' in line,(width,line)
+    print('PASS adaptive bulk table widths 20-139 columns')
+
+
 
 if __name__ == '__main__':
     with tempfile.TemporaryDirectory(prefix='gpush-workspace-') as directory:

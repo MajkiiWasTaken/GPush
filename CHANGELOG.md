@@ -2,6 +2,15 @@
 
 All notable changes to GPush are documented here.
 
+## 4.7.6
+
+- Add the original ASCII logo to the main menu when the terminal has sufficient space.
+- Show descriptive settings labels and current values; adapt repository tables to terminal width.
+- Use the shared dashboard for interactive bulk status and buffer bulk output until completion.
+- Parallelize up to four remote fetches before sequential safe synchronization; reuse matching fetch results without fetching twice.
+- Display dynamic progress for bulk operations and retain existing protection checks.
+- Fix the reported ShellCheck variable warnings and initialize the Windows statistics test cache.
+
 ## 4.7.5
 
 - Share a persistent local workspace snapshot between interactive Overview and Health; refresh on demand with bounded parallel inspection and a live progress indicator.

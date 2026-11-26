@@ -6,12 +6,18 @@ $ast = [System.Management.Automation.Language.Parser]::ParseFile($source, [ref]$
 if ($errors.Count) { throw ($errors | Out-String) }
 
 # Load only the functions under test, without running the installed CLI.
-foreach ($name in @('Select-GPushWorkspaceRows','Get-GPushWorkspacePaths','Resolve-GPushAlias','Get-RepositoryMatches','ConvertTo-GPushNativeArgument','Start-GPushNativeCapture','Stop-GPushNativeCapture','Test-GPushOperationCancelled','Invoke-GPushNativeCapture','Get-GPushStatsData')) {
+foreach ($name in @('Select-GPushWorkspaceRows','Get-GPushWorkspacePaths','Resolve-GPushAlias','Get-RepositoryMatches','ConvertTo-GPushNativeArgument','Start-GPushNativeCapture','Stop-GPushNativeCapture','Test-GPushOperationCancelled','Invoke-GPushNativeCapture','Get-GPushStatsData','Limit-GPushTableText','Get-GPushBulkLine')) {
     $definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
     if (-not $definition) { throw "Missing function: $name" }
     . ([scriptblock]::Create($definition.Extent.Text))
 }
 $RepositoryAliases = @{}
+foreach ($width in @(20,39,54,55,79,100,139)) {
+    $line = Get-GPushBulkLine 'Very long repository name' 'feature/long-branch-name' 'Long commit subject' '12' '3' 'clean' 'Up to date' 'OK fetched' $width
+    if ($line.Length -gt $width -or $line -notmatch 'OK') { throw "Invalid bulk table at width ${width}: $line" }
+}
+Write-Host 'PASS adaptive bulk table widths.'
+
 
 function Test-Selection {
     param([string[]]$Keys, [string]$Expected, [switch]$Multiple)
@@ -52,6 +58,7 @@ Write-Host 'PASS literal repository matching.'
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ('gpush-test-' + [guid]::NewGuid().ToString('N'))
 [System.IO.Directory]::CreateDirectory($root) | Out-Null
 try {
+    $CacheDir = Join-Path $root 'cache'
     & git -C $root init --quiet
     if ($LASTEXITCODE -ne 0) { throw 'Git init failed.' }
     $filename = ([string][char]0x010D) + ' [test].txt'

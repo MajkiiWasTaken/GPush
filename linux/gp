@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-SCRIPT_VERSION="4.7.5"
+SCRIPT_VERSION="4.7.6"
 AUTHOR="Michal Švrček"
 GITHUB="https://github.com/MajkiiWasTaken"
 
@@ -1486,13 +1486,17 @@ handle_favorite() {
 
 # Bulk operations use the cache only and run each repository in isolation.
 bulk_sync() (
-    local repository="$1" allow="$2" message="$3" push_only="${4:-false}"
+    local repository="$1" allow="$2" message="$3" push_only="${4:-false}" fetched_remote="${5:-}" fetched_ok="${6:-}"
     cd "$repository" || return 1
     local branch remote upstream target counts ahead=0 behind=0 dirty marker path name
     branch="$(git symbolic-ref --quiet --short HEAD)" || { warn "SKIP detached: $repository"; return 1; }
     remote="$(git config --get "branch.$branch.remote" || current_remote)" || return 1
     [[ "$remote" != . && -n "$remote" ]] || return 1
-    git fetch --prune "$remote" || return 1
+    if [[ "$fetched_remote" == "$remote" ]]; then
+        [[ "$fetched_ok" == 0 ]] || { warn "FAIL fetch: $repository"; return 1; }
+    else
+        git fetch --prune "$remote" || return 1
+    fi
     for marker in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply sequencer BISECT_START; do
         path="$(git rev-parse --git-path "$marker")" || return 1
         [[ ! -e "$path" ]] || { warn "SKIP Git operation: $repository"; return 1; }
@@ -1591,11 +1595,27 @@ bulk_dashboard_row() (
         fi
     fi
     if [[ "$action" == fetch ]]; then result="OK fetched"; (( failed == 0 )) || result="Attention"; fi
-    printf '  %-20.20s %-18.18s %-34.34s %6s | %-5s %-12.12s %-23.23s %s\n' "${repository##*/}" "$branch" "$commit" "$behind" "$ahead" "$worktree" "$state" "$result"
+    bulk_table_line "${repository##*/}" "$branch" "$commit" "$behind" "$ahead" "$worktree" "$state" "$result"
     return "$failed"
 )
 
-handle_all() {
+# Shared compact table: never rely on terminal wrapping for columns.
+bulk_table_line() {
+    local width=${bulk_width:-100} name_width branch_width commit_width line
+    name_width=$((width/3)); ((name_width<=24)) || name_width=24
+    branch_width=$((width/6)); ((branch_width<=18)) || branch_width=18
+    if ((width>=100)); then
+        commit_width=$((width-name_width-branch_width-48))
+        printf -v line '%-*.*s %-*.*s %-*.*s %4s | %-4s %-10.10s %-10.10s %s' "$name_width" "$name_width" "$1" "$branch_width" "$branch_width" "$2" "$commit_width" "$commit_width" "$3" "$4" "$5" "$6" "$7" "$8"
+    elif ((width>=55)); then
+        printf -v line '%-*.*s %-*.*s %4s | %-4s %s' "$name_width" "$name_width" "$1" "$branch_width" "$branch_width" "$2" "$4" "$5" "${8:-$6}"
+    else
+        printf -v line '%-*.*s %s' "$name_width" "$name_width" "$1" "${8:-$7}"
+    fi
+    printf '%.*s\n' "$width" "${line//[[:cntrl:]]/?}"
+}
+
+handle_all() (
     local action=sync allow_protected=false message="" refresh=false
     if [[ $# -gt 0 && "$1" != -* ]]; then action="$1"; shift; fi
     case "$action" in status|fetch|sync|push) ;; *) err "Unknown all command: $action"; return 2 ;; esac
@@ -1624,25 +1644,91 @@ handle_all() {
     if [[ "$action" == push ]]; then
         confirm "Commit and synchronize ${#repositories[@]} repositories?" || return 0
     fi
-    local repository failures=0 processed=0 started=$SECONDS
-    if [[ "$action" == status || "$action" == fetch ]]; then
-        printf '  %-20s %-18s %-34s %6s | %-5s %-12s %-23s %s\n' Repository Branch "Last commit" Behind Ahead Worktree Sync Result
+    local repository failures=0 processed=0 started=$SECONDS bulk_width=100 tmp i j rc result
+    local -a bulk_jobs=()
+    if [[ -t 1 ]]; then bulk_width=$(tput cols 2>/dev/null || printf 100); fi
+    [[ "$bulk_width" =~ ^[0-9]+$ ]] || bulk_width=100
+    bulk_width=$((bulk_width>1?bulk_width-1:1))
+    tmp=$(mktemp -d) || return 1
+    local worker_pid=''
+    trap 'for worker_pid in "${bulk_jobs[@]}"; do kill "$worker_pid" 2>/dev/null || true; done; rm -rf -- "$tmp"' EXIT
+    trap 'exit 130' INT
+    # Limit parallelism; keep writes sequential to avoid shared worktree/index races.
+    local bar_width=$((bulk_width>70?24:bulk_width>35?12:4))
+    if [[ -t 1 ]]; then
+        printf '\r\033[2K%s%s%s ' "$C_CYAN" "$action" "$C_RESET"
+        workspace_block_bar 0 "$bar_width"; printf '   0%%'
     fi
-    for repository in "${repositories[@]}"; do
-        case "$action" in
-            status|fetch) bulk_dashboard_row "$repository" "$action" || failures=$((failures+1)) ;;
-            sync|push)
-                local result=OK
-                bulk_sync "$repository" "$allow_protected" "$message" || { failures=$((failures+1)); result=ATTENTION; }
-                processed=$((processed+1)); visual_bar "$processed" "${#repositories[@]}"; printf '  %ss\n' "$((SECONDS-started))"
-                printf '%s %s %s %s\n' "$(date -Iseconds)" "$action" "$result" "$repository" >> "$CONFIG_DIR/history.log" || true ;;
-
-        esac
+    local batch=4
+    if [[ "$action" == sync || "$action" == push ]]; then
+        batch=1
+        local -a fetched=()
+        local fetch_done=0
+        for ((i=0;i<${#repositories[@]};i+=4)); do
+            bulk_jobs=()
+            for ((j=i;j<i+4 && j<${#repositories[@]};j++)); do
+                (
+                    cd "${repositories[j]}" || exit 1
+                    local branch remote fetch_rc=0
+                    branch=$(git symbolic-ref --quiet --short HEAD) || exit 1
+                    remote=$(git config --get "branch.$branch.remote" || current_remote) || exit 1
+                    [[ -n "$remote" && "$remote" != . ]] || exit 1
+                    git fetch --prune "$remote" > "$tmp/fetch-$j.log" 2>&1 || fetch_rc=$?
+                    printf '%s\0%s\0' "$remote" "$fetch_rc" > "$tmp/fetch-$j"
+                ) &
+                bulk_jobs+=("$!")
+            done
+            for j in "${bulk_jobs[@]}"; do
+                wait "$j" || true
+                fetch_done=$((fetch_done+1))
+                if [[ -t 1 ]]; then
+                    printf '\r\033[2K%sFetching%s ' "$C_CYAN" "$C_RESET"
+                    workspace_block_bar "$((fetch_done*bar_width/${#repositories[@]}))" "$bar_width"
+                    printf ' %3d%%' "$((fetch_done*100/${#repositories[@]}))"
+                fi
+            done
+            bulk_jobs=()
+        done
+        if [[ -t 1 ]]; then printf '\r\033[2K%sApplying local changes%s ' "$C_CYAN" "$C_RESET"; workspace_block_bar 0 "$bar_width"; printf '   0%%'; fi
+    fi
+    for ((i=0;i<${#repositories[@]};i+=batch)); do
+        bulk_jobs=()
+        for ((j=i;j<i+batch && j<${#repositories[@]};j++)); do
+            repository=${repositories[j]}
+            if [[ "$action" == status || "$action" == fetch ]]; then
+                (bulk_dashboard_row "$repository" "$action") > "$tmp/$j" 2>&1 &
+                bulk_jobs+=("$!")
+            else
+                result=OK
+                fetched=()
+                if [[ -f "$tmp/fetch-$j" ]]; then mapfile -d '' -t fetched < "$tmp/fetch-$j"; fi
+                C_RESET='' C_CYAN='' C_GREEN='' C_YELLOW='' C_RED='' C_GRAY='' bulk_sync "$repository" "$allow_protected" "$message" false "${fetched[0]:-}" "${fetched[1]:-}" > "$tmp/$j" 2>&1 || { failures=$((failures+1)); result=ATTENTION; }
+                printf '%s %s %s %s\n' "$(date -Iseconds)" "$action" "$result" "$repository" >> "$CONFIG_DIR/history.log" || true
+                processed=$((processed+1))
+            fi
+        done
+        for j in "${bulk_jobs[@]}"; do
+            rc=0; wait "$j" || rc=$?
+            ((rc==0)) || failures=$((failures+1))
+            processed=$((processed+1))
+        done
+        bulk_jobs=()
+        if [[ -t 1 ]]; then
+            printf '\r\033[2K%s%s%s ' "$C_CYAN" "$action" "$C_RESET"
+            workspace_block_bar "$((processed*bar_width/${#repositories[@]}))" "$bar_width"
+            printf ' %3d%% (%ss)' "$((processed*100/${#repositories[@]}))" "$((SECONDS-started))"
+        fi
     done
+    if [[ -t 1 ]]; then printf '\r\033[2K'; fi
+    if [[ "$action" == status || "$action" == fetch ]]; then bulk_table_line Repository Branch 'Last commit' Behind Ahead Worktree Sync Result; fi
+    for ((i=0;i<${#repositories[@]};i++)); do
+        while IFS= read -r result; do printf '%.*s\n' "$bulk_width" "$result"; done < "$tmp/$i"
+    done
+    rm -rf -- "$tmp"
     kv Repositories "${#repositories[@]}"
     kv Attention "$failures"
     (( failures == 0 ))
-}
+)
 
 handle_repo() {
     local action="${1:-status}"
@@ -2486,7 +2572,7 @@ visual_rows() {
 visual_bar() {
     local done_count="$1" total="$2" width=20 filled
     filled=$((done_count * width / (total > 0 ? total : 1)))
-    printf '%s[' "$C_CYAN"; printf '%*s' "$filled" '' | tr ' ' '#'; printf '%*s' "$((width-filled))" '' | tr ' ' '-'; printf ']%s %s/%s' "$C_RESET" "$done_count" "$total"
+    workspace_block_bar "$filled" "$width"; printf ' %s/%s' "$done_count" "$total"
 }
 visual_status() {
     local filter="${1:-}" repository branch commit behind ahead dirty state path n=0 clean=0
@@ -2507,16 +2593,15 @@ print(json.dumps(rows,ensure_ascii=False,indent=2))' )
     if ! visual_rows > "$snapshot_file"; then rm -f -- "$snapshot_file"; err 'Repository inspection failed.'; return 1; fi
     mapfile -d '' -t fields < "$snapshot_file"
     rm -f -- "$snapshot_file"
-    local commit_width=30 repo_width=20 columns=100
+    local columns=100 bulk_width
     if [[ -t 1 ]]; then columns=$(tput cols 2>/dev/null || printf 100); fi
     [[ "$columns" =~ ^[0-9]+$ ]] || columns=100
-    if (( columns < 90 )); then repo_width=14; commit_width=18; fi
-    if (( columns < 65 )); then repo_width=10; commit_width=10; fi
-    printf '%-*s %-14s %-*s %6s | %-5s %s\n' "$repo_width" Repository Branch "$commit_width" 'Last commit' Behind Ahead 'Worktree / Sync'
+    bulk_width=$((columns>1?columns-1:1))
+    bulk_table_line Repository Branch 'Last commit' Behind Ahead Worktree Sync ''
     for ((n=0;n+7<${#fields[@]};n+=8)); do
         repository=${fields[n]}; branch=${fields[n+1]}; commit=${fields[n+2]}; behind=${fields[n+3]}; ahead=${fields[n+4]}; dirty=${fields[n+5]}; state=${fields[n+6]}; path=${fields[n+7]}
         case "$filter" in --dirty) (( dirty > 0 )) || continue;; --ahead) if [[ "$ahead" == - ]] || (( ahead <= 0 )); then continue; fi;; --behind) if [[ "$behind" == - ]] || (( behind <= 0 )); then continue; fi;; esac
-        printf '%-*.*s %-14.14s %-*.*s %6s | %-5s %s\n' "$repo_width" "$repo_width" "$repository" "$branch" "$commit_width" "$commit_width" "$commit" "$behind" "$ahead" "$dirty changed / $state"
+        bulk_table_line "$repository" "$branch" "$commit" "$behind" "$ahead" "$dirty changed" "$state" ''
         if [[ "$filter" == dry-run ]]; then
             if (( dirty )); then dim '  SKIP dirty'; elif [[ "$ahead" == - ]]; then dim '  CHECK upstream'; elif (( ahead && behind )); then dim '  SKIP diverged'; elif (( ahead )); then dim '  PUSH candidate (subject to protection)'; elif (( behind )); then dim '  FAST-FORWARD candidate'; else dim '  No action'; fi
         fi
@@ -2559,11 +2644,12 @@ overview_cache_write() {
     printf '%s\0' "${overview_fields[@]}" > "$file" && mv -f -- "$file" "$CACHE_DIR/workspace-status"
 }
 overview_load() {
-    local fetch="$1" i j total=${#overview_paths[@]} label='Refreshing local status' tmp rc completed=0 interrupted=false previous_trap
+    local fetch="$1" i j total=${#overview_paths[@]} label='Refreshing local status' tmp rc completed=0 interrupted=false previous_trap job_pid
     local -a jobs=() row=() fresh=()
     [[ "$fetch" != true ]] || label='Fetching repositories'
     tmp=$(mktemp -d) || return 1
     previous_trap=$(trap -p INT)
+    job_pid=''
     trap 'interrupted=true; for job_pid in "${jobs[@]}"; do kill "$job_pid" 2>/dev/null || true; done' INT
     if [[ -t 1 ]]; then
         printf '\r\033[2K%s%s%s  ' "$C_CYAN" "$label" "$C_RESET"
@@ -2620,28 +2706,26 @@ workspace_health_screen() {
     done
 }
 overview_frame() {
-    local cols lines page first last i n marker rw bw cw clean=0
+    local cols lines page first last i n marker clean=0
     cols=$(tput cols 2>/dev/null || printf 100); lines=$(tput lines 2>/dev/null || printf 25)
     [[ "$cols" =~ ^[0-9]+$ ]] || cols=100; [[ "$lines" =~ ^[0-9]+$ ]] || lines=25
     page=$((lines>12?lines-12:1)); first=$((selected-page/2)); ((first>=0)) || first=0
     if ((first+page>${#overview_paths[@]})); then first=$((${#overview_paths[@]}-page)); ((first>=0)) || first=0; fi
     last=$((first+page)); ((last<=${#overview_paths[@]})) || last=${#overview_paths[@]}
-    rw=$((cols/4)); ((rw<=24)) || rw=24; ((rw>=8)) || rw=8
-    bw=$((cols/6)); ((bw<=18)) || bw=18; ((bw>=8)) || bw=8
-    cw=$((cols-rw-bw-32)); ((cw>=8)) || cw=8
     for ((i=0;i<${#overview_paths[@]};i++)); do n=$((i*8)); if [[ "${overview_fields[n+6]}" == 'Up to date' && "${overview_fields[n+5]}" == 0 ]]; then clean=$((clean+1)); fi; done
     printf '\033[H\033[2J'; info "  GPUSH / $SCRIPT_VERSION"
-    printf 'Workspace overview | %d repositories | %d clean and synchronized\n' "${#overview_paths[@]}" "$clean"
-    dim 'Saved local snapshot | R refresh | F/A fetch remote references'
-    printf '  %-*s %-*s %-*s %6s | %-5s %s\n' "$rw" Repository "$bw" Branch "$cw" 'Last commit' Behind Ahead Worktree
+    printf '%.*s\n' "$((cols-1))" "Workspace overview | ${#overview_paths[@]} repositories | $clean synchronized"
+    printf '%s%.*s%s\n' "$C_GRAY" "$((cols-1))" 'Local snapshot | R refresh | F/A fetch' "$C_RESET"
+    local bulk_width=$((cols>3?cols-3:1))
+    printf '  '; bulk_table_line Repository Branch 'Last commit' Behind Ahead Worktree Sync Result
     for ((i=first;i<last;i++)); do
         n=$((i*8)); marker=' '
         if ((i==selected)); then marker='>'; if [[ -n "$C_CYAN" ]]; then printf '\033[7m'; fi; fi
-        printf '%s %-*.*s %-*.*s %-*.*s %6s | %-5s %s changed%s\n' "$marker" "$rw" "$rw" "${overview_fields[n]}" "$bw" "$bw" "${overview_fields[n+1]}" "$cw" "$cw" "${overview_fields[n+2]}" "${overview_fields[n+3]}" "${overview_fields[n+4]}" "${overview_fields[n+5]}" "$C_RESET"
+        printf '%s ' "$marker"; bulk_table_line "${overview_fields[n]}" "${overview_fields[n+1]}" "${overview_fields[n+2]}" "${overview_fields[n+3]}" "${overview_fields[n+4]}" "${overview_fields[n+5]} changed" "${overview_fields[n+6]}" ''; printf '%s' "$C_RESET"
     done
     printf '%d/%d | %s\n' "$((selected+1))" "${#overview_paths[@]}" "${overview_fields[selected*8+6]}"
-    dim '[Up/Down] Select  [Enter] Repository menu  [F] Fetch  [A] Fetch all'
-    dim '[R] Refresh local  [S] Sync  [Q] Quit'
+    printf '%s%.*s%s\n' "$C_GRAY" "$((cols-1))" 'Up/Down Select | Enter Open | F/A Fetch' "$C_RESET"
+    printf '%s%.*s%s\n' "$C_GRAY" "$((cols-1))" 'R Refresh | S Sync | Esc Back' "$C_RESET"
 }
 
 # Shared workspace screens. Read-only views do not fetch.
@@ -2727,7 +2811,7 @@ workspace_pick() {
         content_width=$((width>6?width-4:1))
         limit=$((height>12?height-12:1))
         repo_column=0
-        if [[ "$title" == 'Select repository' ]]; then
+        if [[ "$title" == 'Select repository' || "$title" == Settings ]]; then
             for line in "${rows[@]}"; do
                 repo_name=${line%%  |  *}
                 if (( ${#repo_name} > repo_column )); then repo_column=${#repo_name}; fi
@@ -2736,16 +2820,20 @@ workspace_pick() {
             (( repo_column >= 10 )) || repo_column=10
             if (( repo_column > left_width )); then repo_column=$left_width; fi
         fi
+        if [[ "$title" == *' / Main menu' ]] && ((width>=48 && height>=30)); then limit=$((limit-7)); fi
         start=$((selected / limit * limit))
         printf -v bar '%*s' "$width" ''; bar=${bar// /─}
         if [[ "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" != *[Uu][Tt][Ff]* ]]; then bar=${bar//─/-}; fi
         if [[ "$first_frame" == true ]]; then printf '\033[H\033[2J'; first_frame=false; else printf '\033[H'; fi
+        if [[ "$title" == *' / Main menu' ]] && ((width>=48 && height>=30)); then
+            printf '%s%s%s\n' "$accent" "$(printf '%s\n' '  ###  ####            o' ' #     #   #          / \' ' #  ## ####      o---o   o' ' #   # #          \   \ /' '  ###  #           o---o---o' '                            \' '                             o---o')" "$C_RESET"
+        fi
         printf '\033[2K%s%.*s%s\n' "$accent" "$width" "  GPUSH  /  $SCRIPT_VERSION" "$C_RESET"
         printf '\033[2K%.*s\n' "$width" "  ${screen_title//[[:cntrl:]]/?}"
         printf '\033[2K%s%s%s\n' "$muted" "$bar" "$C_RESET"
         printf '\033[2K%s%.*s%s\n' "$muted" "$width" "  FILTER  ${query:-type to search}    |    ${#visible[@]} / ${#rows[@]}" "$C_RESET"
         if (( repo_column > 0 )); then
-            printf -v line '    %-*s  |  Path' "$repo_column" Repository
+            if [[ "$title" == Settings ]]; then printf -v line '    %-*s  |  Value' "$repo_column" Setting; else printf -v line '    %-*s  |  Path' "$repo_column" Repository; fi
             printf '\033[2K%s%.*s%s\n' "$muted" "$width" "$line" "$C_RESET"
         else printf '\033[2K\n'; fi
         for ((i=start; i<start+limit && i<${#visible[@]}; i++)); do
@@ -2982,8 +3070,11 @@ workspace_detail() {
 workspace_settings() {
     if [[ ! -t 0 || ! -t 1 ]]; then handle_config show; return; fi
     local key value action
-    local -a keys=(default-remote large-file-threshold search-root protected-branch ignored-directory)
-    while workspace_pick 'Settings' false "${keys[@]}"; do
+    local -a keys=(default-remote large-file-threshold search-root protected-branch ignored-directory) labels=()
+    while true; do
+        labels=("Default Git remote  |  $DEFAULT_REMOTE" "Large file warning  |  $LARGE_FILE_MB MB" "Search directories  |  ${#SEARCH_ROOTS[@]} configured" "Protected branches  |  ${#PROTECTED_BRANCHES[@]} configured" "Ignored directories  |  ${#IGNORED_DIRS[@]} configured")
+        workspace_pick 'Settings' false "${labels[@]}" || return 0
+        workspace_clear_screen
         key=${keys[WORKSPACE_SELECTION[0]]}
         handle_config show
         case "$key" in
@@ -3095,7 +3186,7 @@ workspace_menu_bulk() {
         action=${WORKSPACE_SELECTION[0]}
         workspace_clear_screen
         case "$action" in
-            0) workspace_run_operation handle_all status;;
+            0) visual_command overview; continue;;
             1) if confirm 'Fetch all cached repositories?'; then workspace_run_operation handle_all fetch; fi;;
             2|3)
                 message=''; allow=()
@@ -3206,17 +3297,17 @@ workspace_menu() {
 
 # One history walk per repository; commit markers and numstat share the same stream.
 # Activity cache lives only in this GPush process; R forces a fresh history scan.
-declare -A GP_STATS_RAW=() GP_STATS_AT=() GP_STATS_VALID=()
+declare -A GP_STATS_RAW=() GP_STATS_VALID=()
 workspace_stats() {
     local period="${1:-30}" show_all="${2:-false}" refresh="${3:-false}" repository line day a d count total=0 added=0 removed=0 max=1 i date_key stamp hidden=0 unavailable=0 name filled width=28 name_width=24 cols=80 heat_days cache_key cache_hit=true
-    local tmp='' previous_trap cancelled=false completed=0 pid j batch_end rc now fingerprint raw_file git_identity
+    local tmp='' previous_trap cancelled=false completed=0 pid j batch_end rc fingerprint raw_file git_identity
     local -A stats_files=()
     local -A stats_days=()
     local -a stats_counts=() stats_names=() stats_order=() stats_paths=() stats_pids=() stats_pending=()
     case "$period" in 7|30|90|365) ;; *) err 'Use gp stats [7|30|90|365].'; return 2;; esac
     : "$refresh"
     load_cache
-    stats_paths=("${CACHED_REPOS[@]}"); now=$(date +%s)
+    stats_paths=("${CACHED_REPOS[@]}")
     ensure_dirs; mkdir -p "$CACHE_DIR/activity"
     git_identity=$(git config --global --get user.name 2>/dev/null || printf unknown)
     for repository in "${stats_paths[@]}"; do
@@ -3225,9 +3316,9 @@ workspace_stats() {
         raw_file="$CACHE_DIR/activity/$(printf '%s\n' "$repository" "$fingerprint" "$period" "$(date +%F)" | git hash-object --stdin)"
         stats_files[$repository]=$raw_file
         if [[ -f "$raw_file" ]]; then
-            GP_STATS_RAW[$cache_key]=$(<"$raw_file"); GP_STATS_VALID[$cache_key]=0; GP_STATS_AT[$cache_key]=$now
+            GP_STATS_RAW[$cache_key]=$(<"$raw_file"); GP_STATS_VALID[$cache_key]=0
         elif [[ "$fingerprint" == empty ]]; then
-            GP_STATS_RAW[$cache_key]=''; GP_STATS_VALID[$cache_key]=0; GP_STATS_AT[$cache_key]=$now
+            GP_STATS_RAW[$cache_key]=''; GP_STATS_VALID[$cache_key]=0
         else stats_pending+=("$repository"); cache_hit=false; fi
     done
     if (( ${#stats_pending[@]} )); then
@@ -3251,7 +3342,7 @@ workspace_stats() {
                 if [[ "$cancelled" == true ]]; then break; fi
                 cache_key="$period|${stats_pending[i+j]}"
                 GP_STATS_RAW[$cache_key]=$(<"$tmp/$((i+j))")
-                GP_STATS_VALID[$cache_key]=$rc; GP_STATS_AT[$cache_key]=$now
+                GP_STATS_VALID[$cache_key]=$rc
                 if ((rc==0)); then cp -- "$tmp/$((i+j))" "${stats_files[${stats_pending[i+j]}]}.tmp.$$" && mv -f -- "${stats_files[${stats_pending[i+j]}]}.tmp.$$" "${stats_files[${stats_pending[i+j]}]}"; fi
                 completed=$((completed+1))
                 if [[ -t 1 ]]; then
