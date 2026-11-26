@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-SCRIPT_VERSION="4.7.2"
+SCRIPT_VERSION="4.7.3"
 AUTHOR="Michal Švrček"
 GITHUB="https://github.com/MajkiiWasTaken"
 
@@ -2100,8 +2100,8 @@ handle_update() {
     local tmp json tag asset name url; tmp="$(mktemp -d)" || return 1; json="$tmp/release.json"; latest_release_json > "$json" || { rm -rf "$tmp"; return 1; }; tag="$(release_field "$json" tag)"; [[ -n "$tag" ]] || { err 'Could not read latest release version.'; rm -rf "$tmp"; return 1; }
     section 'GPush Update'; kv Installed "$SCRIPT_VERSION"; kv Latest "$tag"; kv Channel stable
     if ! version_gt "$tag" "$SCRIPT_VERSION"; then ok 'GPush is up to date.'; rm -rf "$tmp"; return 0; fi
-    warn "Update available: $SCRIPT_VERSION -> $tag"; if [[ "$action" == check ]]; then dim "Run 'gp update' to install."; rm -rf "$tmp"; return 0; fi
-    asset="$(release_field "$json" linux_asset)"; [[ -n "$asset" ]] || { err 'Latest release has no Linux package asset.'; rm -rf "$tmp"; return 1; }; name="${asset%%|*}"; url="${asset#*|}"; confirm_default_yes "Download and install $tag?" || { rm -rf "$tmp"; return 0; }
+    warn "Update available: $SCRIPT_VERSION -> $tag"; if [[ "$action" == check && "${WORKSPACE_OFFER_UPDATE:-false}" != true ]]; then dim "Run 'gp update' to install."; rm -rf "$tmp"; return 0; fi
+    asset="$(release_field "$json" linux_asset)"; [[ -n "$asset" ]] || { err 'Latest release has no Linux package asset.'; rm -rf "$tmp"; return 1; }; name="${asset%%|*}"; url="${asset#*|}"; if [[ "$action" == check ]]; then confirm "Download and install $tag?" || { rm -rf "$tmp"; return 0; }; else confirm_default_yes "Download and install $tag?" || { rm -rf "$tmp"; return 0; }; fi
     visual_bar 0 4; printf ' Downloading\n'; info "[UPDATE] Downloading $name"; curl -fL -H "User-Agent: GPush/$SCRIPT_VERSION" "$url" -o "$tmp/$name" || { rm -rf "$tmp"; return 1; }
     visual_bar 1 4; printf ' Downloaded\n'
     local checksum checksum_url expected actual
@@ -2545,12 +2545,30 @@ overview_frame() {
 }
 
 # Shared workspace screens. Read-only views do not fetch.
-workspace_pause() { if [[ -t 0 && -t 1 ]]; then read -r -p 'Press Enter to return...' _ || true; fi; }
+workspace_pause() {
+    if [[ -t 0 && -t 1 ]]; then
+        printf '\n'; dim 'Esc  Back    Ctrl+C  Exit'
+        while true; do workspace_key; [[ "$WORKSPACE_KEY" != esc ]] || break; done
+    fi
+}
 workspace_log() { mkdir -p "$CONFIG_DIR"; printf '%s %s %s\n' "$(date -Iseconds)" "$1" "$2" >> "$CONFIG_DIR/history.log"; }
 # Shared keyboard picker: navigation uses only the supplied in-memory rows.
 workspace_key() {
-    local suffix='' next=''
-    IFS= read -rsn1 WORKSPACE_KEY || { WORKSPACE_KEY=esc; return; }
+    local suffix='' next='' terminal_mode answer=''
+    terminal_mode=$(stty -g) || { WORKSPACE_KEY=esc; return; }
+    stty intr undef
+    if ! IFS= read -rsn1 WORKSPACE_KEY; then stty "$terminal_mode"; WORKSPACE_KEY=esc; return; fi
+    if [[ "$WORKSPACE_KEY" == $'\003' ]]; then
+        printf '\n'; warn 'Exit GPush? [Y/Enter/Ctrl+C] Yes  [N/Esc] Cancel'
+        if IFS= read -rsn1 answer; then
+            stty "$terminal_mode"
+            case "$answer" in y|Y|''|$'\003') if [[ "$BASHPID" != "$$" ]]; then kill -TERM "$$"; fi; exit 130;; esac
+        else
+            stty "$terminal_mode"
+        fi
+        WORKSPACE_KEY=ignored; return
+    fi
+    stty "$terminal_mode"
     if [[ "$WORKSPACE_KEY" == $'\033' ]]; then
         IFS= read -rsn1 -t 0.15 suffix || true
         if [[ "$suffix" == '[' || "$suffix" == O ]]; then
@@ -2566,7 +2584,7 @@ workspace_pick() {
     local title="$1" multiple="$2"; shift 2
     local -a rows=("$@") marks=()
     local selected=0 i start limit query='' key height width line desc bar content_width left_width screen_title
-    local accent='' highlight='' muted="$C_GRAY" first_frame=true marked=0
+    local accent='' highlight='' muted="$C_GRAY" first_frame=true marked=0 repo_column=0 repo_name repo_path
     local -a visible=() descriptions=(
         'Browse cached repository status' 'Commit, push and manage projects' 'Sync or fetch multiple repositories'
         'Find, add and refresh projects' 'Commits and development activity' 'Inspect synchronization health'
@@ -2590,7 +2608,17 @@ workspace_pick() {
         [[ "$width" =~ ^[0-9]+$ ]] || width=80
         width=$((width>110?110:width-1)); ((width>=1)) || width=1
         content_width=$((width>6?width-4:1))
-        limit=$((height>11?height-11:1))
+        limit=$((height>12?height-12:1))
+        repo_column=0
+        if [[ "$title" == 'Select repository' ]]; then
+            for line in "${rows[@]}"; do
+                repo_name=${line%%  |  *}
+                if (( ${#repo_name} > repo_column )); then repo_column=${#repo_name}; fi
+            done
+            left_width=$((content_width*35/100)); (( left_width >= 10 )) || left_width=10
+            (( repo_column >= 10 )) || repo_column=10
+            if (( repo_column > left_width )); then repo_column=$left_width; fi
+        fi
         start=$((selected / limit * limit))
         printf -v bar '%*s' "$width" ''; bar=${bar// /─}
         if [[ "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" != *[Uu][Tt][Ff]* ]]; then bar=${bar//─/-}; fi
@@ -2599,9 +2627,16 @@ workspace_pick() {
         printf '\033[2K%.*s\n' "$width" "  ${screen_title//[[:cntrl:]]/?}"
         printf '\033[2K%s%s%s\n' "$muted" "$bar" "$C_RESET"
         printf '\033[2K%s%.*s%s\n' "$muted" "$width" "  FILTER  ${query:-type to search}    |    ${#visible[@]} / ${#rows[@]}" "$C_RESET"
-        printf '\033[2K\n'
+        if (( repo_column > 0 )); then
+            printf -v line '    %-*s  |  Path' "$repo_column" Repository
+            printf '\033[2K%s%.*s%s\n' "$muted" "$width" "$line" "$C_RESET"
+        else printf '\033[2K\n'; fi
         for ((i=start; i<start+limit && i<${#visible[@]}; i++)); do
             key=${visible[i]}; line=${rows[key]//[[:cntrl:]]/?}
+            if (( repo_column > 0 )) && [[ "$line" == *'  |  '* ]]; then
+                repo_name=${line%%  |  *}; repo_path=${line#*  |  }
+                printf -v line '%-*.*s  |  %s' "$repo_column" "$repo_column" "$repo_name" "$repo_path"
+            fi
             if [[ "$multiple" == true ]]; then
                 if [[ ${marks[key]:-0} == 1 ]]; then line="[x] $line"; else line="[ ] $line"; fi
             fi
@@ -2626,7 +2661,7 @@ workspace_pick() {
             fi
             printf '\033[2K%s%.*s%s\n' "$accent" "$width" "$line" "$C_RESET"
         else printf '\033[2K\n'; fi
-        printf '\033[2K%s%.*s%s\n' "$muted" "$width" '  Up/Down  Navigate    Enter  Select    Esc  Back' "$C_RESET"
+        printf '\033[2K%s%.*s%s\n' "$muted" "$width" '  Up/Down  Navigate    Enter Select  Esc Back  Ctrl+C Exit' "$C_RESET"
         if [[ "$multiple" == true ]]; then
             printf '\033[2K%s%.*s%s\n' "$muted" "$width" '  Space Mark  A All visible  X Clear  / Search  Enter Confirm' "$C_RESET"
         else
@@ -2663,10 +2698,10 @@ workspace_view_lines() {
         if (( last > ${#content[@]} )); then last=${#content[@]}; fi
         printf '\033[H\033[2J'; section "$title"
         for ((i=offset;i<last;i++)); do printf '%s%s\n' "${content[i]}" "$C_RESET"; done
-        dim "Lines $((offset+1))-$last / ${#content[@]} | Up/Down: scroll | Esc/Enter: back"
+        dim "Lines $((offset+1))-$last / ${#content[@]} | Up/Down: scroll | Esc: back"
         workspace_key
         case "$WORKSPACE_KEY" in
-            esc|enter|q|Q) return 0;;
+            esc) return 0;;
             up) if ((offset>0)); then offset=$((offset-1)); fi;;
             down) if ((offset+page<${#content[@]})); then offset=$((offset+1)); fi;;
         esac
@@ -2968,15 +3003,15 @@ workspace_menu_cache() {
 }
 workspace_menu_update() {
     local -a labels=('Check for updates' 'Install update' 'Restore previous version' 'Back')
-    if workspace_pick 'Software update' false "${labels[@]}"; then
+    while workspace_pick 'Software update' false "${labels[@]}"; do
         case "${WORKSPACE_SELECTION[0]}" in
-            0) handle_update check;;
+            0) WORKSPACE_OFFER_UPDATE=true handle_update check;;
             1) handle_update install;;
             2) handle_update rollback;;
             3) return 0;;
         esac
         workspace_pause
-    fi
+    done
     return 0
 }
 workspace_menu() {

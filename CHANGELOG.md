@@ -2,6 +2,13 @@
 
 All notable changes to GPush are documented here.
 
+## 4.7.3
+
+- Aligned repository name and path columns; selection highlight matches the menu width.
+- Results remain visible until Escape; Ctrl+C prompts before exiting keyboard screens.
+- Interactive update checks offer installation immediately and return to the update menu.
+- Classic CLI update checks remain read-only.
+
 ## 4.7.2
 
 - Fixed repository selection, literal path matching, terminal arrow-key decoding and submenu navigation.

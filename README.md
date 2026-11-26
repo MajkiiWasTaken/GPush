@@ -115,7 +115,7 @@ Interactive workspace:
 gp
 ```
 
-Use arrow keys, Enter and Esc to navigate; type to filter. Repository status is loaded locally, with fetch available on demand.
+Use arrow keys, Enter and Esc to navigate; type to filter. Esc closes results; Ctrl+C asks before exiting. Repository status is loaded locally, with fetch available on demand.
 
 Classic shortcut:
 

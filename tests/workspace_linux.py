@@ -51,12 +51,12 @@ class Terminal:
     def send(self, text):
         os.write(self.master, text.encode('utf-8'))
 
-    def finish(self):
+    def finish(self, expected=0):
         deadline = time.monotonic() + 12
         try:
             while self.read(deadline):
                 pass
-            assert self.child.wait(timeout=3) == 0, self.buffer[-1200:]
+            assert self.child.wait(timeout=3) == expected, self.buffer[-1200:]
         finally:
             self.close()
 
@@ -148,10 +148,10 @@ def test(base):
     c = open_menu('diff', str(repo))
     c.expect('Type to filter'); c.send('fresh')
     c.expect('1 / 3'); c.send('\r')
-    c.expect('+fresh data'); c.expect('Esc/Enter: back'); c.send('\x1b')
+    c.expect('+fresh data'); c.expect('Esc: back'); c.send('\x1b')
     c.expect('Type to filter'); c.send('b.txt')
     c.expect('1 / 3'); c.send('\r'); c.expect('Staged changes'); c.expect('+b changed')
-    c.expect('Esc/Enter: back'); c.send('\x1b'); c.expect('Type to filter'); c.send('\x1b')
+    c.expect('Esc: back'); c.send('\x1b'); c.expect('Type to filter'); c.send('\x1b')
     c.finish()
     print('PASS staged and untracked diff selection')
 
@@ -163,6 +163,30 @@ def test(base):
     c.expect('Push committed changes only'); c.expect('Type to filter'); c.send('\x1b')
     c.expect('Interactive workspace'); c.expect('Type to filter'); c.send('\x1b'); c.finish()
     print('PASS repository picker and Escape navigation')
+
+    c = open_menu()
+    c.expect('Type to filter'); c.send('\x1bOB'); c.expect('POSITION  2 / 11'); c.send('\r')
+    c.expect('Select repository'); c.expect('Repository      |  Path')
+    c.expect('Other           |  '); c.expect('Test [project]  |  ')
+    c.expect('Type to filter'); c.send('Test ['); c.expect('1 / 2'); c.send('\r')
+    c.expect('Repository / Test [project]'); c.expect('Type to filter'); c.send('Status and recent'); c.expect('1 / 12'); c.send('\r')
+    c.expect('Repository detail'); c.expect('[Q/Esc] Back'); c.send('\x1b'); c.expect('Type to filter')
+    c.send('Commit graph'); c.expect('1 / 12'); c.send('\r'); c.expect('Esc  Back    Ctrl+C  Exit'); c.send(' ')
+    c.send('\r'); time.sleep(0.2); c.send('\x03'); c.expect('Exit GPush?'); c.send('n'); c.send('\x1b'); c.expect('Repository / Test [project]'); c.expect('Type to filter')
+    time.sleep(0.2); c.send('\x03'); c.expect('Exit GPush?'); c.send('n'); c.expect('Type to filter'); time.sleep(0.2); c.send('\x03'); c.expect('Exit GPush?'); c.send('\x03'); c.finish(expected=130)
+    print('PASS aligned repository columns, persistent results, Ctrl+C cancel and exit')
+
+    # Fake release metadata only: decline the offer before downloading any package.
+    bin_dir = base/'mock-bin'; bin_dir.mkdir()
+    curl = bin_dir/'curl'
+    curl.write_text("#!/bin/sh\nprintf '%s\\n' '{\"tag_name\":\"v99.0.0\",\"assets\":[{\"name\":\"GPush-linux.tar.gz\",\"browser_download_url\":\"https://example.invalid/package\"}]}'\n")
+    curl.chmod(0o755)
+    env['PATH'] = str(bin_dir) + os.pathsep + env['PATH']
+    c = open_menu(); c.expect('Type to filter'); c.send('Software update'); c.expect('1 / 11'); c.send('\r')
+    c.expect('Software update'); c.expect('Type to filter'); c.send('\r'); c.expect('Download and install v99.0.0?'); c.send('n\n')
+    c.expect('Esc  Back    Ctrl+C  Exit'); c.send('\x1b'); c.expect('Check for updates'); c.expect('Type to filter'); c.send('\x1b'); c.expect('Interactive workspace'); c.expect('Type to filter'); c.send('\x1b'); c.finish()
+    assert "Run 'gp update' to install." in run('bash', str(SCRIPT), 'update', 'check').stdout
+    print('PASS interactive update offer and unchanged CLI check')
 
     result = run('bash', str(SCRIPT), 'all', 'status', check=False)
     assert result.returncode == 1 and 'Test [project]' in result.stdout  # Other has no remote.

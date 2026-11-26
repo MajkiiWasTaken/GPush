@@ -24,7 +24,7 @@ $OutputEncoding           = [System.Text.UTF8Encoding]::new($false)
 # CONFIG
 # ============================================================
 
-$ScriptVersion = "4.7.2"
+$ScriptVersion = "4.7.3"
 $CompletionSchemaVersion = "14"
 
 $ConfigDir  = Join-Path $env:LOCALAPPDATA "GPush"
@@ -1589,7 +1589,7 @@ function Restore-GPushBackup {
 }
 
 function Invoke-GPushUpdateCommand {
-    param([object[]]$Arguments)
+    param([object[]]$Arguments, [switch]$OfferInstall)
 
     $action = if (@($Arguments).Count -gt 0) {
         ([string]$Arguments[0]).ToLowerInvariant()
@@ -1617,7 +1617,7 @@ function Invoke-GPushUpdateCommand {
 
     $hasUpdate = Show-GPushUpdateStatus -Release $release
 
-    if ($action -eq "check") {
+    if ($action -eq "check" -and -not ($OfferInstall -and $hasUpdate)) {
         if ($hasUpdate) {
             Write-Dim "Run 'gp update' to install."
         }
@@ -6107,8 +6107,28 @@ function Write-GPushWorkspaceHistory {
     param([string]$Action,[string]$Path)
     try { Add-Content -LiteralPath (Join-Path $ConfigDir 'history.log') -Value ('{0} {1} {2}' -f (Get-Date -Format o),$Action,$Path) -Encoding UTF8 -ErrorAction Stop } catch { Write-Dim 'History unavailable.' }
 }
+# Read control keys only while waiting for UI input; restore console mode before Git runs.
+function Read-GPushWorkspaceKey {
+    $previous = [Console]::TreatControlCAsInput
+    try {
+        [Console]::TreatControlCAsInput = $true
+        while ($true) {
+            $key = [Console]::ReadKey($true)
+            if ($key.KeyChar -ne [char]3) { return $key }
+            Write-Host ''
+            Write-Warn 'Exit GPush? [Y/Enter/Ctrl+C] Yes  [N/Esc] Cancel'
+            $answer = [Console]::ReadKey($true)
+            if ($answer.KeyChar -eq [char]3 -or $answer.Key -in @('Y','Enter')) { exit 130 }
+            # Return a harmless key to redraw the calling screen after cancellation.
+            return [ConsoleKeyInfo]::new([char]0,[ConsoleKey]::F24,$false,$false,$false)
+        }
+    } finally { [Console]::TreatControlCAsInput = $previous }
+}
 function Wait-GPushWorkspace {
-    if (-not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected) { $null = Read-Host 'Press Enter to return' }
+    if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) { return }
+    Write-Host ''
+    Write-Dim 'Esc  Back    Ctrl+C  Exit'
+    while ((Read-GPushWorkspaceKey).Key -ne 'Escape') { }
 }
 # Shared keyboard picker; all rows are cached for the lifetime of the screen.
 function Select-GPushWorkspaceRows {
@@ -6130,7 +6150,14 @@ function Select-GPushWorkspaceRows {
         if (-not $TestKeyReader) {
             $width = [Math]::Max(1,[Math]::Min(110,[Console]::WindowWidth-1))
             $contentWidth = [Math]::Max(1,$width-4)
-            $limit = [Math]::Max(1,[Console]::WindowHeight-12)
+            $repoColumn = 0
+            if ($Title -eq 'Select repository') {
+                foreach ($row in $Rows) {
+                    $repoColumn = [Math]::Max($repoColumn, (($row -split '  \|  ',2)[0]).Length)
+                }
+                $repoColumn = [Math]::Min([Math]::Max(10,$repoColumn),[Math]::Max(10,[int]($contentWidth*0.35)))
+            }
+            $limit = [Math]::Max(1,[Console]::WindowHeight-13)
             $start = [int]([Math]::Floor($selected / $limit) * $limit)
             $rule = [string][char]0x2500 * $width
             if ($firstFrame -or $previousWidth -ne [Console]::WindowWidth -or $previousHeight -ne [Console]::WindowHeight) {
@@ -6146,11 +6173,16 @@ function Select-GPushWorkspaceRows {
             $frame.Add(@{Text=$rule; Color='DarkGray'})
             $filterText = if ($query) { $query } else { 'type to search' }
             $frame.Add(@{Text="  FILTER  $filterText    |    $($visible.Count) / $($Rows.Count)"; Color='DarkGray'})
-            $frame.Add(@{Text='';Color='White'})
+            if ($repoColumn -gt 0) { $frame.Add(@{Text=('    '+('Repository'.PadRight($repoColumn))+'  |  Path');Color='DarkGray'}) } else { $frame.Add(@{Text='';Color='White'}) }
             for ($i=$start; $i -lt [Math]::Min($start+$limit,$visible.Count); $i++) {
                 $index=$visible[$i]
                 $mark=if ($Multiple) { if ($marks[$index]) {'[x] '} else {'[ ] '} } else {''}
-                $line=$mark+($Rows[$index] -replace '[\x00-\x1f\x7f]','?')
+                $rowText=$Rows[$index]
+                if ($repoColumn -gt 0) {
+                    $parts=$rowText -split '  \|  ',2
+                    if ($parts.Count -eq 2) { $rowText=(Limit-GPushTableText $parts[0] $repoColumn).PadRight($repoColumn)+'  |  '+$parts[1] }
+                }
+                $line=$mark+($rowText -replace '[\x00-\x1f\x7f]','?')
                 if ($Title.EndsWith(' / Main menu') -and $width -ge 76) {
                     $line=('{0,-34} {1}' -f (Limit-GPushTableText $line 34),$descriptions[$index])
                 }
@@ -6164,10 +6196,10 @@ function Select-GPushWorkspaceRows {
             $positionText=if ($visible.Count) { "  POSITION  $($selected+1) / $($visible.Count)" } else { '  No matches' }
             if ($Multiple) { $positionText += "    |    MARKED  $(@($marks.Values | Where-Object { $_ }).Count)" }
             $frame.Add(@{Text=$positionText;Color='Cyan'})
-            $frame.Add(@{Text='  Up/Down  Navigate    Enter  Select    Esc  Back';Color='DarkGray'})
+            $frame.Add(@{Text='  Up/Down Navigate  Enter Select  Esc Back  Ctrl+C Exit';Color='DarkGray'})
             $hint=if ($Multiple) {'  Space Mark  A All visible  X Clear  / Search  Enter Confirm'} else {'  Type to filter    Backspace  Clear character'}
             $frame.Add(@{Text=$hint;Color='DarkGray'})
-            $paintWidth=[Math]::Max(1,[Console]::WindowWidth-1)
+            $paintWidth=$width
             foreach ($entry in $frame) {
                 $text=(Limit-GPushTableText $entry.Text $width).PadRight($paintWidth)
                 if ($entry.Selected) { Write-Host $text -ForegroundColor Black -BackgroundColor Cyan }
@@ -6179,7 +6211,7 @@ function Select-GPushWorkspaceRows {
             }
             $previousFrameCount=$frame.Count
         }
-        $key = if ($TestKeyReader) { & $TestKeyReader } else { [Console]::ReadKey($true) }
+        $key = if ($TestKeyReader) { & $TestKeyReader } else { (Read-GPushWorkspaceKey) }
         if ($null -eq $key) { return }
         switch ($key.Key) {
             Escape { return }
@@ -6208,11 +6240,10 @@ function Show-GPushWorkspaceLines {
         $last=[Math]::Min($offset+$page,$Lines.Count)
         Clear-Host; Write-Section $Title
         for ($i=$offset; $i -lt $last; $i++) { Write-Host $Lines[$i] }
-        Write-Dim "Lines $($offset+1)-$last / $($Lines.Count) | Up/Down: scroll | Esc/Enter: back"
-        switch ([Console]::ReadKey($true).Key) {
+        Write-Dim "Lines $($offset+1)-$last / $($Lines.Count) | Up/Down: scroll | Esc: back"
+        switch ((Read-GPushWorkspaceKey).Key) {
             Escape { return }
-            Enter { return }
-            Q { return }
+
             UpArrow { if ($offset -gt 0) { $offset-- } }
             DownArrow { if ($offset+$page -lt $Lines.Count) { $offset++ } }
         }
@@ -6354,10 +6385,10 @@ function Show-GPushWorkspaceBranches {
         & git -C $Repository.Path branch -vv | ForEach-Object { Write-Host $_ }
         if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) { return }
         Write-Dim '[N] New  [S] Switch  [D] Delete merged  [G] Graph  [Q/Esc] Back'
-        $key=[Console]::ReadKey($true)
+        $key=(Read-GPushWorkspaceKey)
         if ($key.Key -eq 'Escape') { return }
         $action=[string]$key.KeyChar
-        if ($action -in @('q','')) { return }
+        if ($action -eq 'q') { return }
         if ($action -eq 'g') { & git -C $Repository.Path --no-pager log --graph --all --decorate --oneline -n 40 | ForEach-Object { Write-Host $_ }; Wait-GPushWorkspace; continue }
         if ($action -notin @('n','s','d')) { continue }
         if ($action -eq 'n') { $branch = Read-Host 'Branch name' } else {
@@ -6402,7 +6433,7 @@ function Show-GPushWorkspaceDetail {
         & git -C $Repository.Path --no-pager log -5 '--format=%h  %s  (%ar)' | ForEach-Object { Write-Host $_ }
         if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) { return }
         Write-Dim '[C] Commit  [D] Diff  [B] Branches  [F] Fetch  [S] Sync  [G] GitHub  [Q/Esc] Back'
-        $key = [Console]::ReadKey($true)
+        $key = (Read-GPushWorkspaceKey)
         if ($key.Key -eq 'Escape') { return }
         $action = [string]$key.KeyChar
         switch ($action) {
@@ -6418,7 +6449,7 @@ function Show-GPushWorkspaceDetail {
             }
             's' { if (Confirm-GPushAction -Prompt 'Synchronize repository?') { $result = Invoke-GPushAllSync -Repository $Repository; Write-GPushAllRow -Snapshot $result.Snapshot -Result $result.Result; Write-GPushWorkspaceHistory "sync $($result.Result)" $Repository.Path }; Wait-GPushWorkspace }
             'g' { Show-GPushWorkspaceGitHub $Repository; Wait-GPushWorkspace }
-            { $_ -in @('q','') } { return }
+            'q' { return }
         }
     }
 }
@@ -6588,11 +6619,13 @@ function Show-GPushMenuCache {
     }
 }
 function Show-GPushMenuUpdate {
-    $picked = @(Select-GPushWorkspaceRows -Title 'Software update' -Rows @('Check for updates','Install update','Restore previous version','Back'))
-    if (-not $picked.Count -or $picked[0] -eq 3) { return }
-    $actions = @('check','install','rollback')
-    $null = Invoke-GPushUpdateCommand -Arguments @($actions[$picked[0]])
-    Wait-GPushWorkspace
+    while ($true) {
+        $picked = @(Select-GPushWorkspaceRows -Title 'Software update' -Rows @('Check for updates','Install update','Restore previous version','Back'))
+        if (-not $picked.Count -or $picked[0] -eq 3) { return }
+        $actions = @('check','install','rollback')
+        $null = Invoke-GPushUpdateCommand -Arguments @($actions[$picked[0]]) -OfferInstall
+        Wait-GPushWorkspace
+    }
 }
 function Show-GPushWorkspaceMenu {
     $labels = @('Workspace overview','Repositories / commit and push','Bulk operations','Repository cache','Development statistics','Workspace health','Activity history','Settings','Software update','Help / CLI commands','Exit')
@@ -6670,7 +6703,7 @@ function Invoke-GPushVisualCommand {
             while ($true) {
                 Show-GPushOverviewFrame -States $states -Selected $selected
                 $repository = $repositories[$selected]
-                $key = [Console]::ReadKey($true).Key
+                $key = (Read-GPushWorkspaceKey).Key
                 switch ($key) {
                     'Q' { return 0 }
                     'Escape' { return 0 }
@@ -6699,7 +6732,7 @@ function Invoke-GPushVisualCommand {
                                 Write-GPushAllRow -Snapshot $result.Snapshot -Result $result.Result
                             } catch { Write-Warn $_.Exception.Message }
                             $states[$selected] = @(Get-GPushOverviewStates -Repositories @($repository))[0]
-                            $null = Read-Host 'Press Enter to continue'
+                            Wait-GPushWorkspace
                         }
                     }
                 }
