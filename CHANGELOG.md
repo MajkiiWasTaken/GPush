@@ -2,6 +2,11 @@
 
 All notable changes to GPush are documented here.
 
+## 4.7.8
+
+- Expand densely written shell and PowerShell statements, control-flow blocks and functions for readability.
+- No intentional changes to application behavior, CLI or configuration.
+
 ## 4.7.7
 
 - Add a subtle “Made by: Michal Švrček” credit and a blank line above the original ASCII logo.

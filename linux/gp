@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-SCRIPT_VERSION="4.7.7"
+SCRIPT_VERSION="4.7.8"
 AUTHOR="Michal Švrček"
 GITHUB="https://github.com/MajkiiWasTaken"
 
@@ -404,7 +404,9 @@ select_repo() {
     query="$(alias_resolve "$1")"
 
     if [[ -n "$query" && -d "$query" ]]; then
-        if SELECTED=$(git -C "$query" rev-parse --show-toplevel 2>/dev/null); then return 0; fi
+        if SELECTED=$(git -C "$query" rev-parse --show-toplevel 2>/dev/null); then
+            return 0
+        fi
     fi
 
     if [[ -z "$query" ]]; then
@@ -420,10 +422,14 @@ select_repo() {
             workspace_choose_repo || return 1
             SELECTED=$MENU_REPO; return 0
         fi
-        err "Specify a repository name or path."; return 1
+        err "Specify a repository name or path."
+        return 1
     fi
     get_repos
-    if [[ ${#REPOS[@]} -eq 0 ]]; then err "No Git repositories found."; return 1; fi
+    if [[ ${#REPOS[@]} -eq 0 ]]; then
+        err "No Git repositories found."
+        return 1
+    fi
 
     local -a exact_matches=()
     local -a prefix_matches=()
@@ -451,7 +457,11 @@ select_repo() {
         fi
     done
 
-    if (( ${#exact_matches[@]} > 1 )); then repository_matches=("${exact_matches[@]}"); else repository_matches=("${prefix_matches[@]}"); fi
+    if (( ${#exact_matches[@]} > 1 )); then
+        repository_matches=("${exact_matches[@]}")
+    else
+        repository_matches=("${prefix_matches[@]}")
+    fi
 
     if [[ ${#repository_matches[@]} -eq 0 ]]; then
         for repository in "${REPOS[@]}"; do
@@ -476,9 +486,12 @@ select_repo() {
 
     if [[ -t 0 && -t 1 ]]; then
         local -a choices=()
-        for repository in "${repository_matches[@]}"; do choices+=("${repository##*/}  |  $repository"); done
+        for repository in "${repository_matches[@]}"; do
+            choices+=("${repository##*/}  |  $repository")
+        done
         workspace_pick 'Select repository' false "${choices[@]}" || return 1
-        SELECTED=${repository_matches[WORKSPACE_SELECTION[0]]}; return 0
+        SELECTED=${repository_matches[WORKSPACE_SELECTION[0]]}
+        return 0
     fi
     err 'Ambiguous repository. Specify the exact path.'
     return 1
@@ -1025,7 +1038,12 @@ translate_legacy() {
             --all)
                 translated_args=(all status)
                 shift
-                case "${1:-}" in --fetch|--sync|--status) translated_args=(all "${1#--}"); shift ;; esac
+                case "${1:-}" in
+                    --fetch|--sync|--status)
+                        translated_args=(all "${1#--}")
+                        shift
+                    ;;
+                esac
                 translated_args+=("$@")
                 break
                 ;;
@@ -1049,11 +1067,16 @@ translate_legacy() {
 
 normalize_config_key() {
     case "${1,,}" in
-        search-root|search-roots) printf '%s' 'search-root' ;;
-        protected-branch|protected-branches) printf '%s' 'protected-branch' ;;
-        ignored-directory|ignored-directories|ignore-directory|ignore) printf '%s' 'ignored-directory' ;;
-        default-remote|remote) printf '%s' 'default-remote' ;;
-        large-file-threshold|large-file-mb|large-file) printf '%s' 'large-file-threshold' ;;
+        search-root|search-roots) printf '%s' 'search-root'
+        ;;
+        protected-branch|protected-branches) printf '%s' 'protected-branch'
+        ;;
+        ignored-directory|ignored-directories|ignore-directory|ignore) printf '%s' 'ignored-directory'
+        ;;
+        default-remote|remote) printf '%s' 'default-remote'
+        ;;
+        large-file-threshold|large-file-mb|large-file) printf '%s' 'large-file-threshold'
+        ;;
         *) return 1 ;;
     esac
 }
@@ -1125,21 +1148,49 @@ handle_config_edit() {
 
     case "$action" in
         add)
-            [[ -n "$value" ]] || { err "Configuration 'add' requires a value."; return 2; }
+            [[ -n "$value" ]] || {
+                err "Configuration 'add' requires a value."
+                return 2
+            }
             if [[ "$key" == default-remote || "$key" == large-file-threshold ]]; then
                 action="set"
             fi
             ;;
         remove)
-            case "$key" in search-root|protected-branch|ignored-directory) ;; *) err "Configuration key '$key' cannot remove an individual value."; dim "Use: gp reset $key"; return 2;; esac
-            [[ -n "$value" ]] || { err "Configuration 'remove' requires a value."; return 2; }
+            case "$key" in
+                search-root|protected-branch|ignored-directory)
+                ;;
+                *)
+                    err "Configuration key '$key' cannot remove an individual value."
+                    dim "Use: gp reset $key"
+                    return 2
+                ;;
+            esac
+            [[ -n "$value" ]] || {
+                err "Configuration 'remove' requires a value."
+                return 2
+            }
             ;;
         set)
-            case "$key" in default-remote|large-file-threshold) ;; *) err "Configuration key '$key' does not support 'set'."; dim "Use add/remove for list settings."; return 2;; esac
-            [[ -n "$value" ]] || { err "Configuration 'set' requires a value."; return 2; }
+            case "$key" in
+                default-remote|large-file-threshold)
+                ;;
+                *)
+                    err "Configuration key '$key' does not support 'set'."
+                    dim "Use add/remove for list settings."
+                    return 2
+                ;;
+            esac
+            [[ -n "$value" ]] || {
+                err "Configuration 'set' requires a value."
+                return 2
+            }
             ;;
         reset) ;;
-        *) err "Unknown config action: $action"; config_edit_usage; return 2 ;;
+        *) err "Unknown config action: $action"
+        config_edit_usage
+        return 2
+        ;;
     esac
 
     local -a next=()
@@ -1149,53 +1200,99 @@ handle_config_edit() {
         search-root)
             case "$action" in
                 add)
-                    for item in "${SEARCH_ROOTS[@]}"; do config_path_equal "$item" "$value" && { warn "Search root is already configured: $value"; return 0; }; done
+                    for item in "${SEARCH_ROOTS[@]}"; do
+                        config_path_equal "$item" "$value" && {
+                            warn "Search root is already configured: $value"
+                            return 0
+                        }
+                    done
                     SEARCH_ROOTS+=("${value/#\~/$HOME}")
                     ;;
                 remove)
                     for item in "${SEARCH_ROOTS[@]}"; do
-                        if config_path_equal "$item" "$value"; then found=true; else next+=("$item"); fi
+                        if config_path_equal "$item" "$value"; then
+                            found=true
+                        else
+                            next+=("$item")
+                        fi
                     done
-                    [[ "$found" == true ]] || { err "Search root was not found: $value"; return 1; }
-                    (( ${#next[@]} > 0 )) || { err 'Cannot remove the last search root.'; dim 'Add another search root first.'; return 2; }
+                    [[ "$found" == true ]] || {
+                        err "Search root was not found: $value"
+                        return 1
+                    }
+                    (( ${#next[@]} > 0 )) || {
+                        err 'Cannot remove the last search root.'
+                        dim 'Add another search root first.'
+                        return 2
+                    }
                     SEARCH_ROOTS=("${next[@]}")
                     ;;
-                reset) SEARCH_ROOTS=("${DEFAULT_SEARCH_ROOTS[@]}") ;;
+                reset) SEARCH_ROOTS=("${DEFAULT_SEARCH_ROOTS[@]}")
+                ;;
             esac
             ;;
         protected-branch)
             case "$action" in
                 add)
-                    array_contains_ci "$value" "${PROTECTED_BRANCHES[@]}" && { warn "Protected branch is already configured: $value"; return 0; }
+                    array_contains_ci "$value" "${PROTECTED_BRANCHES[@]}" && {
+                        warn "Protected branch is already configured: $value"
+                        return 0
+                    }
                     PROTECTED_BRANCHES+=("$value")
                     ;;
                 remove)
                     next=(); found=false
-                    for item in "${PROTECTED_BRANCHES[@]}"; do if [[ "${item,,}" == "${value,,}" ]]; then found=true; else next+=("$item"); fi; done
-                    [[ "$found" == true ]] || { err "Protected branch was not found: $value"; return 1; }
+                    for item in "${PROTECTED_BRANCHES[@]}"; do
+                        if [[ "${item,,}" == "${value,,}" ]]; then
+                            found=true
+                        else
+                            next+=("$item")
+                        fi
+                    done
+                    [[ "$found" == true ]] || {
+                        err "Protected branch was not found: $value"
+                        return 1
+                    }
                     PROTECTED_BRANCHES=("${next[@]}")
                     ;;
-                reset) PROTECTED_BRANCHES=("${DEFAULT_PROTECTED_BRANCHES[@]}") ;;
+                reset) PROTECTED_BRANCHES=("${DEFAULT_PROTECTED_BRANCHES[@]}")
+                ;;
             esac
             ;;
         ignored-directory)
             case "$action" in
                 add)
-                    array_contains_ci "$value" "${IGNORED_DIRS[@]}" && { warn "Ignored directory is already configured: $value"; return 0; }
+                    array_contains_ci "$value" "${IGNORED_DIRS[@]}" && {
+                        warn "Ignored directory is already configured: $value"
+                        return 0
+                    }
                     IGNORED_DIRS+=("$value")
                     ;;
                 remove)
                     next=(); found=false
-                    for item in "${IGNORED_DIRS[@]}"; do if [[ "${item,,}" == "${value,,}" ]]; then found=true; else next+=("$item"); fi; done
-                    [[ "$found" == true ]] || { err "Ignored directory was not found: $value"; return 1; }
+                    for item in "${IGNORED_DIRS[@]}"; do
+                        if [[ "${item,,}" == "${value,,}" ]]; then
+                            found=true
+                        else
+                            next+=("$item")
+                        fi
+                    done
+                    [[ "$found" == true ]] || {
+                        err "Ignored directory was not found: $value"
+                        return 1
+                    }
                     IGNORED_DIRS=("${next[@]}")
                     ;;
-                reset) IGNORED_DIRS=("${DEFAULT_IGNORED_DIRS[@]}") ;;
+                reset) IGNORED_DIRS=("${DEFAULT_IGNORED_DIRS[@]}")
+                ;;
             esac
             ;;
         default-remote)
             if [[ "$action" == set ]]; then
-                [[ "$value" != *[[:space:]]* ]] || { err 'Remote name cannot contain whitespace.'; return 2; }
+                [[ "$value" != *[[:space:]]* ]] || {
+                    err 'Remote name cannot contain whitespace.'
+                    return 2
+                }
                 DEFAULT_REMOTE="$value"
             else
                 DEFAULT_REMOTE='origin'
@@ -1277,23 +1374,40 @@ handle_config() {
 
     case "$action" in
         show)
-            [[ $# -eq 0 ]] || { err "Command 'gp config show' does not accept arguments."; return 2; }
+            [[ $# -eq 0 ]] || {
+                err "Command 'gp config show' does not accept arguments."
+                return 2
+            }
             show_config
             ;;
         path)
-            [[ $# -eq 0 ]] || { err "Command 'gp config path' does not accept arguments."; return 2; }
+            [[ $# -eq 0 ]] || {
+                err "Command 'gp config path' does not accept arguments."
+                return 2
+            }
             printf '%s\n' "$CONFIG_FILE"
             ;;
         doctor)
-            [[ $# -eq 0 ]] || { err "Command 'gp config doctor' does not accept arguments."; return 2; }
+            [[ $# -eq 0 ]] || {
+                err "Command 'gp config doctor' does not accept arguments."
+                return 2
+            }
             run_doctor
             ;;
         add|remove|set)
-            [[ $# -eq 2 ]] || { err "Command 'gp config $action' requires a key and a value."; config_edit_usage; return 2; }
+            [[ $# -eq 2 ]] || {
+                err "Command 'gp config $action' requires a key and a value."
+                config_edit_usage
+                return 2
+            }
             handle_config_edit "$action" "$1" "$2"
             ;;
         reset)
-            [[ $# -eq 1 ]] || { err "Command 'gp config reset' requires exactly one key."; config_edit_usage; return 2; }
+            [[ $# -eq 1 ]] || {
+                err "Command 'gp config reset' requires exactly one key."
+                config_edit_usage
+                return 2
+            }
             handle_config_edit reset "$1"
             ;;
         *)
@@ -1489,24 +1603,34 @@ bulk_sync() (
     local repository="$1" allow="$2" message="$3" push_only="${4:-false}" fetched_remote="${5:-}" fetched_ok="${6:-}"
     cd "$repository" || return 1
     local branch remote upstream target counts ahead=0 behind=0 dirty marker path name
-    branch="$(git symbolic-ref --quiet --short HEAD)" || { warn "SKIP detached: $repository"; return 1; }
+    branch="$(git symbolic-ref --quiet --short HEAD)" || {
+        warn "SKIP detached: $repository"
+        return 1
+    }
     remote="$(git config --get "branch.$branch.remote" || current_remote)" || return 1
     [[ "$remote" != . && -n "$remote" ]] || return 1
     if [[ "$fetched_remote" == "$remote" ]]; then
-        [[ "$fetched_ok" == 0 ]] || { warn "FAIL fetch: $repository"; return 1; }
+        [[ "$fetched_ok" == 0 ]] || {
+            warn "FAIL fetch: $repository"
+            return 1
+        }
     else
         git fetch --prune "$remote" || return 1
     fi
     for marker in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply sequencer BISECT_START; do
         path="$(git rev-parse --git-path "$marker")" || return 1
-        [[ ! -e "$path" ]] || { warn "SKIP Git operation: $repository"; return 1; }
+        [[ ! -e "$path" ]] || {
+            warn "SKIP Git operation: $repository"
+            return 1
+        }
     done
     dirty="$(git status --porcelain --untracked-files=all)" || return 1
     upstream="$(git rev-parse --symbolic-full-name '@{u}' 2>/dev/null || true)"
     target="$(git config --get "branch.$branch.merge" || true)"
     if [[ -z "$upstream" ]]; then
         if [[ -n "$target" ]]; then
-            warn "SKIP missing upstream: $repository"; return 1
+            warn "SKIP missing upstream: $repository"
+            return 1
         fi
         target="refs/heads/$branch"
         if git show-ref --verify --quiet "refs/remotes/$remote/$branch"; then
@@ -1518,13 +1642,21 @@ bulk_sync() (
         counts="$(git rev-list --left-right --count "HEAD...$upstream")" || return 1
         read -r ahead behind <<< "$counts"
     fi
-    if (( ahead > 0 && behind > 0 )); then warn "SKIP diverged: $repository"; return 1; fi
-    if [[ "$push_only" == true ]] && (( behind > 0 )); then warn "SKIP behind: $repository"; return 1; fi
+    if (( ahead > 0 && behind > 0 )); then
+        warn "SKIP diverged: $repository"
+        return 1
+    fi
+    if [[ "$push_only" == true ]] && (( behind > 0 )); then
+        warn "SKIP behind: $repository"
+        return 1
+    fi
     if [[ "$push_only" != true && -n "$dirty" && ( -z "$message" || "$behind" -gt 0 ) ]]; then
         warn "SKIP dirty: $repository"; return 1
     fi
     if [[ ( "$push_only" != true && -n "$dirty" ) || "$ahead" -gt 0 || -z "$upstream" ]]; then
-        if [[ "$allow" != true ]] && { protected_branch "$branch" || protected_branch "${target#refs/heads/}"; }; then
+        if [[ "$allow" != true ]] && {
+            protected_branch "$branch" || protected_branch "${target#refs/heads/}"
+        }; then
             warn "SKIP protected: $repository"; return 1
         fi
     fi
@@ -1532,7 +1664,9 @@ bulk_sync() (
         local changed
         changed="$(mktemp)" || return 1
         trap 'rm -f -- "$changed"' EXIT
-        { git diff --name-only -z --diff-filter=ACMRTUXB && git diff --cached --name-only -z --diff-filter=ACMRTUXB && git ls-files --others --exclude-standard -z; } > "$changed" || return 1
+        {
+            git diff --name-only -z --diff-filter=ACMRTUXB && git diff --cached --name-only -z --diff-filter=ACMRTUXB && git ls-files --others --exclude-standard -z
+        } > "$changed" || return 1
         while IFS= read -r -d '' path; do
             name="${path##*/}"; name="${name,,}"
             case "$name" in
@@ -1570,31 +1704,51 @@ bulk_dashboard_row() (
     branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || printf '(detached)')"
     commit="$(git log -1 --format=%s 2>/dev/null || printf '-')"
     if dirty="$(git status --porcelain --untracked-files=all)"; then
-        if [[ -z "$dirty" ]]; then worktree=clean; else worktree="dirty ($(printf '%s\n' "$dirty" | wc -l))"; fi
+        if [[ -z "$dirty" ]]; then
+            worktree=clean
+        else
+            worktree="dirty ($(printf '%s\n' "$dirty" | wc -l))"
+        fi
     else failed=1; fi
     remote="$(git config --get "branch.$branch.remote" || current_remote || true)"
-    if [[ "$remote" == . ]]; then state="Local upstream"; failed=1
-    elif [[ -z "$remote" ]]; then state="No remote"; failed=1
-    elif [[ "$action" == fetch ]] && ! git fetch --quiet --prune "$remote"; then state="Fetch failed"; failed=1
-    elif [[ "$branch" == '(detached)' ]]; then state="Detached HEAD"; failed=1
+    if [[ "$remote" == . ]]; then
+        state="Local upstream"
+        failed=1
+    elif [[ -z "$remote" ]]; then
+        state="No remote"
+        failed=1
+    elif [[ "$action" == fetch ]] && ! git fetch --quiet --prune "$remote"; then
+        state="Fetch failed"
+        failed=1
+    elif [[ "$branch" == '(detached)' ]]; then
+        state="Detached HEAD"
+        failed=1
     else
         upstream="$(git rev-parse --symbolic-full-name '@{u}' 2>/dev/null || true)"
         if [[ -z "$upstream" ]]; then
-            if git config --get "branch.$branch.merge" >/dev/null; then state="Missing upstream"; failed=1
-            elif git show-ref --verify --quiet "refs/remotes/$remote/$branch"; then upstream="refs/remotes/$remote/$branch"
+            if git config --get "branch.$branch.merge" >/dev/null; then
+                state="Missing upstream"
+                failed=1
+            elif git show-ref --verify --quiet "refs/remotes/$remote/$branch"; then
+                upstream="refs/remotes/$remote/$branch"
             else state="New remote branch"; fi
         fi
         if [[ -n "$upstream" ]]; then
             if counts="$(git rev-list --left-right --count "HEAD...$upstream")"; then
                 read -r ahead behind <<< "$counts"
-                if (( ahead > 0 && behind > 0 )); then state=Diverged; failed=1
+                if (( ahead > 0 && behind > 0 )); then
+                    state=Diverged
+                    failed=1
                 elif (( ahead > 0 )); then state=Ahead
                 elif (( behind > 0 )); then state=Behind
                 else state="Up to date"; fi
             else failed=1; fi
         fi
     fi
-    if [[ "$action" == fetch ]]; then result="OK fetched"; (( failed == 0 )) || result="Attention"; fi
+    if [[ "$action" == fetch ]]; then
+        result="OK fetched"
+        (( failed == 0 )) || result="Attention"
+    fi
     bulk_table_line "${repository##*/}" "$branch" "$commit" "$behind" "$ahead" "$worktree" "$state" "$result"
     return "$failed"
 )
@@ -1602,8 +1756,10 @@ bulk_dashboard_row() (
 # Shared compact table: never rely on terminal wrapping for columns.
 bulk_table_line() {
     local width=${bulk_width:-100} name_width branch_width commit_width line
-    name_width=$((width/3)); ((name_width<=24)) || name_width=24
-    branch_width=$((width/6)); ((branch_width<=18)) || branch_width=18
+    name_width=$((width/3))
+    ((name_width<=24)) || name_width=24
+    branch_width=$((width/6))
+    ((branch_width<=18)) || branch_width=18
     if ((width>=100)); then
         commit_width=$((width-name_width-branch_width-48))
         printf -v line '%-*.*s %-*.*s %-*.*s %4s | %-4s %-10.10s %-10.10s %s' "$name_width" "$name_width" "$1" "$branch_width" "$branch_width" "$2" "$commit_width" "$commit_width" "$3" "$4" "$5" "$6" "$7" "$8"
@@ -1617,36 +1773,60 @@ bulk_table_line() {
 
 handle_all() (
     local action=sync allow_protected=false message="" refresh=false
-    if [[ $# -gt 0 && "$1" != -* ]]; then action="$1"; shift; fi
-    case "$action" in status|fetch|sync|push) ;; *) err "Unknown all command: $action"; return 2 ;; esac
+    if [[ $# -gt 0 && "$1" != -* ]]; then
+        action="$1"
+        shift
+    fi
+    case "$action" in
+        status|fetch|sync|push)
+        ;;
+        *)
+            err "Unknown all command: $action"
+            return 2
+        ;;
+    esac
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --allow-protected) allow_protected=true ;;
             --cached) ;;
             --refresh) refresh=true ;;
-            --) shift; message="${message:+$message }$*"; break ;;
-            -*) err "Unknown all option: $1"; return 2 ;;
-            *) if [[ "$action" != push ]]; then err "Unexpected argument: $1"; return 2; fi
+            --) shift
+            message="${message:+$message }$*"
+            break
+            ;;
+            -*) err "Unknown all option: $1"
+            return 2
+            ;;
+            *) if [[ "$action" != push ]]; then
+                err "Unexpected argument: $1"
+                return 2
+            fi
                message="${message:+$message }$1" ;;
         esac
         shift
     done
     if [[ "$action" == push && -z "${message//[[:space:]]/}" ]]; then
-        err 'Use: gp all push "Commit message"'; return 2
+        err 'Use: gp all push "Commit message"'
+        return 2
     fi
     if [[ "$refresh" == true ]]; then
         scan_repos; save_cache "${FOUND_REPOS[@]}"
     fi
     load_cache
     local -a repositories=("${CACHED_REPOS[@]}")
-    if (( ${#repositories[@]} == 0 )); then err 'No usable cache. Run gp cache refresh.'; return 1; fi
+    if (( ${#repositories[@]} == 0 )); then
+        err 'No usable cache. Run gp cache refresh.'
+        return 1
+    fi
     banner; section "All cached repositories"
     if [[ "$action" == push ]]; then
         confirm "Commit and synchronize ${#repositories[@]} repositories?" || return 0
     fi
     local repository failures=0 processed=0 started=$SECONDS bulk_width=100 tmp i j rc result
     local -a bulk_jobs=()
-    if [[ -t 1 ]]; then bulk_width=$(tput cols 2>/dev/null || printf 100); fi
+    if [[ -t 1 ]]; then
+        bulk_width=$(tput cols 2>/dev/null || printf 100)
+    fi
     [[ "$bulk_width" =~ ^[0-9]+$ ]] || bulk_width=100
     bulk_width=$((bulk_width>1?bulk_width-1:1))
     tmp=$(mktemp -d) || return 1
@@ -1657,7 +1837,8 @@ handle_all() (
     local bar_width=$((bulk_width>70?24:bulk_width>35?12:4))
     if [[ -t 1 ]]; then
         printf '\r\033[2K%s%s%s ' "$C_CYAN" "$action" "$C_RESET"
-        workspace_block_bar 0 "$bar_width"; printf '   0%%'
+        workspace_block_bar 0 "$bar_width"
+        printf '   0%%'
     fi
     local batch=4
     if [[ "$action" == sync || "$action" == push ]]; then
@@ -1689,7 +1870,11 @@ handle_all() (
             done
             bulk_jobs=()
         done
-        if [[ -t 1 ]]; then printf '\r\033[2K%sApplying local changes%s ' "$C_CYAN" "$C_RESET"; workspace_block_bar 0 "$bar_width"; printf '   0%%'; fi
+        if [[ -t 1 ]]; then
+            printf '\r\033[2K%sApplying local changes%s ' "$C_CYAN" "$C_RESET"
+            workspace_block_bar 0 "$bar_width"
+            printf '   0%%'
+        fi
     fi
     for ((i=0;i<${#repositories[@]};i+=batch)); do
         bulk_jobs=()
@@ -1701,8 +1886,13 @@ handle_all() (
             else
                 result=OK
                 fetched=()
-                if [[ -f "$tmp/fetch-$j" ]]; then mapfile -d '' -t fetched < "$tmp/fetch-$j"; fi
-                C_RESET='' C_CYAN='' C_GREEN='' C_YELLOW='' C_RED='' C_GRAY='' bulk_sync "$repository" "$allow_protected" "$message" false "${fetched[0]:-}" "${fetched[1]:-}" > "$tmp/$j" 2>&1 || { failures=$((failures+1)); result=ATTENTION; }
+                if [[ -f "$tmp/fetch-$j" ]]; then
+                    mapfile -d '' -t fetched < "$tmp/fetch-$j"
+                fi
+                C_RESET='' C_CYAN='' C_GREEN='' C_YELLOW='' C_RED='' C_GRAY='' bulk_sync "$repository" "$allow_protected" "$message" false "${fetched[0]:-}" "${fetched[1]:-}" > "$tmp/$j" 2>&1 || {
+                    failures=$((failures+1))
+                    result=ATTENTION
+                }
                 printf '%s %s %s %s\n' "$(date -Iseconds)" "$action" "$result" "$repository" >> "$CONFIG_DIR/history.log" || true
                 processed=$((processed+1))
             fi
@@ -1720,9 +1910,13 @@ handle_all() (
         fi
     done
     if [[ -t 1 ]]; then printf '\r\033[2K'; fi
-    if [[ "$action" == status || "$action" == fetch ]]; then bulk_table_line Repository Branch 'Last commit' Behind Ahead Worktree Sync Result; fi
+    if [[ "$action" == status || "$action" == fetch ]]; then
+        bulk_table_line Repository Branch 'Last commit' Behind Ahead Worktree Sync Result
+    fi
     for ((i=0;i<${#repositories[@]};i++)); do
-        while IFS= read -r result; do printf '%.*s\n' "$bulk_width" "$result"; done < "$tmp/$i"
+        while IFS= read -r result; do
+            printf '%.*s\n' "$bulk_width" "$result"
+        done < "$tmp/$i"
     done
     rm -rf -- "$tmp"
     kv Repositories "${#repositories[@]}"
@@ -2058,21 +2252,50 @@ project_detect() {
     local path="$1"
     PROJECT_TYPES=()
     PROJECT_MANIFESTS=()
-    [[ -f "$path/Cargo.toml" ]] && { PROJECT_TYPES+=("Rust"); PROJECT_MANIFESTS+=("Cargo.toml"); }
+    [[ -f "$path/Cargo.toml" ]] && {
+        PROJECT_TYPES+=("Rust")
+        PROJECT_MANIFESTS+=("Cargo.toml")
+    }
     local first_sln="" first_csproj=""
     first_sln="$(find "$path" -maxdepth 1 -type f -name '*.sln' -print -quit 2>/dev/null || true)"
     first_csproj="$(find "$path" -maxdepth 1 -type f -name '*.csproj' -print -quit 2>/dev/null || true)"
     if [[ -n "$first_sln" || -n "$first_csproj" ]]; then
         PROJECT_TYPES+=(".NET")
-        if [[ -n "$first_sln" ]]; then PROJECT_MANIFESTS+=("$(basename "$first_sln")"); else PROJECT_MANIFESTS+=("$(basename "$first_csproj")"); fi
+        if [[ -n "$first_sln" ]]; then
+            PROJECT_MANIFESTS+=("$(basename "$first_sln")")
+        else
+            PROJECT_MANIFESTS+=("$(basename "$first_csproj")")
+        fi
     fi
-    [[ -f "$path/package.json" ]] && { PROJECT_TYPES+=("Node"); PROJECT_MANIFESTS+=("package.json"); }
-    if [[ -f "$path/pyproject.toml" ]]; then PROJECT_TYPES+=("Python"); PROJECT_MANIFESTS+=("pyproject.toml")
-    elif [[ -f "$path/requirements.txt" ]]; then PROJECT_TYPES+=("Python"); PROJECT_MANIFESTS+=("requirements.txt"); fi
-    [[ -f "$path/CMakeLists.txt" ]] && { PROJECT_TYPES+=("C/C++"); PROJECT_MANIFESTS+=("CMakeLists.txt"); }
+    [[ -f "$path/package.json" ]] && {
+        PROJECT_TYPES+=("Node")
+        PROJECT_MANIFESTS+=("package.json")
+    }
+    if [[ -f "$path/pyproject.toml" ]]; then
+        PROJECT_TYPES+=("Python")
+        PROJECT_MANIFESTS+=("pyproject.toml")
+    elif [[ -f "$path/requirements.txt" ]]; then
+        PROJECT_TYPES+=("Python")
+        PROJECT_MANIFESTS+=("requirements.txt")
+    fi
+    [[ -f "$path/CMakeLists.txt" ]] && {
+        PROJECT_TYPES+=("C/C++")
+        PROJECT_MANIFESTS+=("CMakeLists.txt")
+    }
     [[ ${#PROJECT_TYPES[@]} -eq 0 ]] && PROJECT_TYPES+=("Generic")
 }
-node_runner() { local path="$1"; [[ -f "$path/pnpm-lock.yaml" ]] && { printf 'pnpm'; return; }; [[ -f "$path/yarn.lock" ]] && { printf 'yarn'; return; }; printf 'npm'; }
+node_runner() {
+    local path="$1"
+    [[ -f "$path/pnpm-lock.yaml" ]] && {
+        printf 'pnpm'
+        return
+    }
+    [[ -f "$path/yarn.lock" ]] && {
+        printf 'yarn'
+        return
+    }
+    printf 'npm'
+}
 node_has_script() {
     local path="$1" name="$2"
     if command -v python3 >/dev/null 2>&1; then
@@ -2090,67 +2313,245 @@ PY_NODE
 }
 project_python() {
     local path="$1"
-    [[ -x "$path/.venv/bin/python" ]] && { printf '%s' "$path/.venv/bin/python"; return; }
-    command -v python3 >/dev/null 2>&1 && { printf 'python3'; return; }
-    command -v python >/dev/null 2>&1 && { printf 'python'; return; }
+    [[ -x "$path/.venv/bin/python" ]] && {
+        printf '%s' "$path/.venv/bin/python"
+        return
+    }
+    command -v python3 >/dev/null 2>&1 && {
+        printf 'python3'
+        return
+    }
+    command -v python >/dev/null 2>&1 && {
+        printf 'python'
+        return
+    }
     return 1
 }
 handle_project() {
     local action="${1:-info}"; shift || true
     local project="${1:-}"
-    case "$action" in info|build|test|run|open|shell) ;; *) err "Unknown project action: $action"; dim 'Use: gp project info|build|test|run|open|shell [project]'; return 2;; esac
-    [[ $# -le 1 ]] || { err 'Project command accepts at most one project.'; return 2; }
+    case "$action" in
+        info|build|test|run|open|shell)
+        ;;
+        *)
+            err "Unknown project action: $action"
+            dim 'Use: gp project info|build|test|run|open|shell [project]'
+            return 2
+        ;;
+    esac
+    [[ $# -le 1 ]] || {
+        err 'Project command accepts at most one project.'
+        return 2
+    }
     select_repo "$project" || return 1
     remember_recent "$SELECTED"
     project_detect "$SELECTED"
-    local branch="-"; branch="$(git -C "$SELECTED" branch --show-current 2>/dev/null || true)"; [[ -n "$branch" ]] || branch='-'
+    local branch="-"
+    branch="$(git -C "$SELECTED" branch --show-current 2>/dev/null || true)"
+    [[ -n "$branch" ]] || branch='-'
     banner; section 'Project'
-    kv Name "$(repo_name "$SELECTED")"; kv Path "$SELECTED" "$C_GRAY"; kv Type "$(IFS=' + '; echo "${PROJECT_TYPES[*]}")"
-    if [[ ${#PROJECT_MANIFESTS[@]} -gt 0 ]]; then kv Manifest "$(IFS=', '; echo "${PROJECT_MANIFESTS[*]}")"; else kv Manifest '-'; fi
+    kv Name "$(repo_name "$SELECTED")"
+    kv Path "$SELECTED" "$C_GRAY"
+    kv Type "$(IFS=' + '; echo "${PROJECT_TYPES[*]}")"
+    if [[ ${#PROJECT_MANIFESTS[@]} -gt 0 ]]; then
+        kv Manifest "$(IFS=', '; echo "${PROJECT_MANIFESTS[*]}")"
+    else
+        kv Manifest '-'
+    fi
     kv 'Git branch' "$branch" "$C_MAGENTA"
     case "$action" in
-        info) section 'Available'; dim '  info    Detect project type and metadata.'; dim '  build   Build using the detected toolchain.'; dim '  test    Run project tests.'; dim '  run     Run when a safe default can be detected.'; dim '  open    Open project folder with xdg-open.'; dim '  shell   Start an interactive shell in the project.'; return 0;;
-        open) command -v xdg-open >/dev/null 2>&1 || { err 'xdg-open was not found.'; return 1; }; xdg-open "$SELECTED" >/dev/null 2>&1 & disown || true; ok 'Opened project folder.'; return 0;;
-        shell) cd "$SELECTED" || return 1; local shell_bin="${SHELL:-/bin/bash}"; [[ -x "$shell_bin" ]] || shell_bin=/bin/bash; exec "$shell_bin" -i;;
+        info) section 'Available'
+        dim '  info    Detect project type and metadata.'
+        dim '  build   Build using the detected toolchain.'
+        dim '  test    Run project tests.'
+        dim '  run     Run when a safe default can be detected.'
+        dim '  open    Open project folder with xdg-open.'
+        dim '  shell   Start an interactive shell in the project.'
+        return 0
+        ;;
+        open) command -v xdg-open >/dev/null 2>&1 || {
+            err 'xdg-open was not found.'
+            return 1
+        }
+        xdg-open "$SELECTED" >/dev/null 2>&1 & disown || true
+        ok 'Opened project folder.'
+        return 0
+        ;;
+        shell) cd "$SELECTED" || return 1
+        local shell_bin="${SHELL:-/bin/bash}"
+        [[ -x "$shell_bin" ]] || shell_bin=/bin/bash
+        exec "$shell_bin" -i
+        ;;
     esac
     cd "$SELECTED" || return 1
-    if printf '%s\n' "${PROJECT_TYPES[@]}" | grep -Fxq 'Rust'; then command -v cargo >/dev/null 2>&1 || { err 'cargo was not found.'; return 127; }; case "$action" in build) cargo build;; test) cargo test;; run) cargo run;; esac; return $?; fi
-    if printf '%s\n' "${PROJECT_TYPES[@]}" | grep -Fxq '.NET'; then
-        command -v dotnet >/dev/null 2>&1 || { err 'dotnet was not found.'; return 127; }
-        local target=""; target="$(find . -maxdepth 1 -type f \( -name '*.sln' -o -name '*.csproj' \) -print -quit | sed 's#^./##')"
+    if printf '%s\n' "${PROJECT_TYPES[@]}" | grep -Fxq 'Rust'; then
+        command -v cargo >/dev/null 2>&1 || {
+            err 'cargo was not found.'
+            return 127
+        }
         case "$action" in
             build)
-                if [[ -n "$target" ]]; then dotnet build "$target"; else dotnet build; fi
+                cargo build
+            ;;
+            test)
+                cargo test
+            ;;
+            run)
+                cargo run
+            ;;
+        esac
+        return $?
+    fi
+    if printf '%s\n' "${PROJECT_TYPES[@]}" | grep -Fxq '.NET'; then
+        command -v dotnet >/dev/null 2>&1 || {
+            err 'dotnet was not found.'
+            return 127
+        }
+        local target=""
+        target="$(find . -maxdepth 1 -type f \( -name '*.sln' -o -name '*.csproj' \) -print -quit | sed 's#^./##')"
+        case "$action" in
+            build)
+                if [[ -n "$target" ]]; then
+                    dotnet build "$target"
+                else
+                    dotnet build
+                fi
                 ;;
             test)
-                if [[ -n "$target" ]]; then dotnet test "$target"; else dotnet test; fi
+                if [[ -n "$target" ]]; then
+                    dotnet test "$target"
+                else
+                    dotnet test
+                fi
                 ;;
             run)
-                if [[ "$target" == *.csproj ]]; then dotnet run --project "$target"; else dotnet run; fi
+                if [[ "$target" == *.csproj ]]; then
+                    dotnet run --project "$target"
+                else
+                    dotnet run
+                fi
                 ;;
         esac
         return $?
     fi
     if printf '%s\n' "${PROJECT_TYPES[@]}" | grep -Fxq 'Node'; then
-        local runner; runner="$(node_runner "$SELECTED")"; command -v "$runner" >/dev/null 2>&1 || { err "$runner was not found."; return 127; }
-        case "$action" in build) node_has_script "$SELECTED" build || { err "package.json does not define 'build'."; return 1; }; "$runner" run build;; test) node_has_script "$SELECTED" test || { err "package.json does not define 'test'."; return 1; }; "$runner" test;; run) if node_has_script "$SELECTED" dev; then "$runner" run dev; elif node_has_script "$SELECTED" start; then "$runner" start; else err "No 'dev' or 'start' script found."; return 1; fi;; esac; return $?
+        local runner
+        runner="$(node_runner "$SELECTED")"
+        command -v "$runner" >/dev/null 2>&1 || {
+            err "$runner was not found."
+            return 127
+        }
+        case "$action" in
+            build)
+                node_has_script "$SELECTED" build || {
+                    err "package.json does not define 'build'."
+                    return 1
+                }
+                "$runner" run build
+            ;;
+            test)
+                node_has_script "$SELECTED" test || {
+                    err "package.json does not define 'test'."
+                    return 1
+                }
+                "$runner" test
+            ;;
+            run)
+                if node_has_script "$SELECTED" dev; then
+                    "$runner" run dev
+                elif node_has_script "$SELECTED" start; then
+                    "$runner" start
+                else
+                    err "No 'dev' or 'start' script found."
+                    return 1
+                fi
+            ;;
+        esac
+        return $?
     fi
     if printf '%s\n' "${PROJECT_TYPES[@]}" | grep -Fxq 'Python'; then
-        local py; py="$(project_python "$SELECTED")" || { err 'Python was not found.'; return 127; }
-        case "$action" in build) if [[ -f pyproject.toml ]]; then "$py" -m build; else "$py" -m compileall .; fi;; test) "$py" -m pytest;; run) if [[ -f main.py ]]; then "$py" main.py; elif [[ -f app.py ]]; then "$py" app.py; else err 'No main.py or app.py found.'; return 1; fi;; esac; return $?
+        local py
+        py="$(project_python "$SELECTED")" || {
+            err 'Python was not found.'
+            return 127
+        }
+        case "$action" in
+            build)
+                if [[ -f pyproject.toml ]]; then
+                    "$py" -m build
+                else
+                    "$py" -m compileall .
+                fi
+            ;;
+            test)
+                "$py" -m pytest
+            ;;
+            run)
+                if [[ -f main.py ]]; then
+                    "$py" main.py
+                elif [[ -f app.py ]]; then
+                    "$py" app.py
+                else
+                    err 'No main.py or app.py found.'
+                    return 1
+                fi
+            ;;
+        esac
+        return $?
     fi
-    if printf '%s\n' "${PROJECT_TYPES[@]}" | grep -Fxq 'C/C++'; then command -v cmake >/dev/null 2>&1 || { err 'cmake was not found.'; return 127; }; case "$action" in build) cmake -S . -B build && cmake --build build;; test) command -v ctest >/dev/null 2>&1 || { err 'ctest was not found.'; return 127; }; ctest --test-dir build --output-on-failure;; run) err 'A generic CMake project has no safe automatic run target.'; return 1;; esac; return $?; fi
-    err "Action '$action' is not available for this project type."; return 1
+    if printf '%s\n' "${PROJECT_TYPES[@]}" | grep -Fxq 'C/C++'; then
+        command -v cmake >/dev/null 2>&1 || {
+            err 'cmake was not found.'
+            return 127
+        }
+        case "$action" in
+            build)
+                cmake -S . -B build && cmake --build build
+            ;;
+            test)
+                command -v ctest >/dev/null 2>&1 || {
+                    err 'ctest was not found.'
+                    return 127
+                }
+                ctest --test-dir build --output-on-failure
+            ;;
+            run)
+                err 'A generic CMake project has no safe automatic run target.'
+                return 1
+            ;;
+        esac
+        return $?
+    fi
+    err "Action '$action' is not available for this project type."
+    return 1
 }
 # -----------------------------------------------------------------------------
 # Self update
 # -----------------------------------------------------------------------------
-version_numeric() { local v="${1#v}"; printf '%s' "${v%%-*}"; }
-version_gt() { local a b; a="$(version_numeric "$1")"; b="$(version_numeric "$2")"; [[ "$a" == "$b" ]] && return 1; [[ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | tail -n1)" == "$a" ]]; }
-latest_release_json() { command -v curl >/dev/null 2>&1 || { err 'curl is required for GPush update.'; return 1; }; curl -fsSL -H "User-Agent: GPush/$SCRIPT_VERSION" -H 'Accept: application/vnd.github+json' 'https://api.github.com/repos/MajkiiWasTaken/GPush/releases/latest'; }
+version_numeric() {
+    local v="${1#v}"
+    printf '%s' "${v%%-*}"
+}
+version_gt() {
+    local a b
+    a="$(version_numeric "$1")"
+    b="$(version_numeric "$2")"
+    [[ "$a" == "$b" ]] && return 1
+    [[ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | tail -n1)" == "$a" ]]
+}
+latest_release_json() {
+    command -v curl >/dev/null 2>&1 || {
+        err 'curl is required for GPush update.'
+        return 1
+    }
+    curl -fsSL -H "User-Agent: GPush/$SCRIPT_VERSION" -H 'Accept: application/vnd.github+json' 'https://api.github.com/repos/MajkiiWasTaken/GPush/releases/latest'
+}
 release_field() {
     local json_file="$1" key="$2" extra="${3:-}"
-    command -v python3 >/dev/null 2>&1 || { err 'python3 is required to parse GitHub release metadata.'; return 1; }
+    command -v python3 >/dev/null 2>&1 || {
+        err 'python3 is required to parse GitHub release metadata.'
+        return 1
+    }
     python3 - "$json_file" "$key" "$extra" <<'PY_RELEASE'
 import json,sys
 with open(sys.argv[1],encoding='utf-8') as f: d=json.load(f)
@@ -2175,57 +2576,162 @@ PY_RELEASE
 }
 backup_current_gp() {
     mkdir -p "$BACKUP_DIR"
-    local current_path backup_path; current_path="$(command -v gp 2>/dev/null || true)"; [[ -n "$current_path" ]] || current_path="${BASH_SOURCE[0]}"
-    backup_path="$BACKUP_DIR/v$SCRIPT_VERSION-$(date +%Y%m%d-%H%M%S)"; mkdir -p "$backup_path"; cp "$current_path" "$backup_path/gp"; chmod +x "$backup_path/gp"; printf '%s' "$backup_path"
+    local current_path backup_path
+    current_path="$(command -v gp 2>/dev/null || true)"
+    [[ -n "$current_path" ]] || current_path="${BASH_SOURCE[0]}"
+    backup_path="$BACKUP_DIR/v$SCRIPT_VERSION-$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$backup_path"
+    cp "$current_path" "$backup_path/gp"
+    chmod +x "$backup_path/gp"
+    printf '%s' "$backup_path"
 }
 update_stage() {
-    if [[ -t 1 ]]; then printf '\r\033[2K%s%s%s' "$C_CYAN" "$1" "$C_RESET"; else info "$1"; fi
+    if [[ -t 1 ]]; then
+        printf '\r\033[2K%s%s%s' "$C_CYAN" "$1" "$C_RESET"
+    else
+        info "$1"
+    fi
 }
-update_stage_clear() { if [[ -t 1 ]]; then printf '\r\033[2K'; fi; }
+update_stage_clear() {
+    if [[ -t 1 ]]; then
+        printf '\r\033[2K'
+    fi
+}
 download_update_package() {
     local url="$1" file="$2" size="$3" bytes=0 started=$SECONDS elapsed rate percent=0 pid previous_trap cancelled=false rc=0
     local separator='?'
-    if [[ "$url" == *'?'* ]]; then separator='&'; fi
+    if [[ "$url" == *'?'* ]]; then
+        separator='&'
+    fi
     url+="${separator}gpush_nocache=$(date +%s)-$RANDOM"
-    if [[ ! -t 1 ]]; then curl -fsSL --connect-timeout 30 --max-time 300 -H 'Cache-Control: no-cache, no-store' -H "User-Agent: GPush/$SCRIPT_VERSION" "$url" -o "$file"; return $?; fi
+    if [[ ! -t 1 ]]; then
+        curl -fsSL --connect-timeout 30 --max-time 300 -H 'Cache-Control: no-cache, no-store' -H "User-Agent: GPush/$SCRIPT_VERSION" "$url" -o "$file"
+        return $?
+    fi
     previous_trap=$(trap -p INT)
     curl -fsSL --connect-timeout 30 --max-time 300 -H 'Cache-Control: no-cache, no-store' -H "User-Agent: GPush/$SCRIPT_VERSION" "$url" -o "$file" &
     pid=$!
     trap 'cancelled=true; kill -TERM "$pid" 2>/dev/null || true' INT
     while kill -0 "$pid" 2>/dev/null; do
-        if [[ "$cancelled" == true ]]; then break; fi
-        if [[ -f "$file" ]]; then bytes=$(wc -c < "$file"); fi
-        elapsed=$((SECONDS-started)); rate=$((bytes/(elapsed>0?elapsed:1)/1024))
+        if [[ "$cancelled" == true ]]; then
+            break
+        fi
+        if [[ -f "$file" ]]; then
+            bytes=$(wc -c < "$file")
+        fi
+        elapsed=$((SECONDS-started))
+        rate=$((bytes/(elapsed>0?elapsed:1)/1024))
         printf '\r\033[2K%sDownloading%s  ' "$C_CYAN" "$C_RESET"
         if [[ "$size" =~ ^[0-9]+$ ]] && ((size>0)); then
-            percent=$((100*bytes/size)); ((percent<=100)) || percent=100
+            percent=$((100*bytes/size))
+            ((percent<=100)) || percent=100
             workspace_block_bar "$((percent*28/100))" 28
             printf '  %3d%%  %d/%d KiB  %d KiB/s' "$percent" "$((bytes/1024))" "$((size/1024))" "$rate"
-        else printf '%d KiB  %d KiB/s' "$((bytes/1024))" "$rate"; fi
+        else
+            printf '%d KiB  %d KiB/s' "$((bytes/1024))" "$rate"
+        fi
         sleep 0.12
     done
     wait "$pid" || rc=$?
-    if [[ -n "$previous_trap" ]]; then eval "$previous_trap"; else trap - INT; fi
+    if [[ -n "$previous_trap" ]]; then
+        eval "$previous_trap"
+    else
+        trap - INT
+    fi
     printf '\r\033[2K'
-    if [[ "$cancelled" == true ]]; then return 130; fi
+    if [[ "$cancelled" == true ]]; then
+        return 130
+    fi
     return "$rc"
 }
 handle_update() (
-    if (( $# > 1 )); then err "Update accepts at most one action."; return 2; fi
-    local action="${1:-install}"; case "$action" in check|install|rollback) ;; *) err "Unknown update action: $action"; dim 'Use: gp update [check|install|rollback]'; return 2;; esac
+    if (( $# > 1 )); then
+        err "Update accepts at most one action."
+        return 2
+    fi
+    local action="${1:-install}"
+    case "$action" in
+        check|install|rollback)
+        ;;
+        *)
+            err "Unknown update action: $action"
+            dim 'Use: gp update [check|install|rollback]'
+            return 2
+        ;;
+    esac
     banner
     if [[ "$action" == rollback ]]; then
-        local newest current_path; newest="$(find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -r | head -n1 || true)"; [[ -n "$newest" && -f "$newest/gp" ]] || { warn 'No GPush backup exists.'; return 0; }
-        current_path="$(command -v gp 2>/dev/null || true)"; [[ -n "$current_path" ]] || current_path="$HOME/.local/bin/gp"; section 'GPush Rollback'; kv Current "$SCRIPT_VERSION"; kv Backup "$newest" "$C_GRAY"; confirm 'Restore newest GPush backup?' || return 0; install -m 0755 "$newest/gp" "$current_path" || return 1; ok 'Rollback completed.'; dim 'Run a new gp command to use the restored version.'; return 0
+        local newest current_path
+        newest="$(find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -r | head -n1 || true)"
+        [[ -n "$newest" && -f "$newest/gp" ]] || {
+            warn 'No GPush backup exists.'
+            return 0
+        }
+        current_path="$(command -v gp 2>/dev/null || true)"
+        [[ -n "$current_path" ]] || current_path="$HOME/.local/bin/gp"
+        section 'GPush Rollback'
+        kv Current "$SCRIPT_VERSION"
+        kv Backup "$newest" "$C_GRAY"
+        confirm 'Restore newest GPush backup?' || return 0
+        install -m 0755 "$newest/gp" "$current_path" || return 1
+        ok 'Rollback completed.'
+        dim 'Run a new gp command to use the restored version.'
+        return 0
     fi
-    local tmp json tag asset name url size download_rc=0; tmp="$(mktemp -d)" || return 1; trap 'rm -rf -- "$tmp"' EXIT; trap 'exit 130' INT; json="$tmp/release.json"; latest_release_json > "$json" || { rm -rf "$tmp"; return 1; }; tag="$(release_field "$json" tag)"; [[ -n "$tag" ]] || { err 'Could not read latest release version.'; rm -rf "$tmp"; return 1; }
-    section 'GPush Update'; kv Installed "$SCRIPT_VERSION"; kv Latest "$tag"; kv Channel stable
-    if ! version_gt "$tag" "$SCRIPT_VERSION"; then ok 'GPush is up to date.'; rm -rf "$tmp"; return 0; fi
-    warn "Update available: $SCRIPT_VERSION -> $tag"; if [[ "$action" == check && "${WORKSPACE_OFFER_UPDATE:-false}" != true ]]; then dim "Run 'gp update' to install."; rm -rf "$tmp"; return 0; fi
-    asset="$(release_field "$json" linux_asset)"; [[ -n "$asset" ]] || { err 'Latest release has no Linux package asset.'; rm -rf "$tmp"; return 1; }; name="${asset%%|*}"; url="${asset#*|}"; if [[ "$action" == check ]]; then confirm "Download and install $tag?" || { rm -rf "$tmp"; return 0; }; else confirm_default_yes "Download and install $tag?" || { rm -rf "$tmp"; return 0; }; fi
+    local tmp json tag asset name url size download_rc=0
+    tmp="$(mktemp -d)" || return 1
+    trap 'rm -rf -- "$tmp"' EXIT
+    trap 'exit 130' INT
+    json="$tmp/release.json"
+    latest_release_json > "$json" || {
+        rm -rf "$tmp"
+        return 1
+    }
+    tag="$(release_field "$json" tag)"
+    [[ -n "$tag" ]] || {
+        err 'Could not read latest release version.'
+        rm -rf "$tmp"
+        return 1
+    }
+    section 'GPush Update'
+    kv Installed "$SCRIPT_VERSION"
+    kv Latest "$tag"
+    kv Channel stable
+    if ! version_gt "$tag" "$SCRIPT_VERSION"; then
+        ok 'GPush is up to date.'
+        rm -rf "$tmp"
+        return 0
+    fi
+    warn "Update available: $SCRIPT_VERSION -> $tag"
+    if [[ "$action" == check && "${WORKSPACE_OFFER_UPDATE:-false}" != true ]]; then
+        dim "Run 'gp update' to install."
+        rm -rf "$tmp"
+        return 0
+    fi
+    asset="$(release_field "$json" linux_asset)"
+    [[ -n "$asset" ]] || {
+        err 'Latest release has no Linux package asset.'
+        rm -rf "$tmp"
+        return 1
+    }
+    name="${asset%%|*}"
+    url="${asset#*|}"
+    if [[ "$action" == check ]]; then
+        confirm "Download and install $tag?" || {
+            rm -rf "$tmp"
+            return 0
+        }
+    else
+        confirm_default_yes "Download and install $tag?" || {
+            rm -rf "$tmp"
+            return 0
+        }
+    fi
     size=$(release_field "$json" size "$name")
     download_update_package "$url" "$tmp/$name" "${size:-0}" || download_rc=$?
-    if ((download_rc!=0)); then return "$download_rc"; fi
+    if ((download_rc!=0)); then
+        return "$download_rc"
+    fi
     update_stage 'Verifying package integrity'
     local checksum checksum_url expected actual
     checksum="$(release_field "$json" checksum "$name" || true)"
@@ -2237,23 +2743,92 @@ handle_update() (
                 expected="$(grep -Eo '[A-Fa-f0-9]{64}' "$tmp/checksum.txt" | head -n1 || true)"
             fi
             if [[ -n "$expected" ]]; then
-                if command -v sha256sum >/dev/null 2>&1; then actual="$(sha256sum "$tmp/$name" | awk '{print $1}')"; else actual="$(shasum -a 256 "$tmp/$name" | awk '{print $1}')"; fi
-                [[ "${actual,,}" == "${expected,,}" ]] || { update_stage_clear; err 'Downloaded package SHA-256 does not match published checksum.'; rm -rf "$tmp"; return 1; }
+                if command -v sha256sum >/dev/null 2>&1; then
+                    actual="$(sha256sum "$tmp/$name" | awk '{print $1}')"
+                else
+                    actual="$(shasum -a 256 "$tmp/$name" | awk '{print $1}')"
+                fi
+                [[ "${actual,,}" == "${expected,,}" ]] || {
+                    update_stage_clear
+                    err 'Downloaded package SHA-256 does not match published checksum.'
+                    rm -rf "$tmp"
+                    return 1
+                }
                 update_stage 'Package integrity verified'
             else
-                update_stage_clear; err 'No matching SHA-256 value; update cancelled.'; rm -rf "$tmp"; return 1
+                update_stage_clear
+                err 'No matching SHA-256 value; update cancelled.'
+                rm -rf "$tmp"
+                return 1
             fi
         else
-            update_stage_clear; err 'Checksum download failed; update cancelled.'; rm -rf "$tmp"; return 1
+            update_stage_clear
+            err 'Checksum download failed; update cancelled.'
+            rm -rf "$tmp"
+            return 1
         fi
     else
-        update_stage_clear; err 'No SHA-256 asset published. Update cancelled.'; return 1
+        update_stage_clear
+        err 'No SHA-256 asset published. Update cancelled.'
+        return 1
     fi
     update_stage 'Preparing installation'
     mkdir -p "$tmp/extract"
-    case "$name" in *.tar.gz) tar -xzf "$tmp/$name" -C "$tmp/extract" || { rm -rf "$tmp"; return 1; };; *.zip) command -v unzip >/dev/null 2>&1 || { err 'unzip is required for ZIP update packages.'; rm -rf "$tmp"; return 1; }; unzip -q "$tmp/$name" -d "$tmp/extract" || { rm -rf "$tmp"; return 1; };; *) err 'Unsupported Linux update package.'; rm -rf "$tmp"; return 1;; esac
-    local new_gp package_version backup_path current_path; new_gp="$(find "$tmp/extract" -type f -name gp -print -quit)"; [[ -n "$new_gp" ]] || { err 'Release package does not contain gp.'; rm -rf "$tmp"; return 1; }; package_version="$(sed -n 's/^SCRIPT_VERSION="\([^"]*\)"/\1/p' "$new_gp" | head -n1)"; [[ "$(version_numeric "$package_version")" == "$(version_numeric "$tag")" ]] || { err "Package version '$package_version' does not match release '$tag'."; rm -rf "$tmp"; return 1; }
-    backup_path="$(backup_current_gp)" || { rm -rf "$tmp"; return 1; }; update_stage 'Installing verified package'; current_path="$(command -v gp 2>/dev/null || true)"; [[ -n "$current_path" ]] || current_path="$HOME/.local/bin/gp"; mkdir -p "$(dirname "$current_path")"; install -m 0755 "$new_gp" "$current_path" || { rm -rf "$tmp"; return 1; }; update_stage_clear; ok 'GPush updated successfully. SHA-256 verified.'; dim "Rollback backup: $backup_path"; kv Previous "$SCRIPT_VERSION"; kv Current "$package_version" "$C_GREEN"; rm -rf "$tmp"
+    case "$name" in
+        *.tar.gz)
+            tar -xzf "$tmp/$name" -C "$tmp/extract" || {
+                rm -rf "$tmp"
+                return 1
+            }
+        ;;
+        *.zip)
+            command -v unzip >/dev/null 2>&1 || {
+                err 'unzip is required for ZIP update packages.'
+                rm -rf "$tmp"
+                return 1
+            }
+            unzip -q "$tmp/$name" -d "$tmp/extract" || {
+                rm -rf "$tmp"
+                return 1
+            }
+        ;;
+        *)
+            err 'Unsupported Linux update package.'
+            rm -rf "$tmp"
+            return 1
+        ;;
+    esac
+    local new_gp package_version backup_path current_path
+    new_gp="$(find "$tmp/extract" -type f -name gp -print -quit)"
+    [[ -n "$new_gp" ]] || {
+        err 'Release package does not contain gp.'
+        rm -rf "$tmp"
+        return 1
+    }
+    package_version="$(sed -n 's/^SCRIPT_VERSION="\([^"]*\)"/\1/p' "$new_gp" | head -n1)"
+    [[ "$(version_numeric "$package_version")" == "$(version_numeric "$tag")" ]] || {
+        err "Package version '$package_version' does not match release '$tag'."
+        rm -rf "$tmp"
+        return 1
+    }
+    backup_path="$(backup_current_gp)" || {
+        rm -rf "$tmp"
+        return 1
+    }
+    update_stage 'Installing verified package'
+    current_path="$(command -v gp 2>/dev/null || true)"
+    [[ -n "$current_path" ]] || current_path="$HOME/.local/bin/gp"
+    mkdir -p "$(dirname "$current_path")"
+    install -m 0755 "$new_gp" "$current_path" || {
+        rm -rf "$tmp"
+        return 1
+    }
+    update_stage_clear
+    ok 'GPush updated successfully. SHA-256 verified.'
+    dim "Rollback backup: $backup_path"
+    kv Previous "$SCRIPT_VERSION"
+    kv Current "$package_version" "$C_GREEN"
+    rm -rf "$tmp"
 )
 levenshtein() {
     local a="${1,,}" b="${2,,}"
@@ -2261,12 +2836,18 @@ levenshtein() {
     local -a prev=() curr=()
     local i j cost del ins rep
 
-    for ((j=0; j<=blen; j++)); do prev[j]=$j; done
+    for ((j=0; j<=blen; j++)); do
+        prev[j]=$j
+    done
 
     for ((i=1; i<=alen; i++)); do
         curr[0]=$i
         for ((j=1; j<=blen; j++)); do
-            if [[ "${a:i-1:1}" == "${b:j-1:1}" ]]; then cost=0; else cost=1; fi
+            if [[ "${a:i-1:1}" == "${b:j-1:1}" ]]; then
+                cost=0
+            else
+                cost=1
+            fi
             del=$(( prev[j] + 1 ))
             ins=$(( curr[j-1] + 1 ))
             rep=$(( prev[j-1] + cost ))
@@ -2282,24 +2863,45 @@ levenshtein() {
 command_suggestion() {
     local value="${1,,}"
     case "$value" in
-        tags) printf '%s' 'gp tag list [project]'; return 0 ;;
-        branches) printf '%s' 'gp branch list [project]'; return 0 ;;
-        remotes) printf '%s' 'gp remote list [project]'; return 0 ;;
-        aliases) printf '%s' 'gp alias list'; return 0 ;;
-        completition|competion) printf '%s' 'gp completion install'; return 0 ;;
+        tags) printf '%s' 'gp tag list [project]'
+        return 0
+        ;;
+        branches) printf '%s' 'gp branch list [project]'
+        return 0
+        ;;
+        remotes) printf '%s' 'gp remote list [project]'
+        return 0
+        ;;
+        aliases) printf '%s' 'gp alias list'
+        return 0
+        ;;
+        completition|competion) printf '%s' 'gp completion install'
+        return 0
+        ;;
     esac
 
     local -a commands=(repo branch tag remote stash cache config alias favorite favorites fav all overview health stats history watch changes detail commit diff branches github menu settings activity project clone recent update completion help version add remove set reset)
     local best='' best_distance=999 distance candidate max_distance
     for candidate in "${commands[@]}"; do
         distance="$(levenshtein "$value" "$candidate")"
-        if (( distance < best_distance )); then best_distance=$distance; best="$candidate"; fi
+        if (( distance < best_distance )); then
+            best_distance=$distance
+            best="$candidate"
+        fi
     done
 
-    if (( ${#value} <= 4 )); then max_distance=1; else max_distance=2; fi
+    if (( ${#value} <= 4 )); then
+        max_distance=1
+    else
+        max_distance=2
+    fi
     (( best_distance <= max_distance )) || return 1
 
-    if [[ "$best" == completion ]]; then printf '%s' 'gp completion install'; else printf 'gp %s ...' "$best"; fi
+    if [[ "$best" == completion ]]; then
+        printf '%s' 'gp completion install'
+    else
+        printf 'gp %s ...' "$best"
+    fi
 }
 
 known_repository_token() {
@@ -2307,7 +2909,9 @@ known_repository_token() {
     query="$1"
     resolved="$(alias_resolve "$query")"
 
-    if [[ -d "$resolved" && -e "$resolved/.git" ]]; then return 0; fi
+    if [[ -d "$resolved" && -e "$resolved/.git" ]]; then
+        return 0
+    fi
 
     if [[ -f "$ALIASES_FILE" ]]; then
         while IFS='|' read -r alias_name alias_path; do
@@ -2489,7 +3093,10 @@ handle_completion() {
 
     case "$action" in
         install)
-            [[ $# -le 1 ]] || { err "Command 'gp completion install' does not accept additional arguments."; return 2; }
+            [[ $# -le 1 ]] || {
+                err "Command 'gp completion install' does not accept additional arguments."
+                return 2
+            }
             write_completion_file || return 1
             touch "$profile" || return 1
             remove_completion_profile_block "$profile"
@@ -2506,7 +3113,10 @@ handle_completion() {
             dim "Reload Bash or run: source '$file'"
             ;;
         status)
-            [[ $# -le 1 ]] || { err "Command 'gp completion status' does not accept additional arguments."; return 2; }
+            [[ $# -le 1 ]] || {
+                err "Command 'gp completion status' does not accept additional arguments."
+                return 2
+            }
             banner
             section 'Bash completion'
             if [[ -f "$file" ]] && [[ -f "$profile" ]] && grep -Fq '# >>> GPush completion >>>' "$profile"; then
@@ -2519,7 +3129,10 @@ handle_completion() {
             kv Registered "$(if [[ -f "$profile" ]] && grep -Fq '# >>> GPush completion >>>' "$profile"; then printf Yes; else printf No; fi)"
             ;;
         uninstall)
-            [[ $# -le 1 ]] || { err "Command 'gp completion uninstall' does not accept additional arguments."; return 2; }
+            [[ $# -le 1 ]] || {
+                err "Command 'gp completion uninstall' does not accept additional arguments."
+                return 2
+            }
             rm -f "$file"
             remove_completion_profile_block "$profile"
             banner
@@ -2532,7 +3145,10 @@ handle_completion() {
             local best='' best_distance=999 candidate distance
             for candidate in "${options[@]}"; do
                 distance="$(levenshtein "$action" "$candidate")"
-                if (( distance < best_distance )); then best_distance=$distance; best="$candidate"; fi
+                if (( distance < best_distance )); then
+                    best_distance=$distance
+                    best="$candidate"
+                fi
             done
             err "Unknown completion command: $action"
             (( best_distance <= 2 )) && dim "Did you mean: gp completion $best"
@@ -2552,27 +3168,43 @@ visual_snapshot() (
     upstream=$(git rev-parse --symbolic-full-name '@{u}' 2>/dev/null || true)
     if [[ -z "$upstream" ]]; then
         remote=$(git config --get "branch.$branch.remote" || current_remote || true)
-        if [[ "$branch" == detached ]]; then state='Detached HEAD'
-        elif [[ -z "$remote" ]]; then state='No remote'
-        elif [[ "$remote" == . ]]; then state='Local upstream'
-        elif git config --get "branch.$branch.merge" >/dev/null; then state='Missing upstream'
-        elif git show-ref --verify --quiet "refs/remotes/$remote/$branch"; then upstream="refs/remotes/$remote/$branch"
+        if [[ "$branch" == detached ]]; then
+            state='Detached HEAD'
+        elif [[ -z "$remote" ]]; then
+            state='No remote'
+        elif [[ "$remote" == . ]]; then
+            state='Local upstream'
+        elif git config --get "branch.$branch.merge" >/dev/null; then
+            state='Missing upstream'
+        elif git show-ref --verify --quiet "refs/remotes/$remote/$branch"; then
+            upstream="refs/remotes/$remote/$branch"
         else state='New remote branch'; fi
     fi
     if [[ -n "$upstream" ]] && counts=$(git rev-list --left-right --count "HEAD...$upstream" 2>/dev/null); then
         read -r ahead behind <<< "$counts"
-        if (( ahead && behind )); then state=Diverged; elif (( ahead )); then state=Ahead; elif (( behind )); then state=Behind; else state='Up to date'; fi
+        if (( ahead && behind )); then
+            state=Diverged
+        elif (( ahead )); then
+            state=Ahead
+        elif (( behind )); then
+            state=Behind
+        else
+            state='Up to date'
+        fi
     fi
     printf '%s\0' "${repository##*/}" "$branch" "$commit" "$behind" "$ahead" "$(if [[ -n "$dirty" ]]; then printf '%s' "$(printf '%s\n' "$dirty" | wc -l)"; else printf 0; fi)" "$state" "$repository"
 )
 visual_rows() {
     local repository
-    for repository in "${CACHED_REPOS[@]}"; do visual_snapshot "$repository" || return 1; done
+    for repository in "${CACHED_REPOS[@]}"; do
+        visual_snapshot "$repository" || return 1
+    done
 }
 visual_bar() {
     local done_count="$1" total="$2" width=20 filled
     filled=$((done_count * width / (total > 0 ? total : 1)))
-    workspace_block_bar "$filled" "$width"; printf ' %s/%s' "$done_count" "$total"
+    workspace_block_bar "$filled" "$width"
+    printf ' %s/%s' "$done_count" "$total"
 }
 visual_status() {
     local filter="${1:-}" repository branch commit behind ahead dirty state path n=0 clean=0
@@ -2580,7 +3212,10 @@ visual_status() {
     local snapshot_file
     load_cache
     if [[ "$filter" == --json ]]; then
-        command -v python3 >/dev/null || { err 'JSON output requires python3.'; return 1; }
+        command -v python3 >/dev/null || {
+            err 'JSON output requires python3.'
+            return 1
+        }
         ( set -o pipefail; visual_rows | python3 -c 'import sys,json; a=sys.stdin.buffer.read().split(b"\0")[:-1]; keys=("repository","branch","lastCommit","behind","ahead","dirtyCount","sync","path"); rows=[]
 for i in range(0,len(a),8):
  r=dict(zip(keys,[v.decode("utf-8",errors="replace") for v in a[i:i+8]]));
@@ -2590,42 +3225,97 @@ print(json.dumps(rows,ensure_ascii=False,indent=2))' )
         return $?
     fi
     snapshot_file=$(mktemp) || return 1
-    if ! visual_rows > "$snapshot_file"; then rm -f -- "$snapshot_file"; err 'Repository inspection failed.'; return 1; fi
+    if ! visual_rows > "$snapshot_file"; then
+        rm -f -- "$snapshot_file"
+        err 'Repository inspection failed.'
+        return 1
+    fi
     mapfile -d '' -t fields < "$snapshot_file"
     rm -f -- "$snapshot_file"
     local columns=100 bulk_width
-    if [[ -t 1 ]]; then columns=$(tput cols 2>/dev/null || printf 100); fi
+    if [[ -t 1 ]]; then
+        columns=$(tput cols 2>/dev/null || printf 100)
+    fi
     [[ "$columns" =~ ^[0-9]+$ ]] || columns=100
     bulk_width=$((columns>1?columns-1:1))
     bulk_table_line Repository Branch 'Last commit' Behind Ahead Worktree Sync ''
     for ((n=0;n+7<${#fields[@]};n+=8)); do
-        repository=${fields[n]}; branch=${fields[n+1]}; commit=${fields[n+2]}; behind=${fields[n+3]}; ahead=${fields[n+4]}; dirty=${fields[n+5]}; state=${fields[n+6]}; path=${fields[n+7]}
-        case "$filter" in --dirty) (( dirty > 0 )) || continue;; --ahead) if [[ "$ahead" == - ]] || (( ahead <= 0 )); then continue; fi;; --behind) if [[ "$behind" == - ]] || (( behind <= 0 )); then continue; fi;; esac
+        repository=${fields[n]}
+        branch=${fields[n+1]}
+        commit=${fields[n+2]}
+        behind=${fields[n+3]}
+        ahead=${fields[n+4]}
+        dirty=${fields[n+5]}
+        state=${fields[n+6]}
+        path=${fields[n+7]}
+        case "$filter" in
+            --dirty)
+                (( dirty > 0 )) || continue
+            ;;
+            --ahead)
+                if [[ "$ahead" == - ]] || (( ahead <= 0 )); then
+                    continue
+                fi
+            ;;
+            --behind)
+                if [[ "$behind" == - ]] || (( behind <= 0 )); then
+                    continue
+                fi
+            ;;
+        esac
         bulk_table_line "$repository" "$branch" "$commit" "$behind" "$ahead" "$dirty changed" "$state" ''
         if [[ "$filter" == dry-run ]]; then
-            if (( dirty )); then dim '  SKIP dirty'; elif [[ "$ahead" == - ]]; then dim '  CHECK upstream'; elif (( ahead && behind )); then dim '  SKIP diverged'; elif (( ahead )); then dim '  PUSH candidate (subject to protection)'; elif (( behind )); then dim '  FAST-FORWARD candidate'; else dim '  No action'; fi
+            if (( dirty )); then
+                dim '  SKIP dirty'
+            elif [[ "$ahead" == - ]]; then
+                dim '  CHECK upstream'
+            elif (( ahead && behind )); then
+                dim '  SKIP diverged'
+            elif (( ahead )); then
+                dim '  PUSH candidate (subject to protection)'
+            elif (( behind )); then
+                dim '  FAST-FORWARD candidate'
+            else
+                dim '  No action'
+            fi
         fi
-        if [[ "$state" == 'Up to date' && "$dirty" == 0 ]]; then clean=$((clean+1)); fi
+        if [[ "$state" == 'Up to date' && "$dirty" == 0 ]]; then
+            clean=$((clean+1))
+        fi
         : "$path"
     done
     if [[ "$filter" == overview || "$filter" == health ]]; then
-        printf '\nClean and synchronized: '; visual_bar "$clean" "${#CACHED_REPOS[@]}"; printf '\n'
+        printf '\nClean and synchronized: '
+        visual_bar "$clean" "${#CACHED_REPOS[@]}"
+        printf '\n'
     fi
 }
 # Overview uses Bash's dynamically scoped local arrays owned by visual_command.
 overview_fetch() {
     local path="$1" remote
-    remote=$(git -C "$path" config --get "branch.$(git -C "$path" symbolic-ref --quiet --short HEAD 2>/dev/null).remote" 2>/dev/null || (cd "$path" && current_remote)) || { warn "No remote: $path"; return 1; }
-    [[ -n "$remote" && "$remote" != . ]] || { warn "No supported remote: $path"; return 1; }
+    remote=$(git -C "$path" config --get "branch.$(git -C "$path" symbolic-ref --quiet --short HEAD 2>/dev/null).remote" 2>/dev/null || (cd "$path" && current_remote)) || {
+        warn "No remote: $path"
+        return 1
+    }
+    [[ -n "$remote" && "$remote" != . ]] || {
+        warn "No supported remote: $path"
+        return 1
+    }
     git -C "$path" fetch --prune "$remote" >/dev/null || return 1
-    if [[ "${2:-false}" != true ]]; then ok "Fetched ${path##*/}"; fi
+    if [[ "${2:-false}" != true ]]; then
+        ok "Fetched ${path##*/}"
+    fi
 }
 overview_refresh_one() {
     local index="$1" path="${overview_paths[$1]}" i
     local -a row=()
     mapfile -d '' -t row < <(visual_snapshot "$path")
-    if (( ${#row[@]} != 8 )); then row=("${path##*/}" - - - - - 'Inspection failed' "$path"); fi
-    for ((i=0;i<8;i++)); do overview_fields[index*8+i]=${row[i]}; done
+    if (( ${#row[@]} != 8 )); then
+        row=("${path##*/}" - - - - - 'Inspection failed' "$path")
+    fi
+    for ((i=0;i<8;i++)); do
+        overview_fields[index*8+i]=${row[i]}
+    done
 }
 # Shared local snapshot, atomically written; explicit refresh never fetches.
 overview_cache_read() {
@@ -2661,16 +3351,22 @@ overview_load() {
             (
                 if [[ "$fetch" == true ]] && ! overview_fetch "${overview_paths[j]}" true > /dev/null 2>&1; then
                     printf '%s\0' "${overview_paths[j]##*/}" - - - - - 'Fetch failed' "${overview_paths[j]}"
-                else visual_snapshot "${overview_paths[j]}"; fi
+                else
+                    visual_snapshot "${overview_paths[j]}"
+                fi
             ) > "$tmp/$j" 2>/dev/null &
             jobs+=("$!")
         done
         for j in "${!jobs[@]}"; do
             rc=0; wait "${jobs[j]}" || rc=$?
             [[ "$interrupted" != true ]] || break
-            row=(); mapfile -d '' -t row < "$tmp/$((i+j))"
-            if ((rc!=0 || ${#row[@]}!=8)); then row=("${overview_paths[i+j]##*/}" - - - - - 'Inspection failed' "${overview_paths[i+j]}"); fi
-            fresh+=("${row[@]}"); completed=$((completed+1))
+            row=()
+            mapfile -d '' -t row < "$tmp/$((i+j))"
+            if ((rc!=0 || ${#row[@]}!=8)); then
+                row=("${overview_paths[i+j]##*/}" - - - - - 'Inspection failed' "${overview_paths[i+j]}")
+            fi
+            fresh+=("${row[@]}")
+            completed=$((completed+1))
             if [[ -t 1 ]]; then
                 printf '\r\033[2K%s%s%s  ' "$C_CYAN" "$label" "$C_RESET"
                 workspace_block_bar "$((completed*24/total))" 24
@@ -2679,49 +3375,97 @@ overview_load() {
         done
         [[ "$interrupted" != true ]] || break
     done
-    if [[ -n "$previous_trap" ]]; then eval "$previous_trap"; else trap - INT; fi
+    if [[ -n "$previous_trap" ]]; then
+        eval "$previous_trap"
+    else
+        trap - INT
+    fi
     rm -rf -- "$tmp"
     if [[ -t 1 ]]; then printf '\r\033[2K'; fi
-    if [[ "$interrupted" == true ]]; then warn 'Operation cancelled by user.'; return 130; fi
-    overview_fields=("${fresh[@]}"); overview_cache_write
+    if [[ "$interrupted" == true ]]; then
+        warn 'Operation cancelled by user.'
+        return 130
+    fi
+    overview_fields=("${fresh[@]}")
+    overview_cache_write
 }
 workspace_health_screen() {
     local -a overview_paths=() overview_fields=() labels=() targets=()
     local i clean total choice
-    load_cache; overview_paths=("${CACHED_REPOS[@]}"); total=${#overview_paths[@]}
-    if ((total==0)); then warn 'No cached repositories.'; return; fi
+    load_cache
+    overview_paths=("${CACHED_REPOS[@]}")
+    total=${#overview_paths[@]}
+    if ((total==0)); then
+        warn 'No cached repositories.'
+        return
+    fi
     overview_cache_read || overview_load false || return
     while true; do
         clean=0; labels=(); targets=()
         for i in "${!overview_paths[@]}"; do
-            if [[ "${overview_fields[i*8+6]}" == 'Up to date' && "${overview_fields[i*8+5]}" == 0 ]]; then clean=$((clean+1)); continue; fi
-            labels+=("${overview_fields[i*8]}  |  ${overview_fields[i*8+6]} / ${overview_fields[i*8+5]} changed"); targets+=("$i")
+            if [[ "${overview_fields[i*8+6]}" == 'Up to date' && "${overview_fields[i*8+5]}" == 0 ]]; then
+                clean=$((clean+1))
+                continue
+            fi
+            labels+=("${overview_fields[i*8]}  |  ${overview_fields[i*8+6]} / ${overview_fields[i*8+5]} changed")
+            targets+=("$i")
         done
         labels+=('Refresh local status' 'Back')
         workspace_pick "Workspace health / $clean of $total synchronized" false "${labels[@]}" || return 0
         choice=${WORKSPACE_SELECTION[0]}
-        if ((choice==${#targets[@]}+1)); then return; fi
-        if ((choice==${#targets[@]})); then workspace_clear_screen; overview_load false || true; continue; fi
-        i=${targets[choice]}; workspace_menu_repo "${overview_paths[i]}"; overview_refresh_one "$i"; overview_cache_write
+        if ((choice==${#targets[@]}+1)); then
+            return
+        fi
+        if ((choice==${#targets[@]})); then
+            workspace_clear_screen
+            overview_load false || true
+            continue
+        fi
+        i=${targets[choice]}
+        workspace_menu_repo "${overview_paths[i]}"
+        overview_refresh_one "$i"
+        overview_cache_write
     done
 }
 overview_frame() {
     local cols lines page first last i n marker clean=0
-    cols=$(tput cols 2>/dev/null || printf 100); lines=$(tput lines 2>/dev/null || printf 25)
-    [[ "$cols" =~ ^[0-9]+$ ]] || cols=100; [[ "$lines" =~ ^[0-9]+$ ]] || lines=25
-    page=$((lines>12?lines-12:1)); first=$((selected-page/2)); ((first>=0)) || first=0
-    if ((first+page>${#overview_paths[@]})); then first=$((${#overview_paths[@]}-page)); ((first>=0)) || first=0; fi
-    last=$((first+page)); ((last<=${#overview_paths[@]})) || last=${#overview_paths[@]}
-    for ((i=0;i<${#overview_paths[@]};i++)); do n=$((i*8)); if [[ "${overview_fields[n+6]}" == 'Up to date' && "${overview_fields[n+5]}" == 0 ]]; then clean=$((clean+1)); fi; done
-    printf '\033[H\033[2J'; info "  GPUSH / $SCRIPT_VERSION"
+    cols=$(tput cols 2>/dev/null || printf 100)
+    lines=$(tput lines 2>/dev/null || printf 25)
+    [[ "$cols" =~ ^[0-9]+$ ]] || cols=100
+    [[ "$lines" =~ ^[0-9]+$ ]] || lines=25
+    page=$((lines>12?lines-12:1))
+    first=$((selected-page/2))
+    ((first>=0)) || first=0
+    if ((first+page>${#overview_paths[@]})); then
+        first=$((${#overview_paths[@]}-page))
+        ((first>=0)) || first=0
+    fi
+    last=$((first+page))
+    ((last<=${#overview_paths[@]})) || last=${#overview_paths[@]}
+    for ((i=0;i<${#overview_paths[@]};i++)); do
+        n=$((i*8))
+        if [[ "${overview_fields[n+6]}" == 'Up to date' && "${overview_fields[n+5]}" == 0 ]]; then
+            clean=$((clean+1))
+        fi
+    done
+    printf '\033[H\033[2J'
+    info "  GPUSH / $SCRIPT_VERSION"
     printf '%.*s\n' "$((cols-1))" "Workspace overview | ${#overview_paths[@]} repositories | $clean synchronized"
     printf '%s%.*s%s\n' "$C_GRAY" "$((cols-1))" 'Local snapshot | R refresh | F/A fetch' "$C_RESET"
     local bulk_width=$((cols>3?cols-3:1))
-    printf '  '; bulk_table_line Repository Branch 'Last commit' Behind Ahead Worktree Sync Result
+    printf '  '
+    bulk_table_line Repository Branch 'Last commit' Behind Ahead Worktree Sync Result
     for ((i=first;i<last;i++)); do
         n=$((i*8)); marker=' '
-        if ((i==selected)); then marker='>'; if [[ -n "$C_CYAN" ]]; then printf '\033[7m'; fi; fi
-        printf '%s ' "$marker"; bulk_table_line "${overview_fields[n]}" "${overview_fields[n+1]}" "${overview_fields[n+2]}" "${overview_fields[n+3]}" "${overview_fields[n+4]}" "${overview_fields[n+5]} changed" "${overview_fields[n+6]}" ''; printf '%s' "$C_RESET"
+        if ((i==selected)); then
+            marker='>'
+            if [[ -n "$C_CYAN" ]]; then
+                printf '\033[7m'
+            fi
+        fi
+        printf '%s ' "$marker"
+        bulk_table_line "${overview_fields[n]}" "${overview_fields[n+1]}" "${overview_fields[n+2]}" "${overview_fields[n+3]}" "${overview_fields[n+4]}" "${overview_fields[n+5]} changed" "${overview_fields[n+6]}" ''
+        printf '%s' "$C_RESET"
     done
     printf '%d/%d | %s\n' "$((selected+1))" "${#overview_paths[@]}" "${overview_fields[selected*8+6]}"
     printf '%s%.*s%s\n' "$C_GRAY" "$((cols-1))" 'Up/Down Select | Enter Open | F/A Fetch' "$C_RESET"
@@ -2734,7 +3478,11 @@ workspace_run_operation() {
     previous_trap=$(trap -p INT)
     trap 'interrupted=true' INT
     ( trap 'exit 130' INT; "$@" ) || operation_rc=$?
-    if [[ -n "$previous_trap" ]]; then eval "$previous_trap"; else trap - INT; fi
+    if [[ -n "$previous_trap" ]]; then
+        eval "$previous_trap"
+    else
+        trap - INT
+    fi
     if [[ "$interrupted" == true || "$operation_rc" == 130 ]]; then
         warn 'Operation cancelled by user.'
         return 130
@@ -2742,31 +3490,53 @@ workspace_run_operation() {
     return "$operation_rc"
 }
 workspace_clear_screen() {
-    if [[ -t 1 ]]; then printf '\033[H\033[2J'; fi
+    if [[ -t 1 ]]; then
+        printf '\033[H\033[2J'
+    fi
 }
 workspace_pause() {
     if [[ -t 0 && -t 1 ]]; then
         printf '\n'; dim 'Esc  Back    Ctrl+C  Exit'
-        while true; do workspace_key; [[ "$WORKSPACE_KEY" != esc ]] || break; done
+        while true; do
+            workspace_key
+            [[ "$WORKSPACE_KEY" != esc ]] || break
+        done
     fi
 }
-workspace_log() { mkdir -p "$CONFIG_DIR"; printf '%s %s %s\n' "$(date -Iseconds)" "$1" "$2" >> "$CONFIG_DIR/history.log"; }
+workspace_log() {
+    mkdir -p "$CONFIG_DIR"
+    printf '%s %s %s\n' "$(date -Iseconds)" "$1" "$2" >> "$CONFIG_DIR/history.log"
+}
 # Shared keyboard picker: navigation uses only the supplied in-memory rows.
 workspace_key() {
     local suffix='' next_key='' terminal_mode answer=''
-    terminal_mode=$(stty -g) || { WORKSPACE_KEY=esc; return; }
+    terminal_mode=$(stty -g) || {
+        WORKSPACE_KEY=esc
+        return
+    }
     stty intr undef
     if [[ ${1:-} == resize ]]; then
-        if ! IFS= read -rsn1 -t 0.25 WORKSPACE_KEY; then stty "$terminal_mode"; WORKSPACE_KEY=ignored; return; fi
+        if ! IFS= read -rsn1 -t 0.25 WORKSPACE_KEY; then
+            stty "$terminal_mode"
+            WORKSPACE_KEY=ignored
+            return
+        fi
     elif ! IFS= read -rsn1 WORKSPACE_KEY; then
-        stty "$terminal_mode"; WORKSPACE_KEY=esc; return
+        stty "$terminal_mode"
+        WORKSPACE_KEY=esc
+        return
     fi
     if [[ "$WORKSPACE_KEY" == $'\003' ]]; then
         printf '\n'; warn 'Exit GPush?'
         printf '%s[Y, Enter, Ctrl+C] - Yes%s    |   %s[N, ESC] - No%s\n' "$C_GREEN" "$C_RESET" "$C_RED" "$C_RESET"
         while IFS= read -rsn1 answer; do
             case "$answer" in
-                y|Y|''|$'\003') stty "$terminal_mode"; if [[ "$BASHPID" != "$$" ]]; then kill -TERM "$$"; fi; exit 130;;
+                y|Y|''|$'\003') stty "$terminal_mode"
+                if [[ "$BASHPID" != "$$" ]]; then
+                    kill -TERM "$$"
+                fi
+                exit 130
+                ;;
                 n|N|$'\033') break;;
             esac
         done
@@ -2782,8 +3552,29 @@ workspace_key() {
                 [[ "$next_key" == [@-~] ]] && break
             done
         fi
-        case "$suffix" in '['*A|OA) WORKSPACE_KEY=up;; '['*B|OB) WORKSPACE_KEY=down;; '['*C|OC) WORKSPACE_KEY=right;; '['*D|OD) WORKSPACE_KEY=left;; '') WORKSPACE_KEY=esc;; *) WORKSPACE_KEY=ignored;; esac
-    elif [[ -z "$WORKSPACE_KEY" ]]; then WORKSPACE_KEY=enter; fi
+        case "$suffix" in
+            '['*A|OA)
+                WORKSPACE_KEY=up
+            ;;
+            '['*B|OB)
+                WORKSPACE_KEY=down
+            ;;
+            '['*C|OC)
+                WORKSPACE_KEY=right
+            ;;
+            '['*D|OD)
+                WORKSPACE_KEY=left
+            ;;
+            '')
+                WORKSPACE_KEY=esc
+            ;;
+            *)
+                WORKSPACE_KEY=ignored
+            ;;
+        esac
+    elif [[ -z "$WORKSPACE_KEY" ]]; then
+        WORKSPACE_KEY=enter
+    fi
 }
 workspace_pick() {
     local title="$1" multiple="$2"; shift 2
@@ -2797,49 +3588,73 @@ workspace_pick() {
         'View classic command syntax' 'Return to your terminal'
     )
     screen_title="$title"
-    if [[ "$title" == *' / Main menu' ]]; then screen_title='Interactive workspace'; fi
+    if [[ "$title" == *' / Main menu' ]]; then
+        screen_title='Interactive workspace'
+    fi
     WORKSPACE_SELECTION=()
     (( ${#rows[@]} )) || return 1
-    if [[ -n "$C_CYAN" ]]; then accent=$'\033[1;36m'; highlight=$'\033[30;46m'; fi
+    if [[ -n "$C_CYAN" ]]; then
+        accent=$'\033[1;36m'
+        highlight=$'\033[30;46m'
+    fi
     while true; do
         visible=()
         for i in "${!rows[@]}"; do
-            if [[ "${rows[i],,}" == *"${query,,}"* ]]; then visible+=("$i"); fi
+            if [[ "${rows[i],,}" == *"${query,,}"* ]]; then
+                visible+=("$i")
+            fi
         done
-        if (( selected >= ${#visible[@]} )); then selected=0; fi
+        if (( selected >= ${#visible[@]} )); then
+            selected=0
+        fi
         height=$(tput lines 2>/dev/null || printf 24)
         width=$(tput cols 2>/dev/null || printf 80)
         [[ "$height" =~ ^[0-9]+$ ]] || height=24
         [[ "$width" =~ ^[0-9]+$ ]] || width=80
-        width=$((width>110?110:width-1)); ((width>=1)) || width=1
+        width=$((width>110?110:width-1))
+        ((width>=1)) || width=1
         content_width=$((width>6?width-4:1))
         repo_column=0
         if [[ "$title" == 'Select repository' || "$title" == Settings ]]; then
             for line in "${rows[@]}"; do
                 repo_name=${line%%  |  *}
-                if (( ${#repo_name} > repo_column )); then repo_column=${#repo_name}; fi
+                if (( ${#repo_name} > repo_column )); then
+                    repo_column=${#repo_name}
+                fi
             done
-            left_width=$((content_width*35/100)); (( left_width >= 10 )) || left_width=10
+            left_width=$((content_width*35/100))
+            (( left_width >= 10 )) || left_width=10
             (( repo_column >= 10 )) || repo_column=10
-            if (( repo_column > left_width )); then repo_column=$left_width; fi
+            if (( repo_column > left_width )); then
+                repo_column=$left_width
+            fi
         fi
         reserved_rows=10
-        if [[ "$multiple" == true ]]; then reserved_rows=$((reserved_rows+1)); fi
+        if [[ "$multiple" == true ]]; then
+            reserved_rows=$((reserved_rows+1))
+        fi
         show_logo=false
         if [[ "$title" == *' / Main menu' ]] && ((width>=48 && height>=reserved_rows+8+${#rows[@]})); then
             show_logo=true
             reserved_rows=$((reserved_rows+8))
         fi
-        limit=$((height-reserved_rows)); ((limit>=1)) || limit=1
+        limit=$((height-reserved_rows))
+        ((limit>=1)) || limit=1
         # Keep a full final viewport instead of shrinking to the last few rows.
         start=$((selected / limit * limit))
-        if ((start+limit>${#visible[@]})); then start=$((${#visible[@]}-limit)); fi
+        if ((start+limit>${#visible[@]})); then
+            start=$((${#visible[@]}-limit))
+        fi
         ((start>=0)) || start=0
-        printf -v bar '%*s' "$width" ''; bar=${bar// /─}
-        if [[ "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" != *[Uu][Tt][Ff]* ]]; then bar=${bar//─/-}; fi
+        printf -v bar '%*s' "$width" ''
+        bar=${bar// /─}
+        if [[ "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" != *[Uu][Tt][Ff]* ]]; then
+            bar=${bar//─/-}
+        fi
         if [[ "$first_frame" == true ]] || ((width!=previous_width || height!=previous_height)); then
             printf '\033[H\033[2J'; first_frame=false
-            previous_width=$width; previous_height=$height
+            previous_width=$width
+            previous_height=$height
         else printf '\033[H'; fi
         if [[ "$show_logo" == true ]]; then
             printf '\033[2K\n'
@@ -2859,17 +3674,27 @@ GPUSH_LOGO
         printf '\033[2K%s%s%s\n' "$muted" "$bar" "$C_RESET"
         printf '\033[2K%s%.*s%s\n' "$muted" "$width" "  FILTER  ${query:-type to search}    |    ${#visible[@]} / ${#rows[@]}" "$C_RESET"
         if (( repo_column > 0 )); then
-            if [[ "$title" == Settings ]]; then printf -v line '    %-*s  |  Value' "$repo_column" Setting; else printf -v line '    %-*s  |  Path' "$repo_column" Repository; fi
+            if [[ "$title" == Settings ]]; then
+                printf -v line '    %-*s  |  Value' "$repo_column" Setting
+            else
+                printf -v line '    %-*s  |  Path' "$repo_column" Repository
+            fi
             printf '\033[2K%s%.*s%s\n' "$muted" "$width" "$line" "$C_RESET"
         else printf '\033[2K\n'; fi
         for ((i=start; i<start+limit && i<${#visible[@]}; i++)); do
-            key=${visible[i]}; line=${rows[key]//[[:cntrl:]]/?}
+            key=${visible[i]}
+            line=${rows[key]//[[:cntrl:]]/?}
             if (( repo_column > 0 )) && [[ "$line" == *'  |  '* ]]; then
-                repo_name=${line%%  |  *}; repo_path=${line#*  |  }
+                repo_name=${line%%  |  *}
+                repo_path=${line#*  |  }
                 printf -v line '%-*.*s  |  %s' "$repo_column" "$repo_column" "$repo_name" "$repo_path"
             fi
             if [[ "$multiple" == true ]]; then
-                if [[ ${marks[key]:-0} == 1 ]]; then line="[x] $line"; else line="[ ] $line"; fi
+                if [[ ${marks[key]:-0} == 1 ]]; then
+                    line="[x] $line"
+                else
+                    line="[ ] $line"
+                fi
             fi
             if [[ "$title" == *' / Main menu' ]] && ((width>=76)); then
                 desc=${descriptions[key]:-}; left_width=34
@@ -2882,10 +3707,15 @@ GPUSH_LOGO
                 printf '    %.*s\n' "$content_width" "$line"
             fi
         done
-        if (( ${#visible[@]} == 0 )); then printf '\033[2K  No matching items.\n'; fi
+        if (( ${#visible[@]} == 0 )); then
+            printf '\033[2K  No matching items.\n'
+        fi
         printf '\033[2K%s%s%s\n' "$muted" "$bar" "$C_RESET"
         if [[ "$multiple" == true ]]; then
-            marked=0; for key in "${!marks[@]}"; do marked=$((marked+marks[key])); done
+            marked=0
+            for key in "${!marks[@]}"; do
+                marked=$((marked+marks[key]))
+            done
             printf '\033[2K%s%.*s%s\n' "$accent" "$width" "  MARKED  $marked" "$C_RESET"
             printf '\033[2K%s%.*s%s\n' "$muted" "$width" '  Up/Down Navigate  Enter Confirm  Esc Back' "$C_RESET"
             printf '\033[2K%s%.*s%s\n' "$muted" "$width" '  Space Mark  A All  X Clear  / Search' "$C_RESET"
@@ -2900,25 +3730,77 @@ GPUSH_LOGO
             # A timeout only triggers a redraw when dimensions actually changed.
             local current_size
             current_size=$(stty size 2>/dev/null || printf '%s %s' "$height" "$((width+1))")
-            if [[ "$current_size" != "$height "* ]]; then break; fi
+            if [[ "$current_size" != "$height "* ]]; then
+                break
+            fi
             local current_cols=${current_size##* }
-            if [[ "$current_cols" =~ ^[0-9]+$ ]] && (( (current_cols>110?110:current_cols-1) != width )); then break; fi
+            if [[ "$current_cols" =~ ^[0-9]+$ ]] && (( (current_cols>110?110:current_cols-1) != width )); then
+                break
+            fi
         done
         case "$WORKSPACE_KEY" in
             esc) return 1;;
-            up) if (( ${#visible[@]} )); then selected=$(( (selected+${#visible[@]}-1)%${#visible[@]} )); fi;;
-            down) if (( ${#visible[@]} )); then selected=$(( (selected+1)%${#visible[@]} )); fi;;
-            /) read -r -p 'Search (empty resets): ' query || return 1; selected=0;;
-            ' ') if [[ "$multiple" == true ]]; then if (( ${#visible[@]} )); then key=${visible[selected]}; marks[key]=$((1-${marks[key]:-0})); fi; else query+=' '; selected=0; fi;;
-            a|A) if [[ "$multiple" == true ]]; then for key in "${visible[@]}"; do marks[key]=1; done; else query+="$WORKSPACE_KEY"; selected=0; fi;;
-            x|X) if [[ "$multiple" == true ]]; then marks=(); else query+="$WORKSPACE_KEY"; selected=0; fi;;
+            up) if (( ${#visible[@]} )); then
+                selected=$(( (selected+${#visible[@]}-1)%${#visible[@]} ))
+            fi
+            ;;
+            down) if (( ${#visible[@]} )); then
+                selected=$(( (selected+1)%${#visible[@]} ))
+            fi
+            ;;
+            /) read -r -p 'Search (empty resets): ' query || return 1
+            selected=0
+            ;;
+            ' ') if [[ "$multiple" == true ]]; then
+                if (( ${#visible[@]} )); then
+                    key=${visible[selected]}
+                    marks[key]=$((1-${marks[key]:-0}))
+                fi
+            else
+                query+=' '
+                selected=0
+            fi
+            ;;
+            a|A) if [[ "$multiple" == true ]]; then
+                for key in "${visible[@]}"; do
+                    marks[key]=1
+                done
+            else
+                query+="$WORKSPACE_KEY"
+                selected=0
+            fi
+            ;;
+            x|X) if [[ "$multiple" == true ]]; then
+                marks=()
+            else
+                query+="$WORKSPACE_KEY"
+                selected=0
+            fi
+            ;;
             enter) if [[ "$multiple" == true ]]; then
-                for i in "${!rows[@]}"; do if [[ ${marks[i]:-0} == 1 ]]; then WORKSPACE_SELECTION+=("$i"); fi; done
-            elif (( ${#visible[@]} )); then WORKSPACE_SELECTION=("${visible[selected]}"); fi
-            if (( ${#WORKSPACE_SELECTION[@]} == 0 && ${#visible[@]} > 0 )); then WORKSPACE_SELECTION=("${visible[selected]}"); fi
-            if (( ${#WORKSPACE_SELECTION[@]} )); then return 0; fi;;
-            $'\177'|$'\b') query=${query%?}; selected=0;;
-            *) if [[ "$multiple" != true && "$WORKSPACE_KEY" == [[:print:]] ]]; then query+="$WORKSPACE_KEY"; selected=0; fi;;
+                for i in "${!rows[@]}"; do
+                    if [[ ${marks[i]:-0} == 1 ]]; then
+                        WORKSPACE_SELECTION+=("$i")
+                    fi
+                done
+            elif (( ${#visible[@]} )); then
+                WORKSPACE_SELECTION=("${visible[selected]}")
+            fi
+            if (( ${#WORKSPACE_SELECTION[@]} == 0 && ${#visible[@]} > 0 )); then
+                WORKSPACE_SELECTION=("${visible[selected]}")
+            fi
+            if (( ${#WORKSPACE_SELECTION[@]} )); then
+                return 0
+            fi
+            ;;
+            $'\177'|$'\b') query=${query%?}
+            selected=0
+            ;;
+            *) if [[ "$multiple" != true && "$WORKSPACE_KEY" == [[:print:]] ]]; then
+                query+="$WORKSPACE_KEY"
+                selected=0
+            fi
+            ;;
         esac
     done
 }
@@ -2929,16 +3811,27 @@ workspace_view_lines() {
     while true; do
         height=$(tput lines 2>/dev/null || printf 24)
         [[ "$height" =~ ^[0-9]+$ ]] || height=24
-        page=$((height>8?height-8:1)); last=$((offset+page))
-        if (( last > ${#content[@]} )); then last=${#content[@]}; fi
+        page=$((height>8?height-8:1))
+        last=$((offset+page))
+        if (( last > ${#content[@]} )); then
+            last=${#content[@]}
+        fi
         printf '\033[H\033[2J'; section "$title"
-        for ((i=offset;i<last;i++)); do printf '%s%s\n' "${content[i]}" "$C_RESET"; done
+        for ((i=offset;i<last;i++)); do
+            printf '%s%s\n' "${content[i]}" "$C_RESET"
+        done
         dim "Lines $((offset+1))-$last / ${#content[@]} | Up/Down: scroll | Esc: back"
         workspace_key
         case "$WORKSPACE_KEY" in
             esc) return 0;;
-            up) if ((offset>0)); then offset=$((offset-1)); fi;;
-            down) if ((offset+page<${#content[@]})); then offset=$((offset+1)); fi;;
+            up) if ((offset>0)); then
+                offset=$((offset-1))
+            fi
+            ;;
+            down) if ((offset+page<${#content[@]})); then
+                offset=$((offset+1))
+            fi
+            ;;
         esac
     done
 }
@@ -2961,25 +3854,69 @@ workspace_diff() (
     mapfile -d '' -t tracked < "$temp"
     git ls-files --others --exclude-standard -z > "$temp" || return 1
     mapfile -d '' -t untracked < "$temp"
-    if (( ${#staged[@]} + ${#tracked[@]} + ${#untracked[@]} == 0 )); then ok 'No changes.'; workspace_pause; return 0; fi
+    if (( ${#staged[@]} + ${#tracked[@]} + ${#untracked[@]} == 0 )); then
+        ok 'No changes.'
+        workspace_pause
+        return 0
+    fi
     mapfile -d '' -t files < <(printf '%s\0' "${staged[@]}" "${tracked[@]}" "${untracked[@]}" | sort -zu)
     for file in "${files[@]}"; do
-        flag=''; for name in "${staged[@]}"; do if [[ "$file" == "$name" ]]; then flag=S; break; fi; done
-        for name in "${tracked[@]}"; do if [[ "$file" == "$name" ]]; then flag+=M; break; fi; done
-        for name in "${untracked[@]}"; do if [[ "$file" == "$name" ]]; then flag='?'; break; fi; done
+        flag=''
+        for name in "${staged[@]}"; do
+            if [[ "$file" == "$name" ]]; then
+                flag=S
+                break
+            fi
+        done
+        for name in "${tracked[@]}"; do
+            if [[ "$file" == "$name" ]]; then
+                flag+=M
+                break
+            fi
+        done
+        for name in "${untracked[@]}"; do
+            if [[ "$file" == "$name" ]]; then
+                flag='?'
+                break
+            fi
+        done
         rows+=("[$flag] $file")
     done
     while workspace_pick "Diff / ${path##*/}" false "${rows[@]}"; do
-        file=${files[WORKSPACE_SELECTION[0]]}; diff_text=''; flag=''
-        for name in "${untracked[@]}"; do if [[ "$file" == "$name" ]]; then flag='?'; break; fi; done
+        file=${files[WORKSPACE_SELECTION[0]]}
+        diff_text=''
+        flag=''
+        for name in "${untracked[@]}"; do
+            if [[ "$file" == "$name" ]]; then
+                flag='?'
+                break
+            fi
+        done
         if [[ "$flag" == '?' ]]; then
-            rc=0; diff_text=$(git --no-pager diff --no-index --no-ext-diff --no-textconv "--color=$color" -- /dev/null "./$file") || rc=$?
-            if ((rc > 1)); then err 'Cannot read untracked file.'; workspace_pause; continue; fi
+            rc=0
+            diff_text=$(git --no-pager diff --no-index --no-ext-diff --no-textconv "--color=$color" -- /dev/null "./$file") || rc=$?
+            if ((rc > 1)); then
+                err 'Cannot read untracked file.'
+                workspace_pause
+                continue
+            fi
         else
-            part=$(git --literal-pathspecs --no-pager diff --no-ext-diff --no-textconv "--color=$color" --cached -- "$file") || { err 'Cannot read staged diff.'; workspace_pause; continue; }
-            if [[ -n "$part" ]]; then diff_text=$'--- Staged changes ---\n'"$part"$'\n'; fi
-            part=$(git --literal-pathspecs --no-pager diff --no-ext-diff --no-textconv "--color=$color" -- "$file") || { err 'Cannot read working tree diff.'; workspace_pause; continue; }
-            if [[ -n "$part" ]]; then diff_text+=$'--- Working tree changes ---\n'"$part"; fi
+            part=$(git --literal-pathspecs --no-pager diff --no-ext-diff --no-textconv "--color=$color" --cached -- "$file") || {
+                err 'Cannot read staged diff.'
+                workspace_pause
+                continue
+            }
+            if [[ -n "$part" ]]; then
+                diff_text=$'--- Staged changes ---\n'"$part"$'\n'
+            fi
+            part=$(git --literal-pathspecs --no-pager diff --no-ext-diff --no-textconv "--color=$color" -- "$file") || {
+                err 'Cannot read working tree diff.'
+                workspace_pause
+                continue
+            }
+            if [[ -n "$part" ]]; then
+                diff_text+=$'--- Working tree changes ---\n'"$part"
+            fi
         fi
         mapfile -t lines <<< "${diff_text:-No changes remain in this file. Reopen the diff to refresh.}"
         workspace_view_lines "Diff / ${file//[[:cntrl:]]/?}" "${lines[@]}"
@@ -2990,16 +3927,24 @@ workspace_commit() (
     local -a files=() chosen=() untracked=() new_files=() staged=() tracked=() rows=()
     local flag
     cd "$path" || return 1
-    [[ -t 0 && -t 1 ]] || { err 'Interactive terminal required.'; return 2; }
+    [[ -t 0 && -t 1 ]] || {
+        err 'Interactive terminal required.'
+        return 2
+    }
     for marker in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply sequencer BISECT_START; do
         marker_path=$(git rev-parse --git-path "$marker") || return 1
-        [[ ! -e "$marker_path" ]] || { err 'Git operation in progress.'; return 1; }
+        [[ ! -e "$marker_path" ]] || {
+            err 'Git operation in progress.'
+            return 1
+        }
     done
     git symbolic-ref --quiet HEAD >/dev/null || return 1
     index_before=$(git write-tree) || return 1
     temp=$(mktemp) || return 1
     trap 'rm -f -- "$temp"' EXIT
-    { git diff --no-renames --name-only -z && git diff --cached --no-renames --name-only -z && git ls-files --others --exclude-standard -z; } > "$temp" || return 1
+    {
+        git diff --no-renames --name-only -z && git diff --cached --no-renames --name-only -z && git ls-files --others --exclude-standard -z
+    } > "$temp" || return 1
     mapfile -d '' -t files < <(sort -zu "$temp")
     git ls-files --others --exclude-standard -z > "$temp" || return 1
     mapfile -d '' -t untracked < "$temp"
@@ -3007,37 +3952,80 @@ workspace_commit() (
     mapfile -d '' -t staged < "$temp"
     git diff --no-renames --name-only -z -- > "$temp" || return 1
     mapfile -d '' -t tracked < "$temp"
-    (( ${#files[@]} > 0 )) || { ok 'No changes.'; return 0; }
+    (( ${#files[@]} > 0 )) || {
+        ok 'No changes.'
+        return 0
+    }
     for file in "${files[@]}"; do
-        flag=''; for name in "${staged[@]}"; do if [[ "$file" == "$name" ]]; then flag=S; break; fi; done
-        for name in "${tracked[@]}"; do if [[ "$file" == "$name" ]]; then flag+=M; break; fi; done
-        for name in "${untracked[@]}"; do if [[ "$file" == "$name" ]]; then flag='?'; break; fi; done
+        flag=''
+        for name in "${staged[@]}"; do
+            if [[ "$file" == "$name" ]]; then
+                flag=S
+                break
+            fi
+        done
+        for name in "${tracked[@]}"; do
+            if [[ "$file" == "$name" ]]; then
+                flag+=M
+                break
+            fi
+        done
+        for name in "${untracked[@]}"; do
+            if [[ "$file" == "$name" ]]; then
+                flag='?'
+                break
+            fi
+        done
         rows+=("[$flag] $file")
     done
     workspace_pick "Commit manager / ${path##*/}" true "${rows[@]}" || return 0
-    for index in "${WORKSPACE_SELECTION[@]}"; do chosen+=("${files[index]}"); done
+    for index in "${WORKSPACE_SELECTION[@]}"; do
+        chosen+=("${files[index]}")
+    done
     for file in "${chosen[@]}"; do
         name=${file##*/}; name=${name,,}
-        case "$name" in .env.example|.env.sample|.env.template) ;; .env|.env.*|*.pem|*.key|*.pfx|*.p12|id_rsa|id_ed25519|id_ecdsa|id_dsa|secrets*|credentials*|service-account*.json) err "Risky file: $file"; return 1;; esac
-        if [[ -f "$file" ]] && (( $(wc -c < "$file") >= LARGE_FILE_MB * 1048576 )); then err "Large file: $file"; return 1; fi
+        case "$name" in
+            .env.example|.env.sample|.env.template)
+            ;;
+            .env|.env.*|*.pem|*.key|*.pfx|*.p12|id_rsa|id_ed25519|id_ecdsa|id_dsa|secrets*|credentials*|service-account*.json)
+                err "Risky file: $file"
+                return 1
+            ;;
+        esac
+        if [[ -f "$file" ]] && (( $(wc -c < "$file") >= LARGE_FILE_MB * 1048576 )); then
+            err "Large file: $file"
+            return 1
+        fi
     done
     section "Selected files (${#chosen[@]})"
-    for file in "${chosen[@]}"; do printf '  %s\n' "${file//[[:cntrl:]]/?}"; done
+    for file in "${chosen[@]}"; do
+        printf '  %s\n' "${file//[[:cntrl:]]/?}"
+    done
     read -r -p 'Commit message: ' message || return 0
     [[ -n "${message//[[:space:]]/}" ]] || return 0
     confirm 'Commit selected working-tree versions? Other staged files stay staged.' || return 0
     index_now=$(git write-tree) || return 1
-    if [[ "$index_now" != "$index_before" ]]; then err 'Staging area changed. Restart commit manager.'; return 1; fi
+    if [[ "$index_now" != "$index_before" ]]; then
+        err 'Staging area changed. Restart commit manager.'
+        return 1
+    fi
     for file in "${chosen[@]}"; do
         for name in "${untracked[@]}"; do
-            if [[ "$file" == "$name" ]]; then new_files+=("$file"); break; fi
+            if [[ "$file" == "$name" ]]; then
+                new_files+=("$file")
+                break
+            fi
         done
     done
-    if (( ${#new_files[@]} )); then git --literal-pathspecs add -- "${new_files[@]}" || return 1; fi
+    if (( ${#new_files[@]} )); then
+        git --literal-pathspecs add -- "${new_files[@]}" || return 1
+    fi
     git --literal-pathspecs commit --only -m "$message" -- "${chosen[@]}" || return 1
     workspace_log commit "$path"
     if confirm 'Push committed changes now (leave other files untouched)?'; then
-        if confirm 'Allow pushing to protected branches? (main/master/release)'; then allow=true; fi
+        if confirm 'Allow pushing to protected branches? (main/master/release)'; then
+            allow=true
+        fi
         bulk_sync "$path" "$allow" '' true || return 1
         workspace_log push "$path"
     fi
@@ -3052,33 +4040,59 @@ workspace_branches() (
         dim '[N] New  [S] Switch  [D] Delete merged  [G] Graph  [Q/Esc] Back'
         workspace_key; action=$WORKSPACE_KEY
         case "${action,,}" in
-            n|s|d) if [[ "${action,,}" == n ]]; then read -r -p 'Branch name: ' branch || return 0; else
+            n|s|d) if [[ "${action,,}" == n ]]; then
+                read -r -p 'Branch name: ' branch || return 0
+            else
                 mapfile -t branches < <(git -C "$path" for-each-ref --format='%(refname:short)' refs/heads)
                 workspace_pick 'Select local branch' false "${branches[@]}" || continue
                 branch=${branches[WORKSPACE_SELECTION[0]]}
                 fi
-                git check-ref-format --branch "$branch" >/dev/null 2>&1 || { err 'Invalid branch name.'; continue; }
+                git check-ref-format --branch "$branch" >/dev/null 2>&1 || {
+                    err 'Invalid branch name.'
+                    continue
+                }
                 [[ "$branch" != -* ]] || continue
                 case "${action,,}" in
-                    n) if confirm "Create $branch?"; then git -C "$path" switch -c "$branch" && workspace_log branch-new "$path"; fi;;
-                    s) if confirm "Switch to $branch?"; then git -C "$path" switch "$branch" && workspace_log branch-switch "$path"; fi;;
-                    d) if protected_branch "$branch"; then warn 'Protected branch.'; elif confirm "Delete merged branch $branch?"; then git -C "$path" branch -d -- "$branch" && workspace_log branch-delete "$path"; fi;;
+                    n) if confirm "Create $branch?"; then
+                        git -C "$path" switch -c "$branch" && workspace_log branch-new "$path"
+                    fi
+                    ;;
+                    s) if confirm "Switch to $branch?"; then
+                        git -C "$path" switch "$branch" && workspace_log branch-switch "$path"
+                    fi
+                    ;;
+                    d) if protected_branch "$branch"; then
+                        warn 'Protected branch.'
+                    elif confirm "Delete merged branch $branch?"; then
+                        git -C "$path" branch -d -- "$branch" && workspace_log branch-delete "$path"
+                    fi
+                    ;;
                 esac;;
-            g) git -C "$path" --no-pager log --graph --all --decorate --oneline -n 40; workspace_pause;;
+            g) git -C "$path" --no-pager log --graph --all --decorate --oneline -n 40
+            workspace_pause
+            ;;
             q|esc) return 0;;
         esac
     done
 )
 workspace_github() (
     cd "$1" || return 1
-    command -v gh >/dev/null || { err 'Install GitHub CLI (gh) and run gh auth login.'; return 1; }
+    command -v gh >/dev/null || {
+        err 'Install GitHub CLI (gh) and run gh auth login.'
+        return 1
+    }
     gh repo view || return 1
-    gh issue list --limit 5; gh pr list --limit 5; gh release list --limit 5; gh run list --limit 5
+    gh issue list --limit 5
+    gh pr list --limit 5
+    gh release list --limit 5
+    gh run list --limit 5
 )
 workspace_detail() {
     local path="$1" action
     while true; do
-        if [[ -t 0 && -t 1 ]]; then printf '\033[H\033[2J'; fi
+        if [[ -t 0 && -t 1 ]]; then
+            printf '\033[H\033[2J'
+        fi
         section "Repository detail / ${path##*/}"
         printf '%s\n' "$path"
         git -C "$path" status --short --branch
@@ -3087,18 +4101,31 @@ workspace_detail() {
         dim '[C] Commit  [D] Diff  [B] Branches  [F] Fetch  [S] Sync  [G] GitHub  [Q/Esc] Back'
         workspace_key; action=$WORKSPACE_KEY
         case "${action,,}" in
-            c) workspace_run_operation workspace_commit "$path"; workspace_pause;;
+            c) workspace_run_operation workspace_commit "$path"
+            workspace_pause
+            ;;
             d) workspace_diff "$path";;
             b) workspace_branches "$path";;
-            f) workspace_run_operation overview_fetch "$path" && workspace_log fetch "$path"; workspace_pause;;
-            s) if confirm 'Synchronize repository?'; then workspace_run_operation bulk_sync "$path" false '' && workspace_log sync "$path"; fi; workspace_pause;;
-            g) workspace_run_operation workspace_github "$path"; workspace_pause;;
+            f) workspace_run_operation overview_fetch "$path" && workspace_log fetch "$path"
+            workspace_pause
+            ;;
+            s) if confirm 'Synchronize repository?'; then
+                workspace_run_operation bulk_sync "$path" false '' && workspace_log sync "$path"
+            fi
+            workspace_pause
+            ;;
+            g) workspace_run_operation workspace_github "$path"
+            workspace_pause
+            ;;
             q|esc) return 0;;
         esac
     done
 }
 workspace_settings() {
-    if [[ ! -t 0 || ! -t 1 ]]; then handle_config show; return; fi
+    if [[ ! -t 0 || ! -t 1 ]]; then
+        handle_config show
+        return
+    fi
     local key value action
     local -a keys=(default-remote large-file-threshold search-root protected-branch ignored-directory) labels=()
     while true; do
@@ -3108,18 +4135,35 @@ workspace_settings() {
         key=${keys[WORKSPACE_SELECTION[0]]}
         handle_config show
         case "$key" in
-            default-remote|large-file-threshold) action='set';;
-            *) read -r -p 'Action [add/remove/reset]: ' action || return 0; case "$action" in add|remove|reset) ;; *) continue;; esac;;
+            default-remote|large-file-threshold) action='set'
+            ;;
+            *) read -r -p 'Action [add/remove/reset]: ' action || return 0
+            case "$action" in
+                add|remove|reset)
+                ;;
+                *)
+                    continue
+                ;;
+            esac
+            ;;
         esac
         value=''
-        if [[ "$action" != reset ]]; then read -r -p 'Value (empty cancels): ' value || return 0; [[ -n "$value" ]] || continue; fi
-        if confirm 'Save configuration?'; then handle_config_edit "$action" "$key" "$value"; fi
+        if [[ "$action" != reset ]]; then
+            read -r -p 'Value (empty cancels): ' value || return 0
+            [[ -n "$value" ]] || continue
+        fi
+        if confirm 'Save configuration?'; then
+            handle_config_edit "$action" "$key" "$value"
+        fi
         workspace_pause
     done
 }
 workspace_activity() {
     section 'Workspace activity / latest 30 operations'
-    if [[ ! -f "$CONFIG_DIR/history.log" ]]; then dim 'No operations recorded yet.'; return; fi
+    if [[ ! -f "$CONFIG_DIR/history.log" ]]; then
+        dim 'No operations recorded yet.'
+        return
+    fi
     local stamp action rest
     while read -r stamp action rest; do
         printf '%s%s%s  %s%-14s%s %s\n' "$C_GRAY" "$stamp" "$C_RESET" "$C_CYAN" "$action" "$C_RESET" "$rest"
@@ -3131,7 +4175,11 @@ workspace_choose_repo() {
     local -a paths=() labels=() others=()
     local path
     for path in "${CACHED_REPOS[@]}"; do
-        if [[ -f "$FAVORITES_FILE" ]] && grep -Fxq -- "$path" "$FAVORITES_FILE"; then paths+=("$path"); else others+=("$path"); fi
+        if [[ -f "$FAVORITES_FILE" ]] && grep -Fxq -- "$path" "$FAVORITES_FILE"; then
+            paths+=("$path")
+        else
+            others+=("$path")
+        fi
     done
     paths+=("${others[@]}")
     if (( ${#paths[@]} == 0 )); then
@@ -3139,7 +4187,11 @@ workspace_choose_repo() {
         workspace_pause; return 1
     fi
     for path in "${paths[@]}"; do
-        if [[ -f "$FAVORITES_FILE" ]] && grep -Fxq -- "$path" "$FAVORITES_FILE"; then labels+=("★ ${path##*/}  |  $path"); else labels+=("${path##*/}  |  $path"); fi
+        if [[ -f "$FAVORITES_FILE" ]] && grep -Fxq -- "$path" "$FAVORITES_FILE"; then
+            labels+=("★ ${path##*/}  |  $path")
+        else
+            labels+=("${path##*/}  |  $path")
+        fi
     done
     workspace_pick 'Select repository' false "${labels[@]}" || return 1
     MENU_REPO=${paths[WORKSPACE_SELECTION[0]]}
@@ -3151,24 +4203,61 @@ workspace_menu_repo_tools() {
         action=${WORKSPACE_SELECTION[0]}
         workspace_clear_screen
         case "$action" in
-            0) read -r -p 'Commit message (empty cancels): ' message || return 0; if [[ -n "$message" ]] && confirm 'Commit all changes and push using classic workflow?'; then workspace_run_operation classic_commit "$path" "$message" false false; fi;;
+            0) read -r -p 'Commit message (empty cancels): ' message || return 0
+            if [[ -n "$message" ]] && confirm 'Commit all changes and push using classic workflow?'; then
+                workspace_run_operation classic_commit "$path" "$message" false false
+            fi
+            ;;
             1) (handle_tag list "$path");;
-            2|3) read -r -p 'Tag name (empty cancels): ' name || return 0; [[ -n "$name" && "$name" != -* ]] || continue
-                 if [[ "$action" == 2 ]]; then read -r -p 'Tag message: ' message || return 0; if confirm "Create tag $name?"; then (handle_tag create "$path" "$name" "$message"); fi
-                 elif confirm "Push tag $name?"; then (handle_tag push "$path" "$name"); fi;;
+            2|3) read -r -p 'Tag name (empty cancels): ' name || return 0
+            [[ -n "$name" && "$name" != -* ]] || continue
+                 if [[ "$action" == 2 ]]; then
+                     read -r -p 'Tag message: ' message || return 0
+                     if confirm "Create tag $name?"; then
+                         (handle_tag create "$path" "$name" "$message")
+                     fi
+                 elif confirm "Push tag $name?"; then
+                     (handle_tag push "$path" "$name")
+                 fi
+                 ;;
             4) (handle_remote list "$path");;
-            5|6|7) read -r -p 'Remote name (empty cancels): ' name || return 0; [[ -n "$name" && "$name" != -* ]] || continue
-                   if [[ "$action" == 7 ]]; then (handle_remote remove "$path" "$name")
-                   else read -r -p 'Remote URL (empty cancels): ' url || return 0; [[ -n "$url" && "$url" != -* ]] || continue
-                        if [[ "$action" == 5 ]]; then if confirm "Add remote $name?"; then (handle_remote add "$path" "$name" "$url"); fi; else (handle_remote set-url "$path" "$name" "$url"); fi
+            5|6|7) read -r -p 'Remote name (empty cancels): ' name || return 0
+            [[ -n "$name" && "$name" != -* ]] || continue
+                   if [[ "$action" == 7 ]]; then
+                       (handle_remote remove "$path" "$name")
+                   else
+                       read -r -p 'Remote URL (empty cancels): ' url || return 0
+                       [[ -n "$url" && "$url" != -* ]] || continue
+                        if [[ "$action" == 5 ]]; then
+                            if confirm "Add remote $name?"; then
+                                (handle_remote add "$path" "$name" "$url")
+                            fi
+                        else
+                            (handle_remote set-url "$path" "$name" "$url")
+                        fi
                    fi;;
             8) (handle_stash list "$path");;
-            9) if confirm 'Stash tracked and untracked changes?'; then (handle_stash push "$path"); fi;;
-            10) if confirm 'Apply and remove latest stash?'; then (handle_stash pop "$path"); fi;;
+            9) if confirm 'Stash tracked and untracked changes?'; then
+                (handle_stash push "$path")
+            fi
+            ;;
+            10) if confirm 'Apply and remove latest stash?'; then
+                (handle_stash pop "$path")
+            fi
+            ;;
             11) (handle_project info "$path");;
-            12) if confirm 'Build this project?'; then workspace_run_operation handle_project build "$path"; fi;;
-            13) if confirm 'Run project tests?'; then workspace_run_operation handle_project test "$path"; fi;;
-            14) if confirm 'Run this project?'; then workspace_run_operation handle_project run "$path"; fi;;
+            12) if confirm 'Build this project?'; then
+                workspace_run_operation handle_project build "$path"
+            fi
+            ;;
+            13) if confirm 'Run project tests?'; then
+                workspace_run_operation handle_project test "$path"
+            fi
+            ;;
+            14) if confirm 'Run this project?'; then
+                workspace_run_operation handle_project run "$path"
+            fi
+            ;;
             15) (handle_project shell "$path");;
             16) return 0;;
         esac
@@ -3183,23 +4272,33 @@ workspace_menu_repo() {
         action=${WORKSPACE_SELECTION[0]}
         workspace_clear_screen
         case "$action" in
-            0) workspace_run_operation workspace_commit "$path";;
+            0) workspace_run_operation workspace_commit "$path"
+            ;;
             1) if confirm 'Synchronize this repository?'; then
                    local allow=false
-                   if confirm 'Allow pushing to protected branches as well?'; then allow=true; fi
+                   if confirm 'Allow pushing to protected branches as well?'; then
+                       allow=true
+                   fi
                    workspace_run_operation bulk_sync "$path" "$allow" '' && workspace_log sync "$path"
                fi;;
-            2) workspace_run_operation overview_fetch "$path" && workspace_log fetch "$path";;
+            2) workspace_run_operation overview_fetch "$path" && workspace_log fetch "$path"
+            ;;
             3) workspace_detail "$path"; continue;;
             4) workspace_diff "$path"; continue;;
             5) workspace_branches "$path"; continue;;
-            6) git -C "$path" --no-pager log --graph --all --decorate --oneline -n 40;;
-            7) workspace_run_operation workspace_github "$path";;
+            6) git -C "$path" --no-pager log --graph --all --decorate --oneline -n 40
+            ;;
+            7) workspace_run_operation workspace_github "$path"
+            ;;
             8) (handle_repo open "$path");;
-            9) workspace_menu_repo_tools "$path"; continue;;
+            9) workspace_menu_repo_tools "$path"
+            continue
+            ;;
             10) if confirm 'Push existing commits without changing working tree?'; then
                     local push_allow=false
-                    if confirm 'Allow pushing to protected branches?'; then push_allow=true; fi
+                    if confirm 'Allow pushing to protected branches?'; then
+                        push_allow=true
+                    fi
                     workspace_run_operation bulk_sync "$path" "$push_allow" '' true && workspace_log push "$path"
                 fi;;
             11) return 0;;
@@ -3217,13 +4316,28 @@ workspace_menu_bulk() {
         workspace_clear_screen
         case "$action" in
             0) visual_command overview; continue;;
-            1) if confirm 'Fetch all cached repositories?'; then workspace_run_operation handle_all fetch; fi;;
+            1) if confirm 'Fetch all cached repositories?'; then
+                workspace_run_operation handle_all fetch
+            fi
+            ;;
             2|3)
                 message=''; allow=()
-                if [[ "$action" == 3 ]]; then read -r -p 'Commit message (empty cancels): ' message || return 0; [[ -n "$message" ]] || continue; fi
-                if ! confirm 'Operate on all cached repositories?'; then continue; fi
-                if confirm 'Allow pushing to protected branches as well?'; then allow=(--allow-protected); fi
-                if [[ "$action" == 3 ]]; then workspace_run_operation handle_all push "${allow[@]}" -- "$message"; else workspace_run_operation handle_all sync "${allow[@]}"; fi;;
+                if [[ "$action" == 3 ]]; then
+                    read -r -p 'Commit message (empty cancels): ' message || return 0
+                    [[ -n "$message" ]] || continue
+                fi
+                if ! confirm 'Operate on all cached repositories?'; then
+                    continue
+                fi
+                if confirm 'Allow pushing to protected branches as well?'; then
+                    allow=(--allow-protected)
+                fi
+                if [[ "$action" == 3 ]]; then
+                    workspace_run_operation handle_all push "${allow[@]}" -- "$message"
+                else
+                    workspace_run_operation handle_all sync "${allow[@]}"
+                fi
+                ;;
             4) visual_status dry-run;;
             5) return 0;;
         esac
@@ -3235,17 +4349,31 @@ workspace_favorites() {
     local -a paths=() labels=()
     local path choice
     while true; do
-        load_cache; paths=("${CACHED_REPOS[@]}"); labels=()
+        load_cache
+        paths=("${CACHED_REPOS[@]}")
+        labels=()
         for path in "${paths[@]}"; do
-            if [[ -f "$FAVORITES_FILE" ]] && grep -Fxq -- "$path" "$FAVORITES_FILE"; then labels+=("[★] ${path##*/}"); else labels+=("[ ] ${path##*/}"); fi
+            if [[ -f "$FAVORITES_FILE" ]] && grep -Fxq -- "$path" "$FAVORITES_FILE"; then
+                labels+=("[★] ${path##*/}")
+            else
+                labels+=("[ ] ${path##*/}")
+            fi
         done
         labels+=('Back')
         workspace_pick 'Favorites / Enter toggles, saved immediately' false "${labels[@]}" || return
-        choice=${WORKSPACE_SELECTION[0]}; ((choice<${#paths[@]})) || return 0
+        choice=${WORKSPACE_SELECTION[0]}
+        ((choice<${#paths[@]})) || return 0
         path=${paths[choice]}; ensure_dirs
         if [[ -f "$FAVORITES_FILE" ]] && grep -Fxq -- "$path" "$FAVORITES_FILE"; then
             grep -Fxv -- "$path" "$FAVORITES_FILE" > "$FAVORITES_FILE.tmp" || true
-        else { if [[ -f "$FAVORITES_FILE" ]]; then cat "$FAVORITES_FILE"; fi; printf '%s\n' "$path"; } | sort -u > "$FAVORITES_FILE.tmp"; fi
+        else
+            {
+                if [[ -f "$FAVORITES_FILE" ]]; then
+                    cat "$FAVORITES_FILE"
+                fi
+                printf '%s\n' "$path"
+            } | sort -u > "$FAVORITES_FILE.tmp"
+        fi
         mv -f -- "$FAVORITES_FILE.tmp" "$FAVORITES_FILE"
     done
 }
@@ -3254,21 +4382,39 @@ workspace_search_roots() {
     local path choice
     load_cache
     candidates=("$HOME/Projects" "$HOME/Documents/Project" "$HOME/source/repos" "$HOME/dev" "$HOME/code")
-    for path in "${CACHED_REPOS[@]}"; do candidates+=("${path%/*}"); done
+    for path in "${CACHED_REPOS[@]}"; do
+        candidates+=("${path%/*}")
+    done
     while IFS= read -r path; do
         [[ -d "$path" && "$path" != / && "$path" != "$HOME" ]] || continue
         local root covered=false
-        for root in "${SEARCH_ROOTS[@]}"; do if [[ "$path" == "$root" || "$path" == "$root/"* ]]; then covered=true; fi; done
+        for root in "${SEARCH_ROOTS[@]}"; do
+            if [[ "$path" == "$root" || "$path" == "$root/"* ]]; then
+                covered=true
+            fi
+        done
         [[ "$covered" == false ]] || continue
-        paths+=("$path"); labels+=("Add suggested root  |  $path")
+        paths+=("$path")
+        labels+=("Add suggested root  |  $path")
     done < <(printf '%s\n' "${candidates[@]}" | sort -u)
     labels+=('Enter custom directory' 'Back')
     workspace_pick 'Search roots / suggestions' false "${labels[@]}" || return
     choice=${WORKSPACE_SELECTION[0]}
-    if ((choice==${#paths[@]}+1)); then return; fi
-    if ((choice==${#paths[@]})); then read -r -p 'Directory: ' path || return; else path=${paths[choice]}; fi
-    [[ -d "$path" ]] || { warn 'Directory not found.'; return 1; }
-    if confirm "Add search root $path?"; then handle_config_edit add search-root "$path"; fi
+    if ((choice==${#paths[@]}+1)); then
+        return
+    fi
+    if ((choice==${#paths[@]})); then
+        read -r -p 'Directory: ' path || return
+    else
+        path=${paths[choice]}
+    fi
+    [[ -d "$path" ]] || {
+        warn 'Directory not found.'
+        return 1
+    }
+    if confirm "Add search root $path?"; then
+        handle_config_edit add search-root "$path"
+    fi
 }
 workspace_menu_cache() {
     local -a labels=('List repositories' 'Refresh cache (scan search roots)' 'Add repository path' 'Recent repositories' 'Favorites' 'Clone repository' 'Search roots' 'Back')
@@ -3277,11 +4423,22 @@ workspace_menu_cache() {
         workspace_clear_screen
         case "${WORKSPACE_SELECTION[0]}" in
             0) handle_cache list;;
-            1) if confirm 'Scan configured search roots?'; then workspace_run_operation handle_cache refresh; fi;;
-            2) read -r -p 'Repository path (empty cancels): ' path || return 0; if [[ -n "$path" ]]; then handle_cache add "$path"; fi;;
+            1) if confirm 'Scan configured search roots?'; then
+                workspace_run_operation handle_cache refresh
+            fi
+            ;;
+            2) read -r -p 'Repository path (empty cancels): ' path || return 0
+            if [[ -n "$path" ]]; then
+                handle_cache add "$path"
+            fi
+            ;;
             3) handle_recent;;
             4) workspace_favorites; continue;;
-            5) read -r -p 'Clone URL (empty cancels): ' path || return 0; if [[ -n "$path" && "$path" != -* ]] && confirm 'Clone repository?'; then workspace_run_operation handle_clone "$path"; fi;;
+            5) read -r -p 'Clone URL (empty cancels): ' path || return 0
+            if [[ -n "$path" && "$path" != -* ]] && confirm 'Clone repository?'; then
+                workspace_run_operation handle_clone "$path"
+            fi
+            ;;
             6) workspace_search_roots;;
             7) return 0;;
         esac
@@ -3294,9 +4451,12 @@ workspace_menu_update() {
     while workspace_pick 'Software update' false "${labels[@]}"; do
         workspace_clear_screen
         case "${WORKSPACE_SELECTION[0]}" in
-            0) WORKSPACE_OFFER_UPDATE=true workspace_run_operation handle_update check;;
-            1) workspace_run_operation handle_update install;;
-            2) workspace_run_operation handle_update rollback;;
+            0) WORKSPACE_OFFER_UPDATE=true workspace_run_operation handle_update check
+            ;;
+            1) workspace_run_operation handle_update install
+            ;;
+            2) workspace_run_operation handle_update rollback
+            ;;
             3) return 0;;
         esac
         workspace_pause
@@ -3305,12 +4465,18 @@ workspace_menu_update() {
 }
 workspace_menu() {
     local -a labels=('Workspace overview' 'Repositories / commit and push' 'Bulk operations' 'Repository cache' 'Development statistics' 'Workspace health' 'Activity history' 'Settings' 'Software update' 'Help / CLI commands' 'Exit')
-    if [[ ! -t 0 || ! -t 1 ]]; then show_help; return 0; fi
+    if [[ ! -t 0 || ! -t 1 ]]; then
+        show_help
+        return 0
+    fi
     while workspace_pick "GPush $SCRIPT_VERSION / Main menu" false "${labels[@]}"; do
         workspace_clear_screen
         case "${WORKSPACE_SELECTION[0]}" in
             0) visual_command overview;;
-            1) if workspace_choose_repo; then workspace_menu_repo "$MENU_REPO"; fi;;
+            1) if workspace_choose_repo; then
+                workspace_menu_repo "$MENU_REPO"
+            fi
+            ;;
             2) workspace_menu_bulk;;
             3) workspace_menu_cache;;
             4) workspace_stats_screen;;
@@ -3334,7 +4500,14 @@ workspace_stats() {
     local -A stats_files=()
     local -A stats_days=()
     local -a stats_counts=() stats_names=() stats_order=() stats_paths=() stats_pids=() stats_pending=()
-    case "$period" in 7|30|90|365) ;; *) err 'Use gp stats [7|30|90|365].'; return 2;; esac
+    case "$period" in
+        7|30|90|365)
+        ;;
+        *)
+            err 'Use gp stats [7|30|90|365].'
+            return 2
+        ;;
+    esac
     : "$refresh"
     load_cache
     stats_paths=("${CACHED_REPOS[@]}")
@@ -3346,10 +4519,15 @@ workspace_stats() {
         raw_file="$CACHE_DIR/activity/$(printf '%s\n' "$repository" "$fingerprint" "$period" "$(date +%F)" | git hash-object --stdin)"
         stats_files[$repository]=$raw_file
         if [[ -f "$raw_file" ]]; then
-            GP_STATS_RAW[$cache_key]=$(<"$raw_file"); GP_STATS_VALID[$cache_key]=0
+            GP_STATS_RAW[$cache_key]=$(<"$raw_file")
+            GP_STATS_VALID[$cache_key]=0
         elif [[ "$fingerprint" == empty ]]; then
-            GP_STATS_RAW[$cache_key]=''; GP_STATS_VALID[$cache_key]=0
-        else stats_pending+=("$repository"); cache_hit=false; fi
+            GP_STATS_RAW[$cache_key]=''
+            GP_STATS_VALID[$cache_key]=0
+        else
+            stats_pending+=("$repository")
+            cache_hit=false
+        fi
     done
     if (( ${#stats_pending[@]} )); then
         tmp=$(mktemp -d) || return 1
@@ -3361,19 +4539,31 @@ workspace_stats() {
         fi
         # Bound disk/process pressure: no more than four concurrent history walks.
         for ((i=0;i<${#stats_pending[@]};i+=4)); do
-            stats_pids=(); batch_end=$((i+4)); if ((batch_end>${#stats_pending[@]})); then batch_end=${#stats_pending[@]}; fi
+            stats_pids=()
+            batch_end=$((i+4))
+            if ((batch_end>${#stats_pending[@]})); then
+                batch_end=${#stats_pending[@]}
+            fi
             for ((j=i;j<batch_end;j++)); do
-                if [[ "$cancelled" == true ]]; then break; fi
+                if [[ "$cancelled" == true ]]; then
+                    break
+                fi
                 git -C "${stats_pending[j]}" log --no-color --since="$period days ago" --format='@GP:%as' --numstat HEAD > "$tmp/$j" 2> "$tmp/$j.err" &
                 stats_pids+=("$!")
             done
             for j in "${!stats_pids[@]}"; do
-                pid=${stats_pids[j]}; rc=0; wait "$pid" || rc=$?
-                if [[ "$cancelled" == true ]]; then break; fi
+                pid=${stats_pids[j]}
+                rc=0
+                wait "$pid" || rc=$?
+                if [[ "$cancelled" == true ]]; then
+                    break
+                fi
                 cache_key="$period|${stats_pending[i+j]}"
                 GP_STATS_RAW[$cache_key]=$(<"$tmp/$((i+j))")
                 GP_STATS_VALID[$cache_key]=$rc
-                if ((rc==0)); then cp -- "$tmp/$((i+j))" "${stats_files[${stats_pending[i+j]}]}.tmp.$$" && mv -f -- "${stats_files[${stats_pending[i+j]}]}.tmp.$$" "${stats_files[${stats_pending[i+j]}]}"; fi
+                if ((rc==0)); then
+                    cp -- "$tmp/$((i+j))" "${stats_files[${stats_pending[i+j]}]}.tmp.$$" && mv -f -- "${stats_files[${stats_pending[i+j]}]}.tmp.$$" "${stats_files[${stats_pending[i+j]}]}"
+                fi
                 completed=$((completed+1))
                 if [[ -t 1 ]]; then
                     printf '\r\033[2K%sLoading activity%s  ' "$C_CYAN" "$C_RESET"
@@ -3382,31 +4572,59 @@ workspace_stats() {
                 fi
             done
             if [[ "$cancelled" == true ]]; then
-                for pid in "${stats_pids[@]}"; do kill -TERM "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; done
+                for pid in "${stats_pids[@]}"; do
+                    kill -TERM "$pid" 2>/dev/null || true
+                    wait "$pid" 2>/dev/null || true
+                done
                 break
             fi
         done
-        if [[ -n "$previous_trap" ]]; then eval "$previous_trap"; else trap - INT; fi
+        if [[ -n "$previous_trap" ]]; then
+            eval "$previous_trap"
+        else
+            trap - INT
+        fi
         rm -rf -- "$tmp"
         if [[ -t 1 ]]; then printf '\r\033[2K'; fi
-        if [[ "$cancelled" == true ]]; then warn 'Operation cancelled by user.'; return 130; fi
+        if [[ "$cancelled" == true ]]; then
+            warn 'Operation cancelled by user.'
+            return 130
+        fi
     fi
     if [[ -t 1 ]]; then
-        cols=$(tput cols 2>/dev/null || printf 80); [[ "$cols" =~ ^[0-9]+$ ]] || cols=80
-        name_width=$((cols/3)); ((name_width<=24)) || name_width=24; ((name_width>=10)) || name_width=10
-        width=$((cols-name_width-16)); ((width<=28)) || width=28; ((width>=4)) || width=4
+        cols=$(tput cols 2>/dev/null || printf 80)
+        [[ "$cols" =~ ^[0-9]+$ ]] || cols=80
+        name_width=$((cols/3))
+        ((name_width<=24)) || name_width=24
+        ((name_width>=10)) || name_width=10
+        width=$((cols-name_width-16))
+        ((width<=28)) || width=28
+        ((width>=4)) || width=4
     fi
     for repository in "${stats_paths[@]}"; do
         cache_key="$period|$repository"; count=0
-        if [[ ${GP_STATS_VALID[$cache_key]:-1} != 0 ]]; then unavailable=$((unavailable+1)); continue; fi
+        if [[ ${GP_STATS_VALID[$cache_key]:-1} != 0 ]]; then
+            unavailable=$((unavailable+1))
+            continue
+        fi
         while IFS= read -r line; do
             if [[ "$line" =~ ^@GP:([0-9]{4}-[0-9]{2}-[0-9]{2})$ ]]; then
-                day=${BASH_REMATCH[1]}; count=$((count+1)); stats_days[$day]=$(( ${stats_days[$day]:-0}+1 ))
+                day=${BASH_REMATCH[1]}
+                count=$((count+1))
+                stats_days[$day]=$(( ${stats_days[$day]:-0}+1 ))
             elif [[ "$line" =~ ^([0-9]+)$'\t'([0-9]+)$'\t' ]]; then
-                a=${BASH_REMATCH[1]}; d=${BASH_REMATCH[2]}; added=$((added+a)); removed=$((removed+d))
+                a=${BASH_REMATCH[1]}
+                d=${BASH_REMATCH[2]}
+                added=$((added+a))
+                removed=$((removed+d))
             fi
         done <<< "${GP_STATS_RAW[$cache_key]}"
-        stats_names+=("${repository##*/}"); stats_counts+=("$count"); total=$((total+count)); if (( count>max )); then max=$count; fi
+        stats_names+=("${repository##*/}")
+        stats_counts+=("$count")
+        total=$((total+count))
+        if (( count>max )); then
+            max=$count
+        fi
     done
     info "  GPUSH  /  $SCRIPT_VERSION"
     section "Development activity / $period days"
@@ -3417,24 +4635,53 @@ workspace_stats() {
         mapfile -t stats_order < <(for i in "${!stats_counts[@]}"; do printf '%s %s\n' "${stats_counts[i]}" "$i"; done | sort -k1,1nr -k2,2n)
     fi
     for line in "${stats_order[@]}"; do
-        i=${line#* }; count=${stats_counts[i]}; name=${stats_names[i]//[[:cntrl:]]/?}
-        if (( count==0 )) && [[ "$show_all" != true ]]; then hidden=$((hidden+1)); continue; fi
-        filled=$((count*width/max)); if (( count>0 && filled==0 )); then filled=1; fi
-        printf '  %-*.*s  ' "$name_width" "$name_width" "$name"; workspace_block_bar "$filled" "$width"; printf '  %5d\n' "$count"
+        i=${line#* }
+        count=${stats_counts[i]}
+        name=${stats_names[i]//[[:cntrl:]]/?}
+        if (( count==0 )) && [[ "$show_all" != true ]]; then
+            hidden=$((hidden+1))
+            continue
+        fi
+        filled=$((count*width/max))
+        if (( count>0 && filled==0 )); then
+            filled=1
+        fi
+        printf '  %-*.*s  ' "$name_width" "$name_width" "$name"
+        workspace_block_bar "$filled" "$width"
+        printf '  %5d\n' "$count"
     done
-    if ((hidden>0)); then dim "  $hidden inactive repositories hidden"; fi
-    if ((unavailable>0)); then warn "  $unavailable repositories could not be inspected."; fi
-    heat_days=$((period<30?period:30)); if ((heat_days>(cols-3)/3)); then heat_days=$(((cols-3)/3)); fi
+    if ((hidden>0)); then
+        dim "  $hidden inactive repositories hidden"
+    fi
+    if ((unavailable>0)); then
+        warn "  $unavailable repositories could not be inspected."
+    fi
+    heat_days=$((period<30?period:30))
+    if ((heat_days>(cols-3)/3)); then
+        heat_days=$(((cols-3)/3))
+    fi
     printf '\n  Daily activity (oldest first; last %d days)\n  ' "$heat_days"
     for ((i=heat_days-1;i>=0;i--)); do
-        date_key=$(date -d "$i days ago" +%F); stamp=${stats_days[$date_key]:-0}
+        date_key=$(date -d "$i days ago" +%F)
+        stamp=${stats_days[$date_key]:-0}
         if [[ -n "$C_GREEN" && -t 1 ]]; then
-            if ((stamp==0)); then printf '\033[48;5;236m  '; elif ((stamp<3)); then printf '\033[48;5;22m  '; elif ((stamp<6)); then printf '\033[48;5;28m  '; else printf '\033[48;5;40m  '; fi
+            if ((stamp==0)); then
+                printf '\033[48;5;236m  '
+            elif ((stamp<3)); then
+                printf '\033[48;5;22m  '
+            elif ((stamp<6)); then
+                printf '\033[48;5;28m  '
+            else
+                printf '\033[48;5;40m  '
+            fi
             printf '%s ' "$C_RESET"
         else printf '%d ' "$((stamp>9?9:stamp))"; fi
     done
-    printf '\n'; dim '  Low activity -> high activity'
-    if [[ "$cache_hit" == true ]]; then dim '  Cached local statistics (matching HEAD and calendar date)'; fi
+    printf '\n'
+    dim '  Low activity -> high activity'
+    if [[ "$cache_hit" == true ]]; then
+        dim '  Cached local statistics (matching HEAD and calendar date)'
+    fi
     return 0
 }
 workspace_stats_screen() {
@@ -3445,14 +4692,22 @@ workspace_stats_screen() {
         workspace_clear_screen
         workspace_stats "${periods[selected]}" "$show_all" "$refresh" || rc=$?
         refresh=false
-        if ((rc==130)); then workspace_pause; return 0; fi
+        if ((rc==130)); then
+            workspace_pause
+            return 0
+        fi
         dim '  Left/Right  Range    A  Show/hide inactive    R  Refresh    Esc  Back'
         workspace_key
         case "$WORKSPACE_KEY" in
             esc) return 0;;
             left) selected=$(( (selected+3)%4 ));;
             right) selected=$(( (selected+1)%4 ));;
-            a|A) if [[ "$show_all" == true ]]; then show_all=false; else show_all=true; fi;;
+            a|A) if [[ "$show_all" == true ]]; then
+                show_all=false
+            else
+                show_all=true
+            fi
+            ;;
             r|R) refresh=true;;
             *) continue;;
         esac
@@ -3460,19 +4715,33 @@ workspace_stats_screen() {
 }
 workspace_block_bar() {
     local filled="$1" width="$2" bar rest
-    printf -v bar '%*s' "$filled" ''; printf -v rest '%*s' "$((width-filled))" ''
-    if [[ -n "$C_CYAN" && -t 1 ]]; then printf '\033[46m%s\033[48;5;236m%s%s' "$bar" "$rest" "$C_RESET"; elif [[ "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" == *[Uu][Tt][Ff]* ]]; then printf '%s%s' "${bar// /█}" "${rest// /░}"; else printf '%s%s' "${bar// /=}" "${rest// /.}"; fi
+    printf -v bar '%*s' "$filled" ''
+    printf -v rest '%*s' "$((width-filled))" ''
+    if [[ -n "$C_CYAN" && -t 1 ]]; then
+        printf '\033[46m%s\033[48;5;236m%s%s' "$bar" "$rest" "$C_RESET"
+    elif [[ "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" == *[Uu][Tt][Ff]* ]]; then
+        printf '%s%s' "${bar// /█}" "${rest// /░}"
+    else
+        printf '%s%s' "${bar// /=}" "${rest// /.}"
+    fi
 }
 
 visual_command() {
     local action="$1"; shift
     case "$action" in
         overview)
-            if [[ ! -t 0 || ! -t 1 ]]; then visual_status overview; return $?; fi
+            if [[ ! -t 0 || ! -t 1 ]]; then
+                visual_status overview
+                return $?
+            fi
             local key selected=0 path
             local -a overview_fields=() overview_paths=()
-            load_cache; overview_paths=("${CACHED_REPOS[@]}")
-            if (( ${#overview_paths[@]} == 0 )); then warn 'Run gp cache refresh first.'; return 1; fi
+            load_cache
+            overview_paths=("${CACHED_REPOS[@]}")
+            if (( ${#overview_paths[@]} == 0 )); then
+                warn 'Run gp cache refresh first.'
+                return 1
+            fi
             workspace_clear_screen
             overview_cache_read || overview_load false || return
             while true; do
@@ -3481,33 +4750,82 @@ visual_command() {
                 workspace_key; key=$WORKSPACE_KEY
                 case "$key" in
                     q|Q|esc) return 0;;
-                    up) selected=$(( (selected+${#overview_paths[@]}-1)%${#overview_paths[@]} ));;
-                    down) selected=$(( (selected+1)%${#overview_paths[@]} ));;
-                    enter) workspace_menu_repo "$path"; overview_refresh_one "$selected"; overview_cache_write;;
+                    up) selected=$(( (selected+${#overview_paths[@]}-1)%${#overview_paths[@]} ))
+                    ;;
+                    down) selected=$(( (selected+1)%${#overview_paths[@]} ))
+                    ;;
+                    enter) workspace_menu_repo "$path"
+                    overview_refresh_one "$selected"
+                    overview_cache_write
+                    ;;
                     r|R) overview_load false || true;;
-                    a|A) if confirm 'Fetch all cached repositories?'; then overview_load true || true; fi;;
-                    f|F) if workspace_run_operation overview_fetch "$path"; then overview_refresh_one "$selected"; overview_cache_write; else
-                        local fetch_rc=$?; overview_refresh_one "$selected"
-                        if ((fetch_rc==130)); then overview_fields[selected*8+6]="Fetch cancelled"; else overview_fields[selected*8+6]="Fetch failed"; fi
+                    a|A) if confirm 'Fetch all cached repositories?'; then
+                        overview_load true || true
+                    fi
+                    ;;
+                    f|F) if workspace_run_operation overview_fetch "$path"; then
+                        overview_refresh_one "$selected"
+                        overview_cache_write
+                    else
+                        local fetch_rc=$?
+                        overview_refresh_one "$selected"
+                        if ((fetch_rc==130)); then
+                            overview_fields[selected*8+6]="Fetch cancelled"
+                        else
+                            overview_fields[selected*8+6]="Fetch failed"
+                        fi
                         workspace_pause
                     fi;;
                     s|S) if confirm 'Synchronize selected repository (no commit)?'; then
                         local sync_allow=false
-                        if confirm 'Allow pushing to protected branches as well?'; then sync_allow=true; fi
-                        workspace_run_operation bulk_sync "$path" "$sync_allow" ''; overview_refresh_one "$selected"; overview_cache_write; workspace_pause
+                        if confirm 'Allow pushing to protected branches as well?'; then
+                            sync_allow=true
+                        fi
+                        workspace_run_operation bulk_sync "$path" "$sync_allow" ''
+                        overview_refresh_one "$selected"
+                        overview_cache_write
+                        workspace_pause
                     fi;;
                 esac
             done ;;
-        detail|commit|diff|branches|github) select_repo "${1:-}" || return 1; "workspace_$action" "$SELECTED" ;;
+        detail|commit|diff|branches|github) select_repo "${1:-}" || return 1
+        "workspace_$action" "$SELECTED"
+        ;;
         menu) workspace_menu ;;
         settings) workspace_settings ;;
         activity) workspace_activity ;;
-        health) if [[ -t 0 && -t 1 ]]; then workspace_health_screen; else visual_status health; fi ;;
-        watch) local interval="${1:-10}"; [[ "$interval" =~ ^[1-9][0-9]*$ ]] || return 2; [[ -t 1 ]] || { visual_status overview; return; }; while true; do printf '\033[H\033[2J'; visual_status overview; sleep "$interval"; done ;;
-        history) if [[ -f "$CONFIG_DIR/history.log" ]]; then tail -n 30 "$CONFIG_DIR/history.log"; else dim "No bulk operations recorded yet."; fi ;;
+        health) if [[ -t 0 && -t 1 ]]; then
+            workspace_health_screen
+        else
+            visual_status health
+        fi
+        ;;
+        watch) local interval="${1:-10}"
+        [[ "$interval" =~ ^[1-9][0-9]*$ ]] || return 2
+        [[ -t 1 ]] || {
+            visual_status overview
+            return
+        }
+        while true; do
+            printf '\033[H\033[2J'
+            visual_status overview
+            sleep "$interval"
+        done
+        ;;
+        history) if [[ -f "$CONFIG_DIR/history.log" ]]; then
+            tail -n 30 "$CONFIG_DIR/history.log"
+        else
+            dim "No bulk operations recorded yet."
+        fi
+        ;;
         graph|changes) select_repo "${1:-}" || return 1
-            if [[ "$action" == graph ]]; then git -C "$SELECTED" log --graph --all --decorate --oneline -n 40 "--color=$(if [[ -n "$C_CYAN" ]]; then printf auto; else printf never; fi)"
-            else git -C "$SELECTED" status --short; git -C "$SELECTED" diff --stat HEAD; fi ;;
+            if [[ "$action" == graph ]]; then
+                git -C "$SELECTED" log --graph --all --decorate --oneline -n 40 "--color=$(if [[ -n "$C_CYAN" ]]; then printf auto; else printf never; fi)"
+            else
+                git -C "$SELECTED" status --short
+                git -C "$SELECTED" diff --stat HEAD
+            fi
+            ;;
         stats) workspace_stats "${1:-30}" ;;
     esac
 }
@@ -3515,13 +4833,30 @@ visual_command() {
 main() {
     load_config
     if [[ "${1:-}" == --no-color ]]; then
-        shift; C_RESET='' C_CYAN='' C_GREEN='' C_YELLOW='' C_RED='' C_MAGENTA='' C_GRAY='' C_WHITE=''
+        shift
+        C_RESET='' C_CYAN='' C_GREEN='' C_YELLOW='' C_RED='' C_MAGENTA='' C_GRAY='' C_WHITE=''
     fi
     case "${1:-}" in
-        overview|health|watch|stats|history|changes|detail|commit|diff|branches|github|menu|settings|activity) local visual="$1"; shift; visual_command "$visual" "$@"; return $? ;;
-        branch) if [[ "${2:-}" == graph ]]; then shift 2; visual_command graph "$@"; return $?; fi ;;
-        all) if [[ "${2:-}" == dry-run && $# == 2 ]]; then visual_status dry-run; return $?; fi
-             if [[ "${2:-}" == status && "${3:-}" =~ ^--(json|dirty|ahead|behind)$ && $# == 3 ]]; then visual_status "$3"; return $?; fi ;;
+        overview|health|watch|stats|history|changes|detail|commit|diff|branches|github|menu|settings|activity) local visual="$1"
+        shift
+        visual_command "$visual" "$@"
+        return $?
+        ;;
+        branch) if [[ "${2:-}" == graph ]]; then
+            shift 2
+            visual_command graph "$@"
+            return $?
+        fi
+        ;;
+        all) if [[ "${2:-}" == dry-run && $# == 2 ]]; then
+            visual_status dry-run
+            return $?
+        fi
+             if [[ "${2:-}" == status && "${3:-}" =~ ^--(json|dirty|ahead|behind)$ && $# == 3 ]]; then
+                 visual_status "$3"
+                 return $?
+             fi
+             ;;
     esac
 
     if [[ $# -eq 0 ]]; then
@@ -3563,11 +4898,19 @@ main() {
             handle_completion "$@"
             ;;
         add|remove|set)
-            [[ $# -eq 2 ]] || { err "Command 'gp $command_name' requires a configuration key and a value."; config_edit_usage; return 2; }
+            [[ $# -eq 2 ]] || {
+                err "Command 'gp $command_name' requires a configuration key and a value."
+                config_edit_usage
+                return 2
+            }
             handle_config_edit "$command_name" "$1" "$2"
             ;;
         reset)
-            [[ $# -eq 1 ]] || { err "Command 'gp reset' requires exactly one configuration key."; config_edit_usage; return 2; }
+            [[ $# -eq 1 ]] || {
+                err "Command 'gp reset' requires exactly one configuration key."
+                config_edit_usage
+                return 2
+            }
             handle_config_edit reset "$1"
             ;;
         clone)

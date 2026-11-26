@@ -3,7 +3,7 @@
     [switch]$Force
 )
 
-$InstallerVersion = "4.7.7"
+$InstallerVersion = "4.7.8"
 
 [Console]::InputEncoding  = [System.Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
@@ -12,10 +12,18 @@ $OutputEncoding           = [System.Text.UTF8Encoding]::new($false)
 $AuthorName = "Michal " + [char]0x0160 + "vr" + [char]0x010D + "ek"
 $ErrorActionPreference = "Stop"
 
-function Write-Step([string]$Text) { Write-Host "[*] $Text" -ForegroundColor Cyan }
-function Write-Ok([string]$Text)   { Write-Host "[+] $Text" -ForegroundColor Green }
-function Write-Warn([string]$Text) { Write-Host "[!] $Text" -ForegroundColor Yellow }
-function Write-Fail([string]$Text) { Write-Host "[-] $Text" -ForegroundColor Red }
+function Write-Step([string]$Text) {
+    Write-Host "[*] $Text" -ForegroundColor Cyan
+}
+function Write-Ok([string]$Text)   {
+    Write-Host "[+] $Text" -ForegroundColor Green
+}
+function Write-Warn([string]$Text) {
+    Write-Host "[!] $Text" -ForegroundColor Yellow
+}
+function Write-Fail([string]$Text) {
+    Write-Host "[-] $Text" -ForegroundColor Red
+}
 
 Write-Host ""
 Write-Host "GPush installer " -NoNewline -ForegroundColor Cyan
@@ -126,8 +134,13 @@ foreach ($root in $SearchRoot) {
         $expanded = if ([string]::IsNullOrWhiteSpace($suffix)) { $HOME } else { Join-Path $HOME $suffix }
     }
 
-    try { $fullPath = [System.IO.Path]::GetFullPath($expanded) }
-    catch { Write-Warn "Skipping invalid path: $root"; continue }
+    try {
+        $fullPath = [System.IO.Path]::GetFullPath($expanded)
+    }
+    catch {
+        Write-Warn "Skipping invalid path: $root"
+        continue
+    }
 
     if (-not (Test-Path $fullPath)) {
         $create = if ($Force) { 'y' } else { Read-Host "Directory does not exist: '$fullPath'. Create it? [y/N]" }
@@ -157,14 +170,26 @@ $aliases = @{}
 $favorites = @()
 
 if ($existingConfig) {
-    if ($existingConfig.ignoredDirectories) { $ignoredDirectories = @($existingConfig.ignoredDirectories) }
-    if ($existingConfig.protectedBranches) { $protectedBranches = @($existingConfig.protectedBranches) }
-    if ($existingConfig.largeFileThresholdMB) { $largeFileThresholdMB = [int]$existingConfig.largeFileThresholdMB }
-    if ($existingConfig.defaultRemote) { $defaultRemote = [string]$existingConfig.defaultRemote }
-    if ($existingConfig.aliases) {
-        foreach ($p in $existingConfig.aliases.PSObject.Properties) { $aliases[$p.Name] = [string]$p.Value }
+    if ($existingConfig.ignoredDirectories) {
+        $ignoredDirectories = @($existingConfig.ignoredDirectories)
     }
-    if ($existingConfig.favorites) { $favorites = @($existingConfig.favorites) }
+    if ($existingConfig.protectedBranches) {
+        $protectedBranches = @($existingConfig.protectedBranches)
+    }
+    if ($existingConfig.largeFileThresholdMB) {
+        $largeFileThresholdMB = [int]$existingConfig.largeFileThresholdMB
+    }
+    if ($existingConfig.defaultRemote) {
+        $defaultRemote = [string]$existingConfig.defaultRemote
+    }
+    if ($existingConfig.aliases) {
+        foreach ($p in $existingConfig.aliases.PSObject.Properties) {
+            $aliases[$p.Name] = [string]$p.Value
+        }
+    }
+    if ($existingConfig.favorites) {
+        $favorites = @($existingConfig.favorites)
+    }
 }
 
 $config = [ordered]@{
@@ -210,11 +235,15 @@ else {
 }
 
 # Cache may refer to repos outside newly selected roots; rebuild it on first run.
-if (Test-Path $CacheFile) { Remove-Item $CacheFile -Force -ErrorAction SilentlyContinue }
+if (Test-Path $CacheFile) {
+    Remove-Item $CacheFile -Force -ErrorAction SilentlyContinue
+}
 
 Write-Host ""
 Write-Step "Configured repository roots:"
-foreach ($root in $resolvedRoots) { Write-Host "  $root" -ForegroundColor Green }
+foreach ($root in $resolvedRoots) {
+    Write-Host "  $root" -ForegroundColor Green
+}
 
 Write-Host ""
 Write-Ok "Installation complete."
