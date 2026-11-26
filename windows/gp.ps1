@@ -24,7 +24,7 @@ $OutputEncoding           = [System.Text.UTF8Encoding]::new($false)
 # CONFIG
 # ============================================================
 
-$ScriptVersion = "4.7.6"
+$ScriptVersion = "4.7.7"
 $CompletionSchemaVersion = "14"
 
 $ConfigDir  = Join-Path $env:LOCALAPPDATA "GPush"
@@ -6328,10 +6328,21 @@ function Write-GPushWorkspaceHistory {
 }
 # Read control keys only while waiting for UI input; restore console mode before Git runs.
 function Read-GPushWorkspaceKey {
+    param([switch]$WatchResize)
+    $initialWidth = [Console]::WindowWidth
+    $initialHeight = [Console]::WindowHeight
     $previous = [Console]::TreatControlCAsInput
     try {
         [Console]::TreatControlCAsInput = $true
         while ($true) {
+            if ($WatchResize) {
+                while (-not [Console]::KeyAvailable) {
+                    if ([Console]::WindowWidth -ne $initialWidth -or [Console]::WindowHeight -ne $initialHeight) {
+                        return [ConsoleKeyInfo]::new([char]0,[ConsoleKey]::F24,$false,$false,$false)
+                    }
+                    Start-Sleep -Milliseconds 80
+                }
+            }
             $key = [Console]::ReadKey($true)
             if ($key.KeyChar -ne [char]3) { return $key }
             Write-Host ''
@@ -6379,10 +6390,13 @@ function Select-GPushWorkspaceRows {
                 }
                 $repoColumn = [Math]::Min([Math]::Max(10,$repoColumn),[Math]::Max(10,[int]($contentWidth*0.35)))
             }
-            $limit = [Math]::Max(1,[Console]::WindowHeight-13)
-            $showLogo=$Title.EndsWith(' / Main menu') -and $width -ge 48 -and [Console]::WindowHeight -ge 30
-            if ($showLogo) {$limit=[Math]::Max(1,$limit-7)}
+            $reservedRows = 10
+            if ($Multiple) { $reservedRows++ }
+            $showLogo=$Title.EndsWith(' / Main menu') -and $width -ge 48 -and [Console]::WindowHeight -ge ($reservedRows+8+$Rows.Count)
+            if ($showLogo) { $reservedRows += 8 }
+            $limit = [Math]::Max(1,[Console]::WindowHeight-$reservedRows)
             $start = [int]([Math]::Floor($selected / $limit) * $limit)
+            $start = [Math]::Max(0,[Math]::Min($start,$visible.Count-$limit))
             $rule = [string][char]0x2500 * $width
             if ($firstFrame -or $previousWidth -ne [Console]::WindowWidth -or $previousHeight -ne [Console]::WindowHeight) {
                 Clear-Host; $firstFrame=$false; $previousFrameCount=0
@@ -6391,8 +6405,12 @@ function Select-GPushWorkspaceRows {
             }
             else { try { [Console]::SetCursorPosition(0,$frameTop) } catch { Clear-Host; $frameTop=[Console]::CursorTop; $previousFrameCount=0 } }
             $frame = New-Object 'System.Collections.Generic.List[object]'
-            if ($showLogo) { foreach ($logoLine in @('  ###  ####            o',' #     #   #          / \',' #  ## ####      o---o   o',' #   # #          \   \ /','  ###  #           o---o---o','                            \','                             o---o')) { $frame.Add(@{Text=$logoLine;Color='Cyan'}) } }
+            if ($showLogo) {
+                $frame.Add(@{Text='';Color='White'})
+                foreach ($logoLine in @('  ###  ####            o',' #     #   #          / \',' #  ## ####      o---o   o',' #   # #          \   \ /','  ###  #           o---o---o','                            \','                             o---o')) { $frame.Add(@{Text=$logoLine;Color='Cyan'}) }
+            }
             $frame.Add(@{Text="  GPUSH  /  $ScriptVersion"; Color='Cyan'})
+            $frame.Add(@{Text='  Made by: Michal Švrček'; Color='DarkGray'})
             $screenTitle = if ($Title.EndsWith(' / Main menu')) { 'Interactive workspace' } else { $Title }
             $frame.Add(@{Text=('  '+($screenTitle -replace '[\x00-\x1f\x7f]','?')); Color='White'})
             $frame.Add(@{Text=$rule; Color='DarkGray'})
@@ -6402,7 +6420,7 @@ function Select-GPushWorkspaceRows {
                 $columnTitle=if ($Title -eq 'Settings') {'Setting'} else {'Repository'}
                 $valueTitle=if ($Title -eq 'Settings') {'Value'} else {'Path'}
                 $frame.Add(@{Text=('    '+$columnTitle.PadRight($repoColumn)+'  |  '+$valueTitle);Color='DarkGray'})
-            } else { $frame.Add(@{Text='';Color='White'}) }
+            }
             for ($i=$start; $i -lt [Math]::Min($start+$limit,$visible.Count); $i++) {
                 $index=$visible[$i]
                 $mark=if ($Multiple) { if ($marks[$index]) {'[x] '} else {'[ ] '} } else {''}
@@ -6420,14 +6438,16 @@ function Select-GPushWorkspaceRows {
                 else { $frame.Add(@{Text=('    '+$line);Color='White'}) }
             }
             if (-not $visible.Count) { $frame.Add(@{Text='  No matching items.';Color='Yellow'}) }
-            $frame.Add(@{Text='';Color='White'})
             $frame.Add(@{Text=$rule;Color='DarkGray'})
-            $positionText=if ($visible.Count) { "  POSITION  $($selected+1) / $($visible.Count)" } else { '  No matches' }
-            if ($Multiple) { $positionText += "    |    MARKED  $(@($marks.Values | Where-Object { $_ }).Count)" }
-            $frame.Add(@{Text=$positionText;Color='Cyan'})
-            $frame.Add(@{Text='  Up/Down Navigate  Enter Select  Esc Back  Ctrl+C Exit';Color='DarkGray'})
-            $hint=if ($Multiple) {'  Space Mark  A All visible  X Clear  / Search  Enter Confirm'} else {'  Type to filter    Backspace  Clear character'}
-            $frame.Add(@{Text=$hint;Color='DarkGray'})
+            if ($Multiple) {
+                $markedCount = @($marks.Values | Where-Object { $_ }).Count
+                $frame.Add(@{Text="  MARKED  $markedCount";Color='Cyan'})
+                $frame.Add(@{Text='  Up/Down Navigate  Enter Confirm  Esc Back';Color='DarkGray'})
+                $frame.Add(@{Text='  Space Mark  A All  X Clear  / Search';Color='DarkGray'})
+            } else {
+                $frame.Add(@{Text='  Up/Down Navigate  Enter Select  Esc Back  Ctrl+C Exit';Color='DarkGray'})
+                $frame.Add(@{Text='  Type to filter    Backspace Clear';Color='DarkGray'})
+            }
             $paintWidth=$width
             foreach ($entry in $frame) {
                 $text=(Limit-GPushTableText $entry.Text $width).PadRight($paintWidth)
@@ -6440,7 +6460,7 @@ function Select-GPushWorkspaceRows {
             }
             $previousFrameCount=$frame.Count
         }
-        $key = if ($TestKeyReader) { & $TestKeyReader } else { (Read-GPushWorkspaceKey) }
+        $key = if ($TestKeyReader) { & $TestKeyReader } else { (Read-GPushWorkspaceKey -WatchResize) }
         if ($null -eq $key) { return }
         switch ($key.Key) {
             Escape { return }

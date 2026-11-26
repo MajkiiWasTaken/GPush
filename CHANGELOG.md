@@ -2,6 +2,14 @@
 
 All notable changes to GPush are documented here.
 
+## 4.7.7
+
+- Add a subtle “Made by: Michal Švrček” credit and a blank line above the original ASCII logo.
+- Remove the redundant position counter; preserve file-selection counts and keyboard shortcuts.
+- Keep the final menu viewport full when scrolling, redraw automatically when the terminal is resized and hide the logo when the entire main menu would not fit.
+- Fix the reported ShellCheck SC1003 warning by rendering the Linux ASCII logo from a quoted heredoc.
+- Add a Linux PTY regression test for live terminal resizing and cyclic navigation.
+
 ## 4.7.6
 
 - Add the original ASCII logo to the main menu when the terminal has sufficient space.

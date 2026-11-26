@@ -148,7 +148,7 @@ def test(base):
     c = open_menu('commit', str(repo))
     c.expect('Enter Confirm'); c.send(' ')
     c.expect('MARKED  1'); c.send('\x1bOB')
-    c.expect('POSITION  2 / 2'); c.send(' ')
+    c.expect('> '); c.send(' ')
     c.expect('MARKED  2'); c.send('\r')
     c.expect('Selected files (2)'); c.expect('Commit message: '); c.send('\n')
     c.finish()
@@ -168,7 +168,7 @@ def test(base):
 
     c = open_menu()
     c.expect('Type to filter'); c.send('\x1bOB')
-    c.expect('POSITION  2 / 11'); c.send('\r')
+    c.expect('> Repositories / commit and push'); c.send('\r')
     c.expect('Select repository'); c.expect('Type to filter'); c.send('Test [')
     c.expect('1 / 2'); c.send('\r'); c.expect('Repository / Test [project]')
     c.expect('Push committed changes only'); c.expect('Type to filter'); c.send('\x1b')
@@ -176,7 +176,7 @@ def test(base):
     print('PASS repository picker and Escape navigation')
 
     c = open_menu()
-    c.expect('Type to filter'); c.send('\x1bOB'); c.expect('POSITION  2 / 11'); c.send('\r')
+    c.expect('Type to filter'); c.send('\x1bOB'); c.expect('> Repositories / commit and push'); c.send('\r')
     c.expect('Select repository'); c.expect('Repository      |  Path')
     c.expect('Other           |  '); c.expect('Test [project]  |  ')
     c.expect('Type to filter'); c.send('Test ['); c.expect('1 / 2'); c.send('\r')
@@ -187,9 +187,19 @@ def test(base):
     time.sleep(0.2); c.send('\x03'); c.expect('Exit GPush?'); c.send('n'); c.expect('Type to filter'); time.sleep(0.2); c.send('\x03'); c.expect('Exit GPush?'); c.send('\x03'); c.finish(expected=130)
     print('PASS aligned repository columns, persistent results, Ctrl+C cancel and exit')
 
-    c = open_menu(); c.expect('Type to filter'); c.send('\x1b[A'); c.expect('POSITION  11 / 11')
-    c.send('\x1b[B'); c.expect('POSITION  1 / 11'); c.expect('Type to filter'); c.send('\x1b'); c.finish()
+    c = open_menu(); c.expect('Type to filter'); c.send('\x1b[A'); c.expect('> Exit')
+    c.send('\x1b[B'); c.expect('> Workspace overview'); c.expect('Type to filter'); c.send('\x1b'); c.finish()
     print('PASS cyclic keyboard navigation')
+
+    c = open_menu(); c.expect('Made by: Michal Švrček'); c.expect('Type to filter')
+    fcntl.ioctl(c.master, termios.TIOCSWINSZ, struct.pack('HHHH', 16, 60, 0, 0))
+    c.expect('Made by: Michal Švrček'); c.expect('Type to filter')
+    c.send('\x1b[A'); c.expect('> Exit'); c.expect('Type to filter')
+    fcntl.ioctl(c.master, termios.TIOCSWINSZ, struct.pack('HHHH', 34, 100, 0, 0))
+    c.expect('###  ####'); c.expect('> Exit'); c.expect('Type to filter')
+    c.send('\x1b[B'); c.expect('> Workspace overview'); c.expect('Type to filter')
+    c.send('\x1b'); c.finish()
+    print('PASS automatic terminal resize, logo visibility and stable last page')
 
     result = run('bash', str(SCRIPT), 'stats', '30')
     assert 'Commits  4' in result.stdout, result.stdout
