@@ -2,6 +2,13 @@
 
 All notable changes to GPush are documented here.
 
+## 4.7.9
+
+- Restart into the new main menu after successful interactive updates; keep CLI update commands non-interactive after installation.
+- Improve overview column spacing, limit commit column width, reduce excessive status colors and separate navigation from repository rows.
+- Add preset and custom remote/file-size settings, clone branch preference, theme selection, logo visibility, worker limits, compact layout, default statistics period, inactive repository visibility and restart preference.
+- Preserve existing Git branch and safety behavior; the clone branch preference affects new clones only.
+
 ## 4.7.8
 
 - Expand densely written shell and PowerShell statements, control-flow blocks and functions for readability.

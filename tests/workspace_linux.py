@@ -244,6 +244,49 @@ def test(base):
     assert "Run 'gp update' to install." in run('bash', str(SCRIPT), 'update', 'check').stdout
     print('PASS interactive update offer and unchanged CLI check')
 
+    # Install a real, checksum-verified package into a disposable installation.
+    import hashlib
+    import json
+    import tarfile
+    update_dir = base / 'update-fixture'
+    update_dir.mkdir()
+    installed = bin_dir / 'gp'
+    shutil.copy2(SCRIPT, installed)
+    installed.chmod(0o755)
+    new_script = update_dir / 'gp'
+    new_script.write_text(SCRIPT.read_text().replace('SCRIPT_VERSION="4.7.9"', 'SCRIPT_VERSION="99.0.0"', 1))
+    new_script.chmod(0o755)
+    package = update_dir / 'GPush-99.0.0-linux.tar.gz'
+    with tarfile.open(package, 'w:gz') as archive:
+        archive.add(new_script, arcname='gp')
+    checksum = update_dir / 'SHA256SUMS'
+    checksum.write_text(hashlib.sha256(package.read_bytes()).hexdigest() + '  ' + package.name + '\n')
+    metadata = update_dir / 'release.json'
+    metadata.write_text(json.dumps({'tag_name': 'v99.0.0', 'assets': [
+        {'name': package.name, 'browser_download_url': 'https://example.invalid/package', 'size': package.stat().st_size},
+        {'name': checksum.name, 'browser_download_url': 'https://example.invalid/checksum'}]}))
+    curl.write_text('#!/bin/sh\n' +
+        'source=; output=\n' +
+        'while [ "$#" -gt 0 ]; do\n' +
+        'case "$1" in\n' +
+        '  https://api.github.com/*) source=' + shlex.quote(str(metadata)) + ';;\n' +
+        '  https://example.invalid/package*) source=' + shlex.quote(str(package)) + ';;\n' +
+        '  https://example.invalid/checksum*) source=' + shlex.quote(str(checksum)) + ';;\n' +
+        '  -o) shift; output="$1";;\n' +
+        'esac; shift; done\n' +
+        'if [ -n "$output" ]; then cp "$source" "$output"; else cat "$source"; fi\n')
+    c = open_menu()
+    try:
+        c.expect('Type to filter'); c.send('Software update'); c.expect('1 / 11'); c.send('\r')
+        c.expect('Check for updates'); c.expect('Type to filter'); c.send('\r')
+        c.expect('Download and install v99.0.0?'); c.send('y\n')
+        c.expect('Restarting GPush automatically'); c.expect('99.0.0'); c.expect('Interactive workspace'); c.expect('Type to filter')
+        c.send('\x1b'); c.finish()
+    except Exception:
+        c.close(); raise
+    assert '99.0.0' in run(str(installed), 'version').stdout
+    print('PASS verified update restarts into the new main menu')
+
     result = run('bash', str(SCRIPT), 'all', 'status', check=False)
     assert result.returncode == 1 and 'Test [project]' in result.stdout  # Other has no remote.
     assert 'main' in run('bash', str(SCRIPT), 'repo', 'status', str(repo)).stdout

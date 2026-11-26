@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-SCRIPT_VERSION="4.7.8"
+SCRIPT_VERSION="4.7.9"
 AUTHOR="Michal Švrček"
 GITHUB="https://github.com/MajkiiWasTaken"
 
@@ -23,6 +23,14 @@ DEFAULT_PROTECTED_BRANCHES=("main" "master" "release/*")
 DEFAULT_IGNORED_DIRS=(node_modules bin obj .venv venv target packages .idea .vscode .vs)
 
 LARGE_FILE_MB="$DEFAULT_LARGE_FILE_MB"
+GP_THEME=cyan
+GP_LOGO=on
+GP_WORKERS=4
+GP_LAYOUT=auto
+GP_RESTART=on
+GP_CLONE_BRANCH=auto
+GP_STATS_PERIOD=30
+GP_SHOW_INACTIVE=off
 SEARCH_ROOTS=("${DEFAULT_SEARCH_ROOTS[@]}")
 PROTECTED_BRANCHES=("${DEFAULT_PROTECTED_BRANCHES[@]}")
 IGNORED_DIRS=("${DEFAULT_IGNORED_DIRS[@]}")
@@ -121,6 +129,14 @@ load_config() {
             fi
 
             case "$key" in
+                clone_branch) [[ -n "$value" ]] && GP_CLONE_BRANCH="$value";;
+                stats_period) [[ "$value" =~ ^(7|30|90|365)$ ]] && GP_STATS_PERIOD="$value";;
+                show_inactive) [[ "$value" =~ ^(on|off)$ ]] && GP_SHOW_INACTIVE="$value";;
+                theme) case "$value" in cyan|ocean|emerald|purple|amber|rose|monochrome) GP_THEME="$value";; esac;;
+                logo) [[ "$value" =~ ^(on|off)$ ]] && GP_LOGO="$value";;
+                workers) [[ "$value" =~ ^([1-9]|1[0-6])$ ]] && GP_WORKERS="$value";;
+                layout) [[ "$value" =~ ^(auto|compact)$ ]] && GP_LAYOUT="$value";;
+                restart) [[ "$value" =~ ^(on|off)$ ]] && GP_RESTART="$value";;
                 search_root)
                     value="${value/#\~/$HOME}"
                     SEARCH_ROOTS+=("$value")
@@ -1130,6 +1146,8 @@ save_config_settings() {
 
     printf 'default_remote=%s\n' "$DEFAULT_REMOTE" >> "$tmp"
     printf 'large_file_mb=%s\n' "$LARGE_FILE_MB" >> "$tmp"
+    printf 'theme=%s\nlogo=%s\nworkers=%s\nlayout=%s\nrestart=%s\n' "$GP_THEME" "$GP_LOGO" "$GP_WORKERS" "$GP_LAYOUT" "$GP_RESTART" >> "$tmp"
+    printf 'clone_branch=%s\nstats_period=%s\nshow_inactive=%s\n' "$GP_CLONE_BRANCH" "$GP_STATS_PERIOD" "$GP_SHOW_INACTIVE" >> "$tmp"
     mv "$tmp" "$CONFIG_FILE"
 }
 
@@ -1477,7 +1495,11 @@ handle_clone() {
 
     destination="${destination/#\~/$HOME}"
 
-    git clone "$clone_url" "$destination" || return 1
+    local -a clone_options=()
+    if [[ "$GP_CLONE_BRANCH" != auto ]]; then
+        clone_options=(--branch "$GP_CLONE_BRANCH")
+    fi
+    git clone "${clone_options[@]}" -- "$clone_url" "$destination" || return 1
     add_cache "$destination" || return 1
     remember_recent "$destination"
 }
@@ -1760,11 +1782,13 @@ bulk_table_line() {
     ((name_width<=24)) || name_width=24
     branch_width=$((width/6))
     ((branch_width<=18)) || branch_width=18
-    if ((width>=100)); then
-        commit_width=$((width-name_width-branch_width-48))
-        printf -v line '%-*.*s %-*.*s %-*.*s %4s | %-4s %-10.10s %-10.10s %s' "$name_width" "$name_width" "$1" "$branch_width" "$branch_width" "$2" "$commit_width" "$commit_width" "$3" "$4" "$5" "$6" "$7" "$8"
+    if ((width>=100)) && [[ "${GP_LAYOUT:-auto}" != compact ]]; then
+        commit_width=$((width-name_width-branch_width-54))
+        ((commit_width<=64)) || commit_width=64
+        if ((${#3}>commit_width)); then set -- "$1" "$2" "${3:0:commit_width-3}..." "${@:4}"; fi
+        printf -v line '%-*.*s %-*.*s %-*.*s %6.6s | %-5.5s  %-12.12s  %-12.12s %s' "$name_width" "$name_width" "$1" "$branch_width" "$branch_width" "$2" "$commit_width" "$commit_width" "$3" "$4" "$5" "$6" "$7" "$8"
     elif ((width>=55)); then
-        printf -v line '%-*.*s %-*.*s %4s | %-4s %s' "$name_width" "$name_width" "$1" "$branch_width" "$branch_width" "$2" "$4" "$5" "${8:-$6}"
+        printf -v line '%-*.*s %-*.*s %6.6s | %-5.5s %s' "$name_width" "$name_width" "$1" "$branch_width" "$branch_width" "$2" "$4" "$5" "${8:-$6}"
     else
         printf -v line '%-*.*s %s' "$name_width" "$name_width" "$1" "${8:-$7}"
     fi
@@ -1840,14 +1864,14 @@ handle_all() (
         workspace_block_bar 0 "$bar_width"
         printf '   0%%'
     fi
-    local batch=4
+    local batch=$GP_WORKERS
     if [[ "$action" == sync || "$action" == push ]]; then
         batch=1
         local -a fetched=()
         local fetch_done=0
-        for ((i=0;i<${#repositories[@]};i+=4)); do
+        for ((i=0;i<${#repositories[@]};i+=GP_WORKERS)); do
             bulk_jobs=()
-            for ((j=i;j<i+4 && j<${#repositories[@]};j++)); do
+            for ((j=i;j<i+GP_WORKERS && j<${#repositories[@]};j++)); do
                 (
                     cd "${repositories[j]}" || exit 1
                     local branch remote fetch_rc=0
@@ -2829,6 +2853,9 @@ handle_update() (
     kv Previous "$SCRIPT_VERSION"
     kv Current "$package_version" "$C_GREEN"
     rm -rf "$tmp"
+    if [[ "${GP_INTERACTIVE_UPDATE:-false}" == true ]]; then
+        return 75
+    fi
 )
 levenshtein() {
     local a="${1,,}" b="${2,,}"
@@ -3345,9 +3372,9 @@ overview_load() {
         printf '\r\033[2K%s%s%s  ' "$C_CYAN" "$label" "$C_RESET"
         workspace_block_bar 0 24; printf '    0%%'
     fi
-    for ((i=0;i<total;i+=4)); do
+    for ((i=0;i<total;i+=GP_WORKERS)); do
         jobs=()
-        for ((j=i;j<total && j<i+4;j++)); do
+        for ((j=i;j<total && j<i+GP_WORKERS;j++)); do
             (
                 if [[ "$fetch" == true ]] && ! overview_fetch "${overview_paths[j]}" true > /dev/null 2>&1; then
                     printf '%s\0' "${overview_paths[j]##*/}" - - - - - 'Fetch failed' "${overview_paths[j]}"
@@ -3454,7 +3481,7 @@ overview_frame() {
     printf '%s%.*s%s\n' "$C_GRAY" "$((cols-1))" 'Local snapshot | R refresh | F/A fetch' "$C_RESET"
     local bulk_width=$((cols>3?cols-3:1))
     printf '  '
-    bulk_table_line Repository Branch 'Last commit' Behind Ahead Worktree Sync Result
+    bulk_table_line Repository Branch 'Last commit' Behind Ahead Worktree Sync ''
     for ((i=first;i<last;i++)); do
         n=$((i*8)); marker=' '
         if ((i==selected)); then
@@ -3467,7 +3494,10 @@ overview_frame() {
         bulk_table_line "${overview_fields[n]}" "${overview_fields[n+1]}" "${overview_fields[n+2]}" "${overview_fields[n+3]}" "${overview_fields[n+4]}" "${overview_fields[n+5]} changed" "${overview_fields[n+6]}" ''
         printf '%s' "$C_RESET"
     done
-    printf '%d/%d | %s\n' "$((selected+1))" "${#overview_paths[@]}" "${overview_fields[selected*8+6]}"
+    local rule
+    printf -v rule '%*s' "$((cols>1?cols-1:1))" ''
+    printf '%s%s%s\n' "$C_GRAY" "${rule// /─}" "$C_RESET"
+    printf '%.*s\n' "$((cols-1))" "Selected: ${overview_fields[selected*8]} | ${overview_fields[selected*8+6]}"
     printf '%s%.*s%s\n' "$C_GRAY" "$((cols-1))" 'Up/Down Select | Enter Open | F/A Fetch' "$C_RESET"
     printf '%s%.*s%s\n' "$C_GRAY" "$((cols-1))" 'R Refresh | S Sync | Esc Back' "$C_RESET"
 }
@@ -3594,8 +3624,13 @@ workspace_pick() {
     WORKSPACE_SELECTION=()
     (( ${#rows[@]} )) || return 1
     if [[ -n "$C_CYAN" ]]; then
-        accent=$'\033[1;36m'
-        highlight=$'\033[30;46m'
+        local theme_code=36
+        case "$GP_THEME" in
+            ocean) theme_code=34;; emerald) theme_code=32;; purple) theme_code=35;;
+            amber) theme_code=33;; rose) theme_code=31;; monochrome) theme_code=37;;
+        esac
+        printf -v accent '\033[1;%sm' "$theme_code"
+        printf -v highlight '\033[30;%sm' "$((theme_code+10))"
     fi
     while true; do
         visible=()
@@ -3634,7 +3669,7 @@ workspace_pick() {
             reserved_rows=$((reserved_rows+1))
         fi
         show_logo=false
-        if [[ "$title" == *' / Main menu' ]] && ((width>=48 && height>=reserved_rows+8+${#rows[@]})); then
+        if [[ "$title" == *' / Main menu' ]] && [[ "$GP_LOGO" == on ]] && ((width>=48 && height>=reserved_rows+8+${#rows[@]})); then
             show_logo=true
             reserved_rows=$((reserved_rows+8))
         fi
@@ -4121,43 +4156,87 @@ workspace_detail() {
         esac
     done
 }
+workspace_setting_choice() {
+    local title="$1"; shift
+    local -a options=("$@" 'Custom...')
+    workspace_pick "$title" false "${options[@]}" || return 1
+    SETTING_VALUE=${options[WORKSPACE_SELECTION[0]]}
+    if [[ "$SETTING_VALUE" == 'Custom...' ]]; then
+        workspace_clear_screen
+        read -r -p 'Custom value (empty cancels): ' SETTING_VALUE || return 1
+        [[ -n "$SETTING_VALUE" ]] || return 1
+    fi
+}
 workspace_settings() {
     if [[ ! -t 0 || ! -t 1 ]]; then
         handle_config show
         return
     fi
-    local key value action
-    local -a keys=(default-remote large-file-threshold search-root protected-branch ignored-directory) labels=()
+    local key value action SETTING_VALUE
+    local -a keys=(default-remote large-file-threshold search-root protected-branch ignored-directory theme logo workers layout restart clone-branch stats-period show-inactive) labels=()
     while true; do
-        labels=("Default Git remote  |  $DEFAULT_REMOTE" "Large file warning  |  $LARGE_FILE_MB MB" "Search directories  |  ${#SEARCH_ROOTS[@]} configured" "Protected branches  |  ${#PROTECTED_BRANCHES[@]} configured" "Ignored directories  |  ${#IGNORED_DIRS[@]} configured")
+        labels=("Default Git remote  |  $DEFAULT_REMOTE" "Large file warning  |  $LARGE_FILE_MB MB"
+            "Search directories  |  ${#SEARCH_ROOTS[@]} configured" "Protected branches  |  ${#PROTECTED_BRANCHES[@]} configured"
+            "Ignored directories  |  ${#IGNORED_DIRS[@]} configured" "Color theme  |  $GP_THEME" "ASCII logo  |  $GP_LOGO"
+            "Parallel workers  |  $GP_WORKERS" "Table layout  |  $GP_LAYOUT" "Restart after update  |  $GP_RESTART" "Default clone branch  |  $GP_CLONE_BRANCH"
+            "Statistics period  |  $GP_STATS_PERIOD days" "Show inactive repositories  |  $GP_SHOW_INACTIVE")
         workspace_pick 'Settings' false "${labels[@]}" || return 0
-        workspace_clear_screen
         key=${keys[WORKSPACE_SELECTION[0]]}
-        handle_config show
         case "$key" in
-            default-remote|large-file-threshold) action='set'
-            ;;
-            *) read -r -p 'Action [add/remove/reset]: ' action || return 0
-            case "$action" in
-                add|remove|reset)
-                ;;
-                *)
+            default-remote|large-file-threshold)
+                if [[ "$key" == default-remote ]]; then
+                    workspace_setting_choice 'Default Git remote' origin upstream || continue
+                else
+                    workspace_setting_choice 'Large file threshold (MB)' 10 25 50 100 250 || continue
+                fi
+                workspace_clear_screen
+                handle_config_edit set "$key" "$SETTING_VALUE"
+                workspace_pause;;
+            clone-branch)
+                workspace_setting_choice 'Default branch for new clones' auto main master develop || continue
+                if [[ "$SETTING_VALUE" != auto ]] && ! git check-ref-format --branch "$SETTING_VALUE" >/dev/null 2>&1; then
+                    warn 'Invalid branch name.'
+                    workspace_pause
                     continue
-                ;;
-            esac
-            ;;
+                fi
+                GP_CLONE_BRANCH=$SETTING_VALUE
+                save_config_settings;;
+            theme|logo|workers|layout|restart|stats-period|show-inactive)
+                local -a choices=()
+                case "$key" in
+                    theme) choices=(cyan ocean emerald purple amber rose monochrome);;
+                    logo|restart|show-inactive) choices=(on off);;
+                    stats-period) choices=(7 30 90 365);;
+                    workers) choices=(1 2 4 8 16);;
+                    layout) choices=(auto compact);;
+                esac
+                workspace_pick "Settings / $key" false "${choices[@]}" || continue
+                value=${choices[WORKSPACE_SELECTION[0]]}
+                case "$key" in
+                    theme) GP_THEME=$value;; logo) GP_LOGO=$value;; workers) GP_WORKERS=$value;; layout) GP_LAYOUT=$value;; restart) GP_RESTART=$value;;
+                    stats-period) GP_STATS_PERIOD=$value;;
+                    show-inactive) GP_SHOW_INACTIVE=$value;;
+                esac
+                save_config_settings;;
+            *)
+                workspace_pick "Settings / $key" false Add Remove Reset || continue
+                local -a actions=(add remove reset)
+                action=${actions[WORKSPACE_SELECTION[0]]}
+                workspace_clear_screen
+                handle_config show
+                value=''
+                if [[ "$action" != reset ]]; then
+                    read -r -p 'Value (empty cancels): ' value || continue
+                    [[ -n "$value" ]] || continue
+                fi
+                if confirm 'Save configuration?'; then
+                    handle_config_edit "$action" "$key" "$value"
+                fi
+                workspace_pause;;
         esac
-        value=''
-        if [[ "$action" != reset ]]; then
-            read -r -p 'Value (empty cancels): ' value || return 0
-            [[ -n "$value" ]] || continue
-        fi
-        if confirm 'Save configuration?'; then
-            handle_config_edit "$action" "$key" "$value"
-        fi
-        workspace_pause
     done
 }
+
 workspace_activity() {
     section 'Workspace activity / latest 30 operations'
     if [[ ! -f "$CONFIG_DIR/history.log" ]]; then
@@ -4450,15 +4529,24 @@ workspace_menu_update() {
     local -a labels=('Check for updates' 'Install update' 'Restore previous version' 'Back')
     while workspace_pick 'Software update' false "${labels[@]}"; do
         workspace_clear_screen
+        local rc=0
         case "${WORKSPACE_SELECTION[0]}" in
-            0) WORKSPACE_OFFER_UPDATE=true workspace_run_operation handle_update check
-            ;;
-            1) workspace_run_operation handle_update install
-            ;;
-            2) workspace_run_operation handle_update rollback
-            ;;
+            0) GP_INTERACTIVE_UPDATE=true WORKSPACE_OFFER_UPDATE=true workspace_run_operation handle_update check || rc=$?;;
+            1) GP_INTERACTIVE_UPDATE=true workspace_run_operation handle_update install || rc=$?;;
+            2) workspace_run_operation handle_update rollback || rc=$?;;
             3) return 0;;
         esac
+        if ((rc==75)); then
+            if [[ "$GP_RESTART" != on ]]; then
+                info 'Update installed. Run gp again to open the new version.'
+                exit 0
+            fi
+            info 'Restarting GPush automatically...'
+            local installed
+            installed=$(command -v gp 2>/dev/null || true)
+            [[ -n "$installed" ]] || installed="$HOME/.local/bin/gp"
+            exec "$installed"
+        fi
         workspace_pause
     done
     return 0
@@ -4538,9 +4626,9 @@ workspace_stats() {
             workspace_block_bar 0 24; printf '    0%%'
         fi
         # Bound disk/process pressure: no more than four concurrent history walks.
-        for ((i=0;i<${#stats_pending[@]};i+=4)); do
+        for ((i=0;i<${#stats_pending[@]};i+=GP_WORKERS)); do
             stats_pids=()
-            batch_end=$((i+4))
+            batch_end=$((i+GP_WORKERS))
             if ((batch_end>${#stats_pending[@]})); then
                 batch_end=${#stats_pending[@]}
             fi
@@ -4686,7 +4774,11 @@ workspace_stats() {
 }
 workspace_stats_screen() {
     local -a periods=(7 30 90 365)
-    local selected=1 show_all=false refresh=false rc=0
+    local selected=1 show_all=false refresh=false rc=0 index
+    for index in "${!periods[@]}"; do
+        if [[ "${periods[index]}" == "$GP_STATS_PERIOD" ]]; then selected=$index; fi
+    done
+    if [[ "$GP_SHOW_INACTIVE" == on ]]; then show_all=true; fi
     while true; do
         rc=0
         workspace_clear_screen

@@ -28,7 +28,7 @@ $OutputEncoding           = [System.Text.UTF8Encoding]::new($false)
 # CONFIG
 # ============================================================
 
-$ScriptVersion = "4.7.8"
+$ScriptVersion = "4.7.9"
 $CompletionSchemaVersion = "14"
 
 $ConfigDir  = Join-Path $env:LOCALAPPDATA "GPush"
@@ -219,6 +219,14 @@ function New-DefaultGPushConfig {
         protectedBranches = @($DefaultProtectedBranches)
         largeFileThresholdMB = $DefaultLargeFileThresholdMB
         defaultRemote = $DefaultRemote
+        theme = 'Cyan'
+        showLogo = $true
+        workers = 4
+        layout = 'Auto'
+        restartAfterUpdate = $true
+        cloneBranch = 'auto'
+        statsPeriod = 30
+        showInactive = $false
         aliases = @{}
         favorites = @()
     }
@@ -303,6 +311,15 @@ function Initialize-GPushConfig {
                 $config.defaultRemote = [string]$loaded.defaultRemote
             }
 
+            if ($loaded.theme -in @('Cyan','Blue','Green','Magenta','Yellow','Red','Gray')) { $config.theme = [string]$loaded.theme }
+            if ($loaded.showLogo -is [bool]) { $config.showLogo = $loaded.showLogo }
+            if ([string]$loaded.workers -match '^([1-9]|1[0-6])$') { $config.workers = [int]$loaded.workers }
+            if ($loaded.layout -in @('Auto','Compact')) { $config.layout = $loaded.layout }
+            if ($loaded.cloneBranch -is [string] -and $loaded.cloneBranch) { $config.cloneBranch = $loaded.cloneBranch }
+            if ($loaded.statsPeriod -in @(7,30,90,365)) { $config.statsPeriod = [int]$loaded.statsPeriod }
+            if ($loaded.showInactive -is [bool]) { $config.showInactive = $loaded.showInactive }
+            if ($loaded.restartAfterUpdate -is [bool]) { $config.restartAfterUpdate = $loaded.restartAfterUpdate }
+
             if ($null -ne $loaded.PSObject.Properties['aliases'] -and $null -ne $loaded.aliases) {
                 $aliasMap = @{}
                 foreach ($property in $loaded.aliases.PSObject.Properties) {
@@ -377,6 +394,14 @@ function Save-GPushConfig {
         protectedBranches = @($script:GPushConfig.protectedBranches)
         largeFileThresholdMB = [int]$script:LargeFileThresholdMB
         defaultRemote = [string]$script:PreferredRemote
+        theme = $script:GPushConfig.theme
+        showLogo = $script:GPushConfig.showLogo
+        workers = $script:GPushConfig.workers
+        layout = $script:GPushConfig.layout
+        restartAfterUpdate = $script:GPushConfig.restartAfterUpdate
+        cloneBranch = $script:GPushConfig.cloneBranch
+        statsPeriod = $script:GPushConfig.statsPeriod
+        showInactive = $script:GPushConfig.showInactive
         aliases = $script:RepositoryAliases
         favorites = @($script:FavoriteRepositories)
     }
@@ -1705,14 +1730,15 @@ function Install-GPushRelease {
         Write-Progress -Id 44 -Activity 'GPush update' -Status 'Installing update'
 
         
-        Copy-Item -Path $newScript.FullName -Destination $PSCommandPath -Force
+        Copy-Item -Path $newScript.FullName -Destination $PSCommandPath -Force -ErrorAction Stop
+        $script:GPushInstalledUpdate = $true
 
         Write-Progress -Id 44 -Activity 'GPush update' -Completed
         Write-Ok "GPush updated successfully. SHA-256 verified."
         Write-Dim "Rollback backup: $backupPath"
         Write-KeyValue "Previous" $ScriptVersion
         Write-KeyValue "Current" $packageVersionText ([ConsoleColor]::Green)
-        Write-Dim "Restart the current PowerShell command before using the new version."
+        Write-Dim "The new version is ready."
         Write-Host ""
         return 0
     }
@@ -5537,9 +5563,9 @@ function Get-GPushBulkFetchResults {
             }
             $pending+=@{Path=$path;Remote=$remote}
         }
-        for ($i=0;$i -lt $pending.Count;$i+=4) {
+        for ($i=0;$i -lt $pending.Count;$i+=$(if ($script:GPushConfig.workers) {$script:GPushConfig.workers} else {4})) {
             $active=@()
-            for ($j=$i;$j -lt [Math]::Min($i+4,$pending.Count);$j++) {
+            for ($j=$i;$j -lt [Math]::Min($i+$(if ($script:GPushConfig.workers) {$script:GPushConfig.workers} else {4}),$pending.Count);$j++) {
                 $item=$pending[$j]
                 try {
                     $capture=Start-GPushNativeCapture -Executable $git -ArgumentVector @('-C',$item.Path,'fetch','--prune',$item.Remote) -GitOperation
@@ -5771,11 +5797,11 @@ function Get-GPushBulkLine {
     $bw=[Math]::Max(1,[Math]::Min(18,[int]($Width/6)))
     $n=Limit-GPushTableText $Name $rw
     $b=Limit-GPushTableText $Branch $bw
-    if ($Width -ge 100) {
-        $cw=[Math]::Max(1,$Width-$rw-$bw-48)
-        $line=("{0,-$rw} {1,-$bw} {2,-$cw} {3,4} | {4,-4} {5,-10} {6,-10} {7}" -f $n,$b,(Limit-GPushTableText $Commit $cw),$Behind,$Ahead,(Limit-GPushTableText $Worktree 10),(Limit-GPushTableText $Sync 10),$Result)
+    if ($Width -ge 100 -and $script:GPushConfig.layout -ne 'Compact') {
+        $cw=[Math]::Min(64,[Math]::Max(1,$Width-$rw-$bw-54))
+        $line=("{0,-$rw} {1,-$bw} {2,-$cw} {3,6} | {4,-5}  {5,-12}  {6,-12} {7}" -f $n,$b,(Limit-GPushTableText $Commit $cw),$Behind,$Ahead,(Limit-GPushTableText $Worktree 12),(Limit-GPushTableText $Sync 12),$Result)
     } elseif ($Width -ge 55) {
-        $line=("{0,-$rw} {1,-$bw} {2,4} | {3,-4} {4}" -f $n,$b,$Behind,$Ahead,$(if ($Result) {$Result} else {$Worktree}))
+        $line=("{0,-$rw} {1,-$bw} {2,6} | {3,-5} {4}" -f $n,$b,$Behind,$Ahead,$(if ($Result) {$Result} else {$Worktree}))
     } else {
         $line=("{0,-$rw} {1}" -f $n,$(if ($Result) {$Result} else {$Sync}))
     }
@@ -6287,7 +6313,12 @@ if ($CloneRepo) {
     Write-Host ""
     Write-Info "[CLONE] git clone $cloneUrl `"$cloneDestination`""
 
-    $cloneResult = Get-GitOutput -Arguments @("clone", $cloneUrl, $cloneDestination) -AllowFailure
+    $cloneArguments = @('clone')
+    if ($script:GPushConfig.cloneBranch -and $script:GPushConfig.cloneBranch -ne 'auto') {
+        $cloneArguments += @('--branch', $script:GPushConfig.cloneBranch)
+    }
+    $cloneArguments += @('--', $cloneUrl, $cloneDestination)
+    $cloneResult = Get-GitOutput -Arguments $cloneArguments -AllowFailure
     foreach ($line in $cloneResult.Lines) {
         Write-Host $line
     }
@@ -6561,9 +6592,9 @@ function Get-GPushOverviewStates {
         if ($interactive) {
             Write-Progress -Id 42 -Activity $activity -Status 'Starting local inspection' -PercentComplete 0
         }
-        for ($i=0; $i -lt $Repositories.Count; $i+=4) {
+        for ($i=0; $i -lt $Repositories.Count; $i+=$(if ($script:GPushConfig.workers) {$script:GPushConfig.workers} else {4})) {
             $jobs=@()
-            for ($j=$i; $j -lt [Math]::Min($i+4,$Repositories.Count); $j++) {
+            for ($j=$i; $j -lt [Math]::Min($i+$(if ($script:GPushConfig.workers) {$script:GPushConfig.workers} else {4}),$Repositories.Count); $j++) {
                 $repo=$Repositories[$j]
                 $state=[PSCustomObject]@{Repository=$repo.Name
                 Path=$repo.Path
@@ -6728,14 +6759,12 @@ function Show-GPushOverviewFrame {
         if ($i -eq $Selected) {
             Write-Host $line -ForegroundColor White -BackgroundColor DarkCyan
         }
-        elseif ($state.Sync -eq 'Up to date' -and $state.Worktree -eq 'clean') {
-            Write-Ok $line
-        }
         else {
-            Write-Host $line -ForegroundColor Yellow
+            Write-Host $line -ForegroundColor $(if ($state.Sync -eq 'Up to date' -and $state.Worktree -eq 'clean') {'Gray'} else {'Yellow'})
         }
     }
-    Write-Dim ("{0}/{1} | {2}" -f ($Selected+1), $States.Count, $States[$Selected].Sync)
+    Write-Dim ([string][char]0x2500 * [Math]::Max(1,$width-1))
+    Write-Dim (Limit-GPushTableText ("Selected: {0} | {1}" -f $States[$Selected].Repository,$States[$Selected].Sync) ([Math]::Max(1,$width-1)))
     Write-Dim (Limit-GPushTableText 'Up/Down Select | Enter Open | F Fetch | A Fetch all' ([Math]::Max(1,$width-1)))
     Write-Dim (Limit-GPushTableText 'R Refresh | S Sync | Esc Back' ([Math]::Max(1,$width-1)))
 }
@@ -6829,7 +6858,7 @@ function Select-GPushWorkspaceRows {
             }
             $reservedRows = 10
             if ($Multiple) { $reservedRows++ }
-            $showLogo=$Title.EndsWith(' / Main menu') -and $width -ge 48 -and [Console]::WindowHeight -ge ($reservedRows+8+$Rows.Count)
+            $showLogo=$Title.EndsWith(' / Main menu') -and $script:GPushConfig.showLogo -ne $false -and $width -ge 48 -and [Console]::WindowHeight -ge ($reservedRows+8+$Rows.Count)
             if ($showLogo) { $reservedRows += 8 }
             $limit = [Math]::Max(1,[Console]::WindowHeight-$reservedRows)
             $start = [int]([Math]::Floor($selected / $limit) * $limit)
@@ -6855,9 +6884,9 @@ function Select-GPushWorkspaceRows {
             $frame = New-Object 'System.Collections.Generic.List[object]'
             if ($showLogo) {
                 $frame.Add(@{Text='';Color='White'})
-                foreach ($logoLine in @('  ###  ####            o',' #     #   #          / \',' #  ## ####      o---o   o',' #   # #          \   \ /','  ###  #           o---o---o','                            \','                             o---o')) { $frame.Add(@{Text=$logoLine;Color='Cyan'}) }
+                foreach ($logoLine in @('  ###  ####            o',' #     #   #          / \',' #  ## ####      o---o   o',' #   # #          \   \ /','  ###  #           o---o---o','                            \','                             o---o')) { $frame.Add(@{Text=$logoLine;Color=$(if ($script:GPushConfig.theme) {$script:GPushConfig.theme} else {'Cyan'})}) }
             }
-            $frame.Add(@{Text="  GPUSH  /  $ScriptVersion"; Color='Cyan'})
+            $frame.Add(@{Text="  GPUSH  /  $ScriptVersion"; Color=$(if ($script:GPushConfig.theme) {$script:GPushConfig.theme} else {'Cyan'})})
             $frame.Add(@{Text='  Made by: Michal Švrček'; Color='DarkGray'})
             $screenTitle = if ($Title.EndsWith(' / Main menu')) { 'Interactive workspace' } else { $Title }
             $frame.Add(@{Text=('  '+($screenTitle -replace '[\x00-\x1f\x7f]','?')); Color='White'})
@@ -6891,7 +6920,7 @@ function Select-GPushWorkspaceRows {
             $frame.Add(@{Text=$rule;Color='DarkGray'})
             if ($Multiple) {
                 $markedCount = @($marks.Values | Where-Object { $_ }).Count
-                $frame.Add(@{Text="  MARKED  $markedCount";Color='Cyan'})
+                $frame.Add(@{Text="  MARKED  $markedCount";Color=$(if ($script:GPushConfig.theme) {$script:GPushConfig.theme} else {'Cyan'})})
                 $frame.Add(@{Text='  Up/Down Navigate  Enter Confirm  Esc Back';Color='DarkGray'})
                 $frame.Add(@{Text='  Space Mark  A All  X Clear  / Search';Color='DarkGray'})
             } else {
@@ -6902,7 +6931,7 @@ function Select-GPushWorkspaceRows {
             foreach ($entry in $frame) {
                 $text=(Limit-GPushTableText $entry.Text $width).PadRight($paintWidth)
                 if ($entry.Selected) {
-                    Write-Host $text -ForegroundColor Black -BackgroundColor Cyan
+                    Write-Host $text -ForegroundColor Black -BackgroundColor $(if ($script:GPushConfig.theme) {$script:GPushConfig.theme} else {'Cyan'})
                 }
                 else {
                     Write-Host $text -ForegroundColor $entry.Color
@@ -7334,26 +7363,72 @@ function Show-GPushWorkspaceSettings {
         Show-GPushConfig
         return
     }
-    $keys = @('default-remote','large-file-threshold','search-root','protected-branch','ignored-directory')
+    $keys = @('default-remote','large-file-threshold','search-root','protected-branch','ignored-directory','theme','showLogo','workers','layout','restartAfterUpdate','cloneBranch','statsPeriod','showInactive')
     while ($true) {
-        $labels=@("Default Git remote  |  $PreferredRemote","Large file warning  |  $LargeFileThresholdMB MB","Search directories  |  $(@($SearchRoots).Count) configured","Protected branches  |  $(@($ProtectedBranches).Count) configured","Ignored directories  |  $(@($IgnoredDirectories).Count) configured")
+        $labels = @(
+            "Default Git remote  |  $PreferredRemote"
+            "Large file warning  |  $LargeFileThresholdMB MB"
+            "Search directories  |  $(@($SearchRoots).Count) configured"
+            "Protected branches  |  $(@($ProtectedBranches).Count) configured"
+            "Ignored directories  |  $(@($IgnoredDirectories).Count) configured"
+            "Color theme  |  $($script:GPushConfig.theme)"
+            "ASCII logo  |  $($script:GPushConfig.showLogo)"
+            "Parallel workers  |  $($script:GPushConfig.workers)"
+            "Table layout  |  $($script:GPushConfig.layout)"
+            "Restart after update  |  $($script:GPushConfig.restartAfterUpdate)"
+            "Default clone branch  |  $($script:GPushConfig.cloneBranch)"
+            "Statistics period  |  $($script:GPushConfig.statsPeriod) days"
+            "Show inactive repositories  |  $($script:GPushConfig.showInactive)"
+        )
         $picked = @(Select-GPushWorkspaceRows -Title 'Settings' -Rows $labels)
         if (-not $picked.Count) { return }
         $key = $keys[$picked[0]]
+        if ($key -in @('default-remote','large-file-threshold')) {
+            $options = if ($key -eq 'default-remote') { @('origin','upstream','Custom...') } else { @('10','25','50','100','250','Custom...') }
+            $choice = @(Select-GPushWorkspaceRows -Title $labels[$picked[0]] -Rows $options)
+            if (-not $choice.Count) { continue }
+            $value = $options[$choice[0]]
+            Clear-Host
+            if ($value -eq 'Custom...') { $value = Read-Host 'Custom value (empty cancels)' }
+            if ($value) { $null = Invoke-GPushConfigEdit -Action set -Key $key -Value $value; Wait-GPushWorkspace }
+            continue
+        }
+        if ($key -in @('theme','showLogo','workers','layout','restartAfterUpdate','cloneBranch','statsPeriod','showInactive')) {
+            $options = switch ($key) {
+                theme { @('Cyan','Blue','Green','Magenta','Yellow','Red','Gray') }
+                workers { @('1','2','4','8','16') }
+                layout { @('Auto','Compact') }
+                cloneBranch { @('auto','main','master','develop','Custom...') }
+                statsPeriod { @('7','30','90','365') }
+                default { @('Enabled','Disabled') }
+            }
+            $choice = @(Select-GPushWorkspaceRows -Title $labels[$picked[0]] -Rows $options)
+            if (-not $choice.Count) { continue }
+            $value = $options[$choice[0]]
+            if ($key -eq 'cloneBranch') {
+                if ($value -eq 'Custom...') { $value = Read-Host 'Branch name (empty cancels)' }
+                if (-not $value) { continue }
+                if ($value -ne 'auto') {
+                    & git check-ref-format --branch $value 2>$null | Out-Null
+                    if ($LASTEXITCODE -ne 0) { Write-Warn 'Invalid branch name.'; Wait-GPushWorkspace; continue }
+                }
+            }
+            if ($key -in @('showLogo','restartAfterUpdate','showInactive')) { $value = $value -eq 'Enabled' }
+            elseif ($key -in @('workers','statsPeriod')) { $value = [int]$value }
+            $script:GPushConfig.$key = $value
+            Save-GPushConfig
+            continue
+        }
+        $actions = @('Add','Remove','Reset')
+        $choice = @(Select-GPushWorkspaceRows -Title $labels[$picked[0]] -Rows $actions)
+        if (-not $choice.Count) { continue }
+        $action = $actions[$choice[0]].ToLowerInvariant()
         Clear-Host
         Show-GPushConfig
-        $action = 'set'; $value = ''
-        if ($key -notin @('default-remote','large-file-threshold')) {
-            $action = Read-Host 'Action [add/remove/reset]'
-            if ($action -notin @('add','remove','reset')) {
-                continue
-            }
-        }
+        $value = ''
         if ($action -ne 'reset') {
             $value = Read-Host 'Value (empty cancels)'
-            if (-not $value) {
-                continue
-            }
+            if (-not $value) { continue }
         }
         if (Confirm-GPushAction -Prompt 'Save configuration?') {
             $null = Invoke-GPushConfigEdit -Action $action -Key $key -Value $value
@@ -7361,6 +7436,7 @@ function Show-GPushWorkspaceSettings {
         Wait-GPushWorkspace
     }
 }
+
 function Show-GPushWorkspaceActivity {
     Write-Section 'Workspace activity / latest 30 operations'
     $historyFile = Join-Path $ConfigDir 'history.log'
@@ -7674,7 +7750,17 @@ function Show-GPushMenuUpdate {
         }
         Clear-Host
         $actions = @('check','install','rollback')
+        $script:GPushInstalledUpdate = $false
         $null = Invoke-GPushUpdateCommand -Arguments @($actions[$picked[0]]) -OfferInstall
+        if ($script:GPushInstalledUpdate -and $script:GPushConfig.restartAfterUpdate -eq $false) {
+            Write-Info 'Update installed. Run gp again to open the new version.'
+            exit 0
+        }
+        if ($script:GPushInstalledUpdate) {
+            Write-Info 'Restarting GPush automatically...'
+            & $PSCommandPath
+            exit $LASTEXITCODE
+        }
         Wait-GPushWorkspace
     }
 }
@@ -7791,9 +7877,9 @@ function Get-GPushStatsData {
             $previous=[Console]::TreatControlCAsInput
             [Console]::TreatControlCAsInput=$true
         }
-        for ($i=0; $i -lt $repositories.Count; $i+=4) {
+        for ($i=0; $i -lt $repositories.Count; $i+=$(if ($script:GPushConfig.workers) {$script:GPushConfig.workers} else {4})) {
             $jobs = @()
-            $last = [Math]::Min($i+4,$repositories.Count)
+            $last = [Math]::Min($i+$(if ($script:GPushConfig.workers) {$script:GPushConfig.workers} else {4}),$repositories.Count)
             for ($j=$i; $j -lt $last; $j++) {
                 $repo=$repositories[$j]
                 try {
@@ -7941,8 +8027,8 @@ function Show-GPushStats {
 
 function Show-GPushStatsScreen {
     $periods=@(7,30,90,365)
-    $index=1
-    $showAll=$false
+    $index=[Math]::Max(0,[Array]::IndexOf($periods,[int]$script:GPushConfig.statsPeriod))
+    $showAll=$script:GPushConfig.showInactive -eq $true
     $refresh=$false
     while ($true) {
         Clear-Host
